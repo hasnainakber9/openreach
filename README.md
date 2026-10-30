@@ -26,7 +26,7 @@ OpenReach is an independent project. It is not affiliated with LinkedIn or with 
 Requires **Node.js 22.13+** (uses the built-in `node:sqlite`, so there is no native build step).
 
 ```bash
-git clone <this repo> && cd openreach
+git clone https://github.com/hasnainakber9/openreach.git && cd openreach
 npm install
 npm run build
 npm start
