@@ -1,0 +1,13 @@
+services:
+  openreach:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      # Change this before first start and keep it safe: it encrypts saved LinkedIn sessions.
+      APP_SECRET: change-me-to-a-long-random-string
+    volumes:
+      - openreach-data:/data
+    restart: unless-stopped
+volumes:
+  openreach-data:

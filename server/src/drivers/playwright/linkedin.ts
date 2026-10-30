@@ -23,6 +23,10 @@ export interface PlaywrightOptions {
   headless?: boolean;
   executablePath?: string;
   timezone?: string;
+  // Tests use this to route linkedin.com to local fixtures.
+  onContext?: (ctx: BrowserContext) => Promise<void>;
+  // Multiplies every human-like pause (tests use 0).
+  pace?: number;
 }
 
 const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
@@ -55,19 +59,22 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     await this.ctx.addCookies([
       { name: 'li_at', value: this.o.liAt, domain: '.linkedin.com', path: '/', httpOnly: true, secure: true, sameSite: 'None' },
     ]);
+    await this.o.onContext?.(this.ctx);
     this.page = this.ctx.pages()[0] ?? (await this.ctx.newPage());
     this.page.setDefaultTimeout(20_000);
     return this.page;
   }
 
   private async pause(lo = 0.8, hi = 2.4) {
-    await new Promise((r) => setTimeout(r, rand(lo, hi) * 1000));
+    await new Promise((r) => setTimeout(r, rand(lo, hi) * 1000 * (this.o.pace ?? 1)));
   }
 
   private async go(url: string): Promise<Page> {
     const page = await this.open();
     const res = await page.goto(url, { waitUntil: 'domcontentloaded' }).catch((e: Error) => {
-      throw new DriverError('TRANSIENT', `Navigation failed: ${e.message}`);
+      // An invalid li_at typically sends LinkedIn into a login redirect loop.
+      if (/ERR_TOO_MANY_REDIRECTS/.test(e.message)) throw new DriverError('SESSION_EXPIRED', 'LinkedIn keeps redirecting; the session cookie is probably invalid');
+      throw new DriverError('TRANSIENT', `Navigation failed: ${e.message.split('\n')[0]}`);
     });
     this.guard(page);
     if (res && res.status() === 999) throw new DriverError('LIMIT_REACHED', 'LinkedIn is throttling this account (HTTP 999)');
@@ -125,7 +132,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   private async type(locator: Locator, text: string) {
     await locator.click();
     for (const ch of text) {
-      await locator.page().keyboard.type(ch, { delay: rand(25, 90) });
+      await locator.page().keyboard.type(ch, { delay: rand(25, 90) * (this.o.pace ?? 1) });
     }
   }
 
@@ -276,7 +283,8 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     await this.pause();
     await page.locator(SEL.messageSend).last().click();
     await this.pause(1.5, 3);
-    await page.locator(SEL.messageOverlayClose).last().click().catch(() => {});
+    const close = page.locator(SEL.messageOverlayClose).last();
+    if (await close.count()) await close.click().catch(() => {});
   }
 
   async recentConnections(limit: number): Promise<Person[]> {

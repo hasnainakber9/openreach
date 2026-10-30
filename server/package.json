@@ -20,7 +20,7 @@
     "zod": "^3.25.76"
   },
   "optionalDependencies": {
-    "playwright": "^1.55.0"
+    "playwright": "1.55.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
