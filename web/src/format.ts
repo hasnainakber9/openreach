@@ -1,4 +1,4 @@
-import type { ActionType, ConditionKind } from './api';
+import { serverNow, type ActionType, type ConditionKind } from './api';
 
 export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted' | 'replied', string> = {
   view_profile: 'View profile',
@@ -22,7 +22,7 @@ export const CONDITION_LABELS: Record<ConditionKind, string> = {
   replied: 'Has replied',
 };
 
-export function timeAgo(ms: number | null | undefined, now = Date.now()): string {
+export function timeAgo(ms: number | null | undefined, now = serverNow()): string {
   if (!ms) return '—';
   const s = Math.round((now - ms) / 1000);
   const abs = Math.abs(s);

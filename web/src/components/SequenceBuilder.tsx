@@ -334,7 +334,7 @@ function TemplateField({ label, value, onChange, hint, limit, rows = 4 }: { labe
       </div>
       {preview && (
         <div>
-          <div className="spread field-hint" style={{ marginBottom: 4 }}>
+          <div className="field-hint" style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
             <span>Preview for {preview.sampleLead}</span>
             {limit && <span style={{ color: preview.length > limit ? 'var(--critical-text)' : undefined }}>{preview.length}/{limit}</span>}
           </div>

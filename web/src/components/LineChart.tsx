@@ -30,7 +30,7 @@ export function LineChart({ data, series, xKey, height = 240, formatX }: { data:
   const x = (i: number) => pad.left + (data.length <= 1 ? w / 2 : (i / (data.length - 1)) * w);
   const y = (v: number) => pad.top + h - (v / top) * h;
   const ticks = Array.from({ length: Math.round(top / step) + 1 }, (_, i) => i * step);
-  const labelEvery = Math.ceil(data.length / 8);
+  const labelEvery = Math.max(1, Math.ceil(data.length / Math.max(2, Math.floor(w / 72))));
 
   const onMove = (e: React.PointerEvent) => {
     const box = ref.current!.getBoundingClientRect();

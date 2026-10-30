@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { api, useApi } from './api';
+import { api, syncClock, useApi } from './api';
 import { Button, ErrorNote, Field } from './components/ui';
 import Accounts from './pages/Accounts';
 import CampaignDetail from './pages/CampaignDetail';
@@ -23,6 +23,7 @@ export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
 
   useEffect(() => {
+    void syncClock().catch(() => {});
     api<{ user: Me }>('/api/auth/me')
       .then((r) => setMe(r.user))
       .catch(() => setMe(null));

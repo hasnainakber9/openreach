@@ -2,11 +2,15 @@ import { acceleratedClock, realClock } from './clock.js';
 import { loadConfig } from './config.js';
 import { buildApp } from './app.js';
 import { buildContext } from './context.js';
+import { DB } from './db/db.js';
 import { Engine } from './engine/engine.js';
 
 const config = loadConfig();
-const clock = config.demoSpeed > 1 ? acceleratedClock(config.demoSpeed) : realClock;
-const ctx = buildContext(config, clock);
+const db = new DB(config.dbPath);
+// A sped-up demo clock resumes after the last recorded activity, so restarts never move time backwards.
+const lastSeen = db.get<{ t: number | null }>('SELECT MAX(created_at) AS t FROM activity')?.t ?? 0;
+const clock = config.demoSpeed > 1 ? acceleratedClock(config.demoSpeed, Math.max(Date.now(), lastSeen + 1)) : realClock;
+const ctx = buildContext(config, clock, { db });
 const app = await buildApp(ctx, { logger: process.env.LOG_REQUESTS === 'true' });
 const engine = new Engine(ctx);
 

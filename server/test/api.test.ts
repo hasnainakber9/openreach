@@ -102,6 +102,13 @@ describe('HTTP API', () => {
     expect((await call('GET', '/api/team')).body).toHaveLength(2);
   });
 
+  it('throttles repeated failed logins', async () => {
+    const { call } = await setup();
+    await call('POST', '/api/auth/register', { name: 'Ana', email: 'ana@example.com', password: 'correct-horse' });
+    for (let i = 0; i < 10; i++) expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'wrong' })).status).toBe(401);
+    expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'correct-horse' })).status).toBe(429);
+  });
+
   it('maps common CSV headers', () => {
     const rows = csvToLeads('﻿First Name,Last Name,Profile URL,Job Title,Email Address,Tags\nA,B,https://linkedin.com/in/ab,CEO,a@b.co,vip;warm\n');
     expect(rows[0]).toMatchObject({ firstName: 'A', lastName: 'B', title: 'CEO', email: 'a@b.co', tags: ['vip', 'warm'] });

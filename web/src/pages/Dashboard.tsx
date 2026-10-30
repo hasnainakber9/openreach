@@ -25,7 +25,7 @@ export default function Dashboard() {
   const analytics = useApi<Analytics>(`/api/analytics?days=${days}`, 20_000);
   const accounts = useApi<Account[]>('/api/accounts', 20_000);
   const campaigns = useApi<Campaign[]>('/api/campaigns', 20_000);
-  const feed = useApi<any[]>('/api/activity?limit=25', 10_000);
+  const feed = useApi<any[]>('/api/activity?limit=12', 10_000);
   const a = analytics.data;
 
   if (accounts.data && !accounts.data.length) {
@@ -85,7 +85,7 @@ export default function Dashboard() {
         <Stat label="Reply rate" value={pct(a?.replyRate ?? 0)} sub={`${a?.funnel.replied ?? 0} people replied`} />
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', marginBottom: 16 }}>
+      <div className="grid grid-main-side" style={{ marginBottom: 16 }}>
         <div className="card">
           <div className="card-head">
             <h2>Daily activity</h2>
@@ -110,7 +110,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-3">
+      <div className="grid grid-3" style={{ alignItems: 'start' }}>
         <div className="card">
           <div className="card-head">
             <h2>LinkedIn accounts</h2>

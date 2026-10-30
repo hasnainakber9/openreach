@@ -8,6 +8,10 @@ import { HttpError, idParam, parse, requireAdmin, user, type SessionUser } from 
 export const SESSION_COOKIE = 'or_session';
 const SESSION_DAYS = 30;
 
+// Simple in-memory brake on password guessing: 10 failures per email+IP per 15 minutes.
+const failures = new Map<string, { n: number; until: number }>();
+const FAIL_WINDOW = 15 * 60_000;
+
 const credentials = z.object({ email: z.string().email(), password: z.string().min(8, 'Password must be at least 8 characters') });
 
 export function sessionUser(ctx: Ctx, tokenValue: string | undefined): SessionUser | null {
@@ -51,8 +55,15 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
 
   app.post('/api/auth/login', async (req, reply) => {
     const body = parse(z.object({ email: z.string(), password: z.string() }), req.body);
+    const key = `${body.email.toLowerCase()}|${req.ip}`;
+    const f = failures.get(key);
+    if (f && f.n >= 10 && f.until > Date.now()) throw new HttpError(429, 'Too many failed attempts. Try again in 15 minutes.');
     const u = ctx.db.get<{ id: number; password_hash: string }>('SELECT id, password_hash FROM users WHERE email = ?', [body.email]);
-    if (!u || !verifyPassword(body.password, u.password_hash)) throw new HttpError(401, 'Wrong email or password');
+    if (!u || !verifyPassword(body.password, u.password_hash)) {
+      failures.set(key, { n: (f && f.until > Date.now() ? f.n : 0) + 1, until: Date.now() + FAIL_WINDOW });
+      throw new HttpError(401, 'Wrong email or password');
+    }
+    failures.delete(key);
     startSession(u.id, reply);
     return me(u.id);
   });

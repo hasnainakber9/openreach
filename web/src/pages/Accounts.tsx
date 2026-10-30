@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, useApi, type Account } from '../api';
+import { api, serverNow, useApi, type Account } from '../api';
 import { Button, Empty, ErrorNote, Field, Meter, Modal, Pill, Toggle, useAction } from '../components/ui';
 import { ACTION_LABELS, timeAgo, WEEKDAYS } from '../format';
 
@@ -57,7 +57,7 @@ export default function Accounts() {
               <Pill status={a.status} />
             </div>
             {a.statusMessage && <div className="note note-error">{a.statusMessage}</div>}
-            {Object.entries(a.cooldowns).some(([, t]) => t > Date.now()) && (
+            {Object.entries(a.cooldowns).some(([, t]) => t > serverNow()) && (
               <div className="note note-warning">LinkedIn pushed back on {Object.keys(a.cooldowns).map((k) => ACTION_LABELS[k as keyof typeof ACTION_LABELS] ?? k).join(', ')}; that action is paused for 24 hours.</div>
             )}
             {a.warmup && a.effectiveLimits.connect < (a.limits.connect ?? DEFAULTS.connect) && (

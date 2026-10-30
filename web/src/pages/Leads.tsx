@@ -57,7 +57,7 @@ export default function Leads() {
         </div>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: '240px minmax(0, 1fr)', alignItems: 'start' }}>
+      <div className="grid grid-side-main">
         <div className="card" style={{ padding: 8 }}>
           <nav className="nav">
             <a href="#" className={listId === null ? 'active' : ''} onClick={(e) => (e.preventDefault(), setListId(null), setPage(1))}>

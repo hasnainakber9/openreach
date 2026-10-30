@@ -86,7 +86,8 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
   app.get('/api/webhooks', async (req) => {
     return ctx.db
       .all<any>('SELECT id, url, events, secret, active, last_status AS lastStatus, created_at AS createdAt FROM webhooks WHERE workspace_id = ? ORDER BY id', [user(req).workspace_id])
-      .map((h) => ({ ...h, events: json(h.events, []), active: !!h.active }));
+      // Only admins can see signing secrets.
+      .map((h) => ({ ...h, secret: user(req).role === 'member' ? null : h.secret, events: json(h.events, []), active: !!h.active }));
   });
 
   app.get('/api/webhooks/events', async () => WEBHOOK_EVENTS);

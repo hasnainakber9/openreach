@@ -6,8 +6,10 @@ export interface Clock {
 
 export const realClock: Clock = { now: () => Date.now() };
 
-export function acceleratedClock(speed: number, origin = Date.now()): Clock {
-  return { now: () => origin + (Date.now() - origin) * speed };
+// Starts at `base` and runs `speed` times faster than the wall clock.
+export function acceleratedClock(speed: number, base = Date.now()): Clock {
+  const t0 = Date.now();
+  return { now: () => base + (Date.now() - t0) * speed };
 }
 
 export class ManualClock implements Clock {

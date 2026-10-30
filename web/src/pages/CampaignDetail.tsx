@@ -264,7 +264,7 @@ function Results({ campaign }: { campaign: Campaign }) {
         <Stat label="Acceptance rate" value={pct(s.acceptanceRate)} sub={`${s.funnel.accepted} accepted`} />
         <Stat label="Reply rate" value={pct(s.replyRate)} sub={`${s.funnel.replied} replied`} />
       </div>
-      <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)' }}>
+      <div className="grid grid-main-side">
         <div className="card">
           <h2 style={{ marginBottom: 12 }}>Last 30 days</h2>
           {analytics.data && (

@@ -263,7 +263,7 @@ function Webhooks() {
             ))}
           </div>
           <div className="muted" style={{ fontSize: 13 }}>
-            Secret: <code>{h.secret}</code> · Last delivery: {h.lastStatus ?? 'none yet'} · added {timeAgo(h.createdAt)}
+            {h.secret && <>Secret: <code>{h.secret}</code> · </>}Last delivery: {h.lastStatus ?? 'none yet'} · added {timeAgo(h.createdAt)}
           </div>
         </div>
       ))}

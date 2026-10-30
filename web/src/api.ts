@@ -21,6 +21,15 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
   return data as T;
 }
 
+// The scheduler's clock can run faster than real time (DEMO_SPEED), so relative times are
+// computed against the server's clock rather than the browser's.
+let clock = { server: Date.now(), local: Date.now(), speed: 1 };
+export const serverNow = () => clock.server + (Date.now() - clock.local) * clock.speed;
+export async function syncClock() {
+  const h = await api<{ time: number; demoSpeed: number }>('/api/health');
+  clock = { server: h.time, local: Date.now(), speed: h.demoSpeed || 1 };
+}
+
 // Fetches `path` and keeps it fresh. Pass `poll` (ms) to refresh in the background.
 export function useApi<T = any>(path: string | null, poll?: number) {
   const [data, setData] = useState<T | null>(null);
