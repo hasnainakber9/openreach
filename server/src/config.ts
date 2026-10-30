@@ -10,6 +10,7 @@ export interface Config {
   appSecret: string;
   demoSpeed: number;
   allowSignup: boolean;
+  setupToken?: string;
   tickMs: number;
   syncIntervalMin: number;
   simLatencyMs: number;
@@ -30,6 +31,8 @@ export function loadConfig(env = process.env): Config {
     appSecret: env.APP_SECRET ?? localSecret(dataDir),
     demoSpeed: Number(env.DEMO_SPEED ?? 1),
     allowSignup: env.ALLOW_SIGNUP === 'true',
+    // When set, creating the first (owner) account requires this token, so a public URL can't be claimed by a stranger.
+    setupToken: env.SETUP_TOKEN || undefined,
     tickMs: Number(env.TICK_MS ?? 2000),
     syncIntervalMin: Number(env.SYNC_INTERVAL_MIN ?? 45),
     simLatencyMs: Number(env.SIM_LATENCY_MS ?? 150),

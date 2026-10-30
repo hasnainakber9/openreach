@@ -1,11 +1,14 @@
 services:
   openreach:
-    build: .
+    # Prebuilt image from GitHub Actions. To build from source instead, replace this line with `build: .`
+    image: ghcr.io/hasnainakber9/openreach:latest
     ports:
       - "8787:8787"
     environment:
-      # Change this before first start and keep it safe: it encrypts saved LinkedIn sessions.
+      # Set both before the first start. APP_SECRET encrypts saved LinkedIn sessions: keep it safe and never change it.
       APP_SECRET: change-me-to-a-long-random-string
+      # Required to create the first (owner) account, so nobody else can claim your server.
+      SETUP_TOKEN: change-me-too
     volumes:
       - openreach-data:/data
     restart: unless-stopped

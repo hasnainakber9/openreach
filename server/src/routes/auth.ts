@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
+import { timingSafeEqual } from 'node:crypto';
 import { hashPassword, token, verifyPassword } from '../services/crypto.js';
 import { HttpError, idParam, parse, requireAdmin, user, type SessionUser } from '../http.js';
 
@@ -37,13 +38,18 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
 
   app.get('/api/auth/status', async () => {
     const users = ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM users')!.n;
-    return { needsSetup: users === 0, allowSignup: users === 0 || ctx.config.allowSignup };
+    return { needsSetup: users === 0, allowSignup: users === 0 || ctx.config.allowSignup, setupTokenRequired: users === 0 && !!ctx.config.setupToken };
   });
 
   app.post('/api/auth/register', async (req, reply) => {
-    const body = parse(credentials.extend({ name: z.string().min(1).max(100), workspace: z.string().min(1).max(100).default('My workspace') }), req.body);
+    const body = parse(credentials.extend({ name: z.string().min(1).max(100), workspace: z.string().min(1).max(100).default('My workspace'), setupToken: z.string().optional() }), req.body);
     const users = ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM users')!.n;
     if (users > 0 && !ctx.config.allowSignup) throw new HttpError(403, 'Sign-up is closed. Ask an admin to add you to their workspace.');
+    if (users === 0 && ctx.config.setupToken) {
+      const given = Buffer.from(body.setupToken ?? '');
+      const expected = Buffer.from(ctx.config.setupToken);
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new HttpError(403, 'Wrong setup token. Use the SETUP_TOKEN value from your server settings.');
+    }
     if (ctx.db.get('SELECT 1 FROM users WHERE email = ?', [body.email])) throw new HttpError(409, 'That email is already registered');
     const id = ctx.db.tx(() => {
       const ws = ctx.db.insert('workspaces', { name: body.workspace, created_at: Date.now() });

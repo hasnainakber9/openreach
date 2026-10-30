@@ -51,13 +51,32 @@ npm test           # engine, API and unit tests (vitest)
 npm run typecheck
 ```
 
-### Docker
+## Deploy
+
+OpenReach needs an **always-on** server with a **persistent disk**: the campaign engine runs continuously, and the database lives on disk. Serverless platforms such as Vercel or Netlify functions can't run it.
+
+### Render (one click)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hasnainakber9/openreach)
+
+The button reads [`render.yaml`](render.yaml). It creates a Docker web service on the Starter plan, a 1 GB disk mounted at `/data`, and a generated `APP_SECRET` and `SETUP_TOKEN`. When the service is live:
+
+1. In Render, open the service, go to **Environment**, and copy the `SETUP_TOKEN` value.
+2. Open your `https://openreach-xxxx.onrender.com` URL and create the owner account with that token.
+
+### Any Docker host (VPS, Railway, Fly.io, home server)
+
+Each push to `main` publishes an image to `ghcr.io/hasnainakber9/openreach:latest` (see `.github/workflows/ci.yml`).
 
 ```bash
-docker compose up -d --build
+curl -O https://raw.githubusercontent.com/hasnainakber9/openreach/main/docker-compose.yml
+# edit APP_SECRET and SETUP_TOKEN in docker-compose.yml, then:
+docker compose up -d
 ```
 
-Data lives in the `openreach-data` volume. Set `APP_SECRET` in `docker-compose.yml` before the first start.
+The app listens on port 8787. Put it behind HTTPS (Caddy, nginx or your platform's proxy) before entering real LinkedIn cookies. Data lives in the `openreach-data` volume.
+
+To build from source instead, run `docker build -t openreach .`.
 
 ## Connecting a real LinkedIn account
 
@@ -105,6 +124,7 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | |
 | `DATA_DIR` | `./data` | SQLite database, browser profiles, generated secret |
 | `APP_SECRET` | generated into `DATA_DIR/app-secret` | Key for encrypting session cookies and SMTP passwords. Back it up: changing it makes saved sessions unreadable. |
+| `SETUP_TOKEN` | | If set, creating the first (owner) account requires this value. **Set it on any public server**, or whoever opens the URL first owns the installation. |
 | `ALLOW_SIGNUP` | `false` | Let anyone create a new workspace after the first user |
 | `RUN_WORKER` | `true` | Set `false` to run the API without the campaign engine |
 | `TICK_MS` | `2000` | Scheduler loop interval |

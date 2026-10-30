@@ -24,7 +24,7 @@ describe('HTTP API', () => {
   it('requires a session', async () => {
     const { call } = await setup();
     expect((await call('GET', '/api/campaigns')).status).toBe(401);
-    expect((await call('GET', '/api/auth/status')).body).toEqual({ needsSetup: true, allowSignup: true });
+    expect((await call('GET', '/api/auth/status')).body).toEqual({ needsSetup: true, allowSignup: true, setupTokenRequired: false });
   });
 
   it('runs the whole flow: sign up, account, CSV import, campaign, inbox, analytics, export', async () => {
@@ -100,6 +100,16 @@ describe('HTTP API', () => {
     const added = await call('POST', '/api/team', { name: 'Bo', email: 'bo@example.com', password: 'correct-horse' });
     expect(added.status).toBe(200);
     expect((await call('GET', '/api/team')).body).toHaveLength(2);
+  });
+
+  it('requires the setup token for the first account when one is configured', async () => {
+    const { call, w } = await setup();
+    w.ctx.config.setupToken = 's3cret-token';
+    expect((await call('GET', '/api/auth/status')).body.setupTokenRequired).toBe(true);
+    const base = { name: 'Ana', email: 'ana@example.com', password: 'correct-horse' };
+    expect((await call('POST', '/api/auth/register', base)).status).toBe(403);
+    expect((await call('POST', '/api/auth/register', { ...base, setupToken: 'wrong' })).status).toBe(403);
+    expect((await call('POST', '/api/auth/register', { ...base, setupToken: 's3cret-token' })).status).toBe(200);
   });
 
   it('throttles repeated failed logins', async () => {

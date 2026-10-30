@@ -95,9 +95,9 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
 }
 
 function SignIn({ onDone }: { onDone: (me: Me) => void }) {
-  const status = useApi<{ needsSetup: boolean; allowSignup: boolean }>('/api/auth/status');
+  const status = useApi<{ needsSetup: boolean; allowSignup: boolean; setupTokenRequired?: boolean }>('/api/auth/status');
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [form, setForm] = useState({ name: '', email: '', password: '', workspace: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', workspace: '', setupToken: '' });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const register = status.data?.needsSetup || mode === 'register';
@@ -145,6 +145,11 @@ function SignIn({ onDone }: { onDone: (me: Me) => void }) {
               <input type="text" value={form.workspace} onChange={set('workspace')} placeholder="Acme Sales" />
             </Field>
           </>
+        )}
+        {status.data.setupTokenRequired && (
+          <Field label="Setup token" hint="The SETUP_TOKEN value from your hosting dashboard. It proves you own this server.">
+            <input type="password" value={form.setupToken} onChange={set('setupToken')} required autoComplete="off" />
+          </Field>
         )}
         <Field label="Email">
           <input type="email" value={form.email} onChange={set('email')} required autoFocus={!register} autoComplete="email" />

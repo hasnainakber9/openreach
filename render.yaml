@@ -1,0 +1,20 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# One always-on Docker service with a persistent disk for the SQLite database and browser profiles.
+services:
+  - type: web
+    name: openreach
+    runtime: docker
+    plan: starter # persistent disks need a paid instance; the free tier sleeps and loses data
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: APP_SECRET # encrypts saved LinkedIn sessions; never change it after first start
+        generateValue: true
+      - key: SETUP_TOKEN # needed to create the first (owner) account; find it under Environment
+        generateValue: true
+    disk:
+      name: openreach-data
+      mountPath: /data
+      sizeGB: 1
