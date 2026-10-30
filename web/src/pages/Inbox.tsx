@@ -67,7 +67,7 @@ export default function Inbox() {
                     </option>
                   ))}
                 </select>
-                <label className="row" style={{ gap: 4, whiteSpace: 'nowrap', fontSize: 13 }}>
+                <label className="row" style={{ gap: 4, whiteSpace: 'nowrap', fontSize: 13, flexWrap: 'nowrap', flex: 'none' }}>
                   <input type="checkbox" checked={unreadOnly} onChange={(e) => setUnreadOnly(e.target.checked)} /> Unread
                 </label>
               </div>
