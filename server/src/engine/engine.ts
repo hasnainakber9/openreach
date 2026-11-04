@@ -10,9 +10,10 @@ import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLe
 import type { AccountRow, CampaignLeadRow, CampaignLeadState, CampaignRow, ConnectionStatus, LeadRow } from '../types.js';
 import { exhaustedActions, schedule } from './capacity.js';
 import { isWorkingTime, randomDelay } from './limits.js';
-import { ACTION_TYPES, FREE_NODE_TYPES, type ActionType, type SeqNode } from './sequence.js';
+import { ACTION_TYPES, FREE_NODE_TYPES, isVariantNode, withVariant, type ActionType, type SeqNode } from './sequence.js';
 import { syncAccount } from './sync.js';
 import { clampNote, leadVars, render } from './template.js';
+import { assignVariant } from './variants.js';
 
 // Kept here too: routes and tests import them from the engine.
 export { accountLimits, exhaustedActions, schedule, usage } from './capacity.js';
@@ -249,9 +250,9 @@ export class Engine {
     const campaign = this.campaign(job.campaign_id);
     const seq = campaignSequence(campaign);
     const settings = campaignSettings(campaign);
-    const node = seq.nodes[job.node_id!] as Exclude<SeqNode, { type: 'wait' | 'condition' }>;
+    const step = seq.nodes[job.node_id!] as Exclude<SeqNode, { type: 'wait' | 'condition' }>;
     let lead = this.lead(job.lead_id);
-    const base = { workspaceId: a.workspace_id, accountId: a.id, campaignId: campaign.id, leadId: lead.id, type: node.type, timezone: a.timezone };
+    const base: Parameters<typeof logActivity>[1] = { workspaceId: a.workspace_id, accountId: a.id, campaignId: campaign.id, leadId: lead.id, type: step.type, timezone: a.timezone, nodeId: step.id };
 
     if (settings.stopOnReply && lead.replied_at) {
       this.finish(campaign, job, 'replied');
@@ -270,6 +271,15 @@ export class Engine {
       return false;
     }
 
+    // Lease the lead while the action runs (a browser action takes seconds): if it is released
+    // meanwhile, no other sender sees it as due until this one has finished and moved it on.
+    if (ctx.db.run('UPDATE campaign_leads SET next_run_at = ? WHERE id = ? AND account_id = ?', [ctx.clock.now() + ACTION_LEASE, job.id, a.id]).changes === 0) return false;
+
+    // A/B steps send the lead's variant; it is logged with every outcome so results can be split by it.
+    const variant = isVariantNode(step) ? ctx.db.tx(() => assignVariant(ctx, campaign, job, step)) : null;
+    const node = isVariantNode(step) ? withVariant(step, variant) : step;
+    if (variant) base.variant = variant;
+
     const vars = leadVars({ ...lead, custom: json(lead.custom, {}) });
     const advance = (status: 'ok' | 'skipped', detail?: string) => {
       ctx.db.tx(() => {
@@ -286,16 +296,13 @@ export class Engine {
         ctx.webhooks.emit(a.workspace_id, 'action.performed', {
           type: node.type,
           detail,
+          ...(variant ? { nodeId: node.id, variant } : {}),
           campaign: { id: campaign.id, name: campaign.name },
           lead: publicLead(this.lead(lead.id)),
           account: { id: a.id, name: a.name },
         });
       }
     };
-
-    // Lease the lead while the action runs (a browser action takes seconds): if it is released
-    // meanwhile, no other sender sees it as due until this one has finished and moved it on.
-    if (ctx.db.run('UPDATE campaign_leads SET next_run_at = ? WHERE id = ? AND account_id = ?', [ctx.clock.now() + ACTION_LEASE, job.id, a.id]).changes === 0) return false;
 
     try {
       if (node.type === 'email') {

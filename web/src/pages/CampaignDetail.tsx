@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, useApi, type Account, type Campaign, type CampaignLead, type LeadList, type Sequence } from '../api';
+import { api, useApi, type AbTestReport, type Account, type Campaign, type CampaignLead, type LeadList, type SeqNode, type Sequence, type VariantId } from '../api';
 import { Funnel, LineChart } from '../components/LineChart';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
 import { Button, CheckList, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
@@ -306,6 +306,7 @@ function Results({ campaign }: { campaign: Campaign }) {
           />
         </div>
       </div>
+      <AbTests campaign={campaign} />
       {!!s.bySender.length && (
         <div className="card card-flush">
           <h2 style={{ padding: '16px 16px 4px' }}>By sender</h2>
@@ -358,7 +359,9 @@ function Results({ campaign }: { campaign: Campaign }) {
             <div style={{ minWidth: 0, flex: 1 }}>
               <div className="spread">
                 <span>
-                  <strong>{ACTION_LABELS[f.type as keyof typeof ACTION_LABELS] ?? f.type}</strong> · {f.leadName}
+                  <strong>{ACTION_LABELS[f.type as keyof typeof ACTION_LABELS] ?? f.type}</strong>
+                  {f.leadName?.trim() && <> · {f.leadName}</>}
+                  {f.variant && f.type !== 'ab_winner' && <span className="muted"> · variant {f.variant}</span>}
                   {f.status !== 'ok' && <span className="muted"> ({f.status})</span>}
                 </span>
                 <span className="muted" style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>
@@ -371,6 +374,110 @@ function Results({ campaign }: { campaign: Campaign }) {
         ))}
       </div>
     </div>
+  );
+}
+
+// The text a variant sends, for the results table.
+function variantText(node: SeqNode | undefined, id: VariantId): string {
+  if (!node || (node.type !== 'connect' && node.type !== 'message' && node.type !== 'email')) return '';
+  const v = (node.variants as { id: VariantId; note?: string; text?: string; subject?: string }[] | undefined)?.find((x) => x.id === id);
+  if (!v) return '';
+  return (v.note ?? v.text ?? v.subject ?? '').trim() || (node.type === 'connect' ? 'No note' : '');
+}
+
+// One card per A/B tested step: sends and rates per variant, the winner (or the leader once the
+// gap is statistically clear), and buttons to choose a variant by hand.
+function AbTests({ campaign }: { campaign: Campaign }) {
+  const report = useApi<{ nodes: AbTestReport[] }>(`/api/campaigns/${campaign.id}/variants`, 20_000);
+  const { busy, run } = useAction();
+  if (!report.data?.nodes.length) return null;
+
+  const choose = (t: AbTestReport, variant: VariantId | null) =>
+    run(
+      `${t.nodeId}:${variant}`,
+      async () => report.setData(await api(`/api/campaigns/${campaign.id}/nodes/${t.nodeId}/winner`, { body: { variant } })),
+      variant
+        ? `Every new lead at this step now gets variant ${variant}`
+        : `Leads are split between the variants again${t.autoPickAfter ? '; no winner will be picked automatically' : ''}`,
+    );
+
+  return (
+    <>
+      {report.data.nodes.map((t) => {
+        const node = campaign.sequence?.nodes[t.nodeId];
+        const metricLabel = t.metric === 'accepted' ? 'acceptance rate' : 'reply rate';
+        const sent = t.variants.reduce((n, v) => n + v.sent, 0);
+        const called = t.variants.some((v) => v.leader && v.significant);
+        return (
+          <div className="card card-flush" key={t.nodeId}>
+            <div className="spread" style={{ padding: '16px 16px 4px', flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <h2>A/B test: {stepLabel(campaign.sequence, t.nodeId)}</h2>
+                <p className="muted" style={{ margin: '2px 0 0', fontSize: 13 }}>
+                  Compared by {metricLabel} · {sent} sent
+                  {t.winner
+                    ? ` · Variant ${t.winner} ${t.decidedBy === 'auto' ? 'was picked automatically' : 'was chosen by hand'}; new leads all get it. Editing or removing it in the sequence ends the pick.`
+                    : t.autoPickAfter && t.decidedBy === 'user'
+                      ? ' · Leads were split again by hand, so no winner is picked automatically. Change the auto-pick setting to turn it back on.'
+                      : t.autoPickAfter
+                        ? ` · Once ${t.autoPickAfter} are sent, the variant ahead is picked automatically.`
+                        : ''}
+                  {!t.winner && !called && sent > 0 && ' Not enough data to call a winner yet: each variant needs 20 sends and a clear gap.'}
+                </p>
+              </div>
+              {t.winner && (
+                <Button size="sm" busy={busy === `${t.nodeId}:null`} onClick={() => choose(t, null)}>
+                  Split leads again
+                </Button>
+              )}
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Variant</th>
+                    <th className="num">Sent</th>
+                    {t.nodeType === 'connect' && <th className="num">Accepted</th>}
+                    <th className="num">Replied</th>
+                    <th className="num">{t.metric === 'accepted' ? 'Acceptance' : 'Reply rate'}</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {t.variants.map((v) => (
+                    <tr key={v.id}>
+                      <td>
+                        <div className="row">
+                          <span className="cell-title">Variant {v.id}</span>
+                          {t.winner === v.id ? <Pill status="winner">Winner</Pill> : !t.winner && v.leader && v.significant ? <Pill status="leading">Leading</Pill> : null}
+                        </div>
+                        <div className="cell-sub variant-text" title={variantText(node, v.id)}>
+                          {variantText(node, v.id)}
+                        </div>
+                      </td>
+                      <td className="num">{v.sent}</td>
+                      {t.nodeType === 'connect' && <td className="num">{v.accepted}</td>}
+                      <td className="num">{v.replied}</td>
+                      <td className="num">
+                        <strong>{pct(v.rate)}</strong>
+                        {!t.winner && v.leader && !v.significant && <div className="cell-sub">ahead so far</div>}
+                      </td>
+                      <td className="num">
+                        {t.winner !== v.id && (
+                          <Button size="sm" variant="ghost" busy={busy === `${t.nodeId}:${v.id}`} onClick={() => choose(t, v.id)}>
+                            Use this variant
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
+    </>
   );
 }
 

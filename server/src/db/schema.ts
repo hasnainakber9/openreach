@@ -360,4 +360,50 @@ export const MIGRATIONS: string[] = [
       AND EXISTS (SELECT 1 FROM activity a WHERE a.lead_id = l.id AND a.account_id IN (SELECT id FROM accounts)
                     AND (a.type IN ('connect', 'accepted', 'message') OR (a.type = 'view_profile' AND a.status = 'ok')));
   `,
+  // [M3] g1-abtest: message variants, per-lead assignment, per-step winners
+  `
+  ALTER TABLE activity ADD COLUMN node_id TEXT;
+  ALTER TABLE activity ADD COLUMN variant TEXT;
+  CREATE INDEX activity_campaign_node ON activity(campaign_id, node_id, variant);
+  -- The variant a lead got at a step; fixed once assigned so retries send the same text.
+  CREATE TABLE campaign_lead_variants (
+    campaign_lead_id INTEGER NOT NULL REFERENCES campaign_leads(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    assigned_at INTEGER NOT NULL,
+    PRIMARY KEY (campaign_lead_id, node_id)
+  );
+  -- Kept outside the sequence JSON so saving the builder's draft never overwrites a winner.
+  CREATE TABLE campaign_node_winners (
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    decided_by TEXT NOT NULL,
+    decided_at INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, node_id)
+  );
+  `,
+  // [M3b] g1-abtest follow-up: a winner row with a NULL variant records "split again" (it stops auto-pick),
+  // and a variant's results only count sends made since its text last changed.
+  `
+  CREATE TABLE campaign_node_winners_new (
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    variant TEXT,
+    decided_by TEXT NOT NULL,
+    decided_at INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, node_id)
+  );
+  INSERT INTO campaign_node_winners_new SELECT campaign_id, node_id, variant, decided_by, decided_at FROM campaign_node_winners;
+  DROP TABLE campaign_node_winners;
+  ALTER TABLE campaign_node_winners_new RENAME TO campaign_node_winners;
+  -- When a variant letter was (re)introduced or its text edited; earlier sends under that letter are a different text.
+  CREATE TABLE campaign_variant_starts (
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, node_id, variant)
+  );
+  `,
 ];

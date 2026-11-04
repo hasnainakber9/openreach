@@ -2,8 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { CampaignSettingsSchema, defaultSequence, SequenceSchema, validateSequence, type Sequence } from '../engine/sequence.js';
+import { CampaignSettingsSchema, defaultSequence, isAbTest, isVariantNode, nodeVariants, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
 import { leadVars, render, unknownVariables, VARIABLE_NAMES } from '../engine/template.js';
+import { setWinner, syncVariants, variantReport } from '../engine/variants.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
 import { contactTypesSql } from '../services/activity.js';
 import { addLeadsToCampaign, campaignSequence } from '../services/leads.js';
@@ -177,7 +178,10 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     ctx.db.tx(() => {
       ctx.db.update('campaigns', c.id, cols);
       if (senders) setCampaignAccounts(ctx, c.id, senders);
-      if (body.sequence) reconcile(ctx, c.id, body.sequence);
+      if (body.sequence) {
+        syncVariants(ctx, c.id, campaignSequence(c), body.sequence);
+        reconcile(ctx, c.id, body.sequence);
+      }
     });
     return serialize(ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [c.id])!, true);
   });
@@ -254,6 +258,25 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     };
   });
 
+  // ---- A/B tests ---------------------------------------------------------------
+  app.get('/api/campaigns/:id/variants', async (req) => {
+    const c = load(req);
+    return { nodes: variantReport(ctx, c, campaignSequence(c)) };
+  });
+
+  // Picks a step's winner by hand (every later lead gets it), or null to split again (auto-pick then stays off).
+  app.post('/api/campaigns/:id/nodes/:nodeId/winner', async (req) => {
+    const u = requireWriter(req);
+    const c = load(req);
+    const { nodeId } = parse(z.object({ nodeId: z.string().min(1).max(64) }), req.params);
+    const { variant } = parse(z.object({ variant: z.enum(VARIANT_IDS).nullable() }), req.body);
+    const node = campaignSequence(c).nodes[nodeId];
+    if (!node || !isAbTest(node)) notFound('A/B test step');
+    if (variant && !nodeVariants(node).some((v) => v.id === variant)) throw new HttpError(400, `This step has no variant ${variant}`);
+    ctx.db.tx(() => setWinner(ctx, c, nodeId, variant, 'user', u.name));
+    return { nodes: variantReport(ctx, c, campaignSequence(c)) };
+  });
+
   app.post('/api/templates/preview', async (req) => {
     const body = parse(z.object({ template: z.string().max(20000), leadId: z.number().int().optional() }), req.body);
     const lead =
@@ -270,8 +293,12 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
 function sequenceWarnings(seq: Sequence): string[] {
   const out: string[] = [];
   for (const n of Object.values(seq.nodes)) {
-    if (n.type === 'connect' && n.note.length > 300) out.push('An invitation note is over 300 characters and will be shortened.');
-    for (const text of n.type === 'message' ? [n.text] : n.type === 'connect' ? [n.note] : n.type === 'email' ? [n.subject, n.body] : []) {
+    if (!isVariantNode(n)) continue;
+    // Every variant is checked, not just the one in the single-text fields.
+    const variants = nodeVariants(n);
+    if (n.type === 'connect' && variants.some((v) => (v.note ?? '').length > 300)) out.push('An invitation note is over 300 characters and will be shortened.');
+    if (n.abtest?.autoPickAfter && !isAbTest(n)) out.push('Automatic winner picking only works on a step with A/B variants.');
+    for (const text of variants.flatMap((v) => [v.note, v.text, v.subject, v.body]).filter((t): t is string => t != null)) {
       const unknown = unknownVariables(text);
       if (unknown.length) out.push(`Unknown variable${unknown.length > 1 ? 's' : ''} ${unknown.map((u) => `{{${u}}}`).join(', ')}: they are blank unless a lead has a custom field with that name.`);
     }

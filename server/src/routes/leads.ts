@@ -184,7 +184,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
       'SELECT c.id, c.name, cl.state, cl.node_id AS nodeId, cl.node_type AS nodeType, cl.next_run_at AS nextRunAt, cl.last_error AS lastError FROM campaign_leads cl JOIN campaigns c ON c.id = cl.campaign_id WHERE cl.lead_id = ?',
       [id],
     );
-    const activity = ctx.db.all('SELECT id, type, status, detail, created_at AS createdAt, campaign_id AS campaignId FROM activity WHERE lead_id = ? ORDER BY id DESC LIMIT 200', [id]);
+    const activity = ctx.db.all('SELECT id, type, status, detail, variant, created_at AS createdAt, campaign_id AS campaignId FROM activity WHERE lead_id = ? ORDER BY id DESC LIMIT 200', [id]);
     return { ...serializeLead(l), campaigns, activity };
   });
 

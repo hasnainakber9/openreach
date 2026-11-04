@@ -17,7 +17,7 @@ HeyReach. We write our own code, copy, UI and names. Never copy their code, text
 |---|---|---|---|
 | foundation | M1 | done | `features` sits on the `user` object of `/api/auth/me` (the web stores that object as `Me`). NAV `badge` is typed `'inbox'` only; g3-tasks-sms adds `'tasks'` with its count. Extra small files: `providers/hash.ts` (hash helpers for simulators), `test/suppression.test.ts`. |
 | g1-rotation | M2 | done | Limit/usage helpers moved to `engine/capacity.ts` (re-exported from `engine.ts`) to avoid an import cycle with `services/rotation.ts`. `chooseSender` rule 1 only returns *active* senders (a lead connected to a logged-out account is not stuck), and rule 2 leaves a lead unassigned when every sender's queue already covers its remaining capacity (score ≤ 0) instead of overbooking one. `runAccount` re-runs the global `advanceFreeSteps()` right after a sync so accepted invites move on in the same pass. `markConnected` links the `accepted` activity to the campaign only when the lead is unassigned or pinned to that account (keeps per-sender stats honest). Campaign and account mutating routes now call `requireWriter`. Seed creates two simulated seats. `enrichLead(ctx, lead, person, accountId?)`. |
-| g1-abtest | M3 | planned | |
+| g1-abtest | M3 | done | Variants are assigned when the step's action runs (after the lease, before sending), not when the lead walks onto the step, so leads waiting on limits when a winner is picked get the winner. `variantStats(rows, metric, ids?)` takes the variant ids so unsent variants show; `leader` is only set on a strict best rate (ties: none), and auto-pick (`bestVariant`) only picks that leader once every variant has a send and the leader has at least one result (an all-0% start, common while invites wait to be accepted, keeps splitting). Extra migration M3b (appended after review): `campaign_node_winners.variant` is nullable, and a NULL row with `decided_by = 'user'` records "split again" so auto-pick doesn't undo it (changing the step's `autoPickAfter` re-arms auto-pick); `campaign_variant_starts` records when a variant letter was (re)introduced or its text changed, and stats only count sends since then. Saving the sequence (`syncVariants` in the PATCH transaction) drops a winner whose variant was removed or edited. `validateSequence` refuses metric `accepted` on non-connect steps. Manual picks also log `ab_winner`. The activity feed and lead timeline show the variant; the seed's demo invite has two variants. Per-sender split of A/B results is not built. |
 | g1-sources | M4 | planned | |
 | g2-ai-writer | M5 | planned | |
 | g2-ai-replies | M6 | planned | |
@@ -803,15 +803,15 @@ stored in `campaign_node_winners`, not in the sequence JSON (so the builder's dr
   Sent = distinct leads with `ok` activity of the node's type for (campaign, node, variant). Accepted = of those, leads
   whose `lead_connections` row for the sending account (or `leads.connected_at`) is connected at or after the send.
   Replied = leads with a `replied` activity after the send.
-- `maybePickWinner(ctx, campaign, node)`: when `autoPickAfter` is set, no winner exists and total sends ≥ N, store the
-  highest-rate variant (tie → lowest id) with `decided_by = 'auto'`, log activity `ab_winner` (detail
+- `maybePickWinner(ctx, campaign, node)`: when `autoPickAfter` is set, no decision is stored and total sends ≥ N, store
+  the strict leader (none on a tie, while a variant is unsent, or while the leader has 0 results) with `decided_by = 'auto'`, log activity `ab_winner` (detail
   `"Node n3: variant B"`). Called before each new assignment.
 - Engine passes the variant's content into `perform()`; `logActivity` accepts `nodeId` and `variant` (all engine
   actions now log `node_id`).
 
 **Routes**: `GET /api/campaigns/:id/variants` (any) → `{ nodes: [{ nodeId, nodeType, metric, autoPickAfter, winner, decidedBy, variants: [{ id, sent, accepted, replied, rate, leader, significant }] }] }`;
-`POST /api/campaigns/:id/nodes/:nodeId/winner` (writer) `{ variant: 'A'..'E' | null }` (null clears; only when no auto
-lock is wanted). Template preview is called per variant as today.
+`POST /api/campaigns/:id/nodes/:nodeId/winner` (writer) `{ variant: 'A'..'E' | null }` (null splits leads again and is
+stored as a NULL-variant row, which keeps auto-pick off until the step's auto-pick setting changes). Template preview is called per variant as today.
 
 **Web**: NodeEditor gets "Add A/B variant" (turns the text into variants A and B), variant tabs A–E with remove,
 `TemplateField` + live preview per variant, and the auto-pick setting. Node summary shows "A/B: 3 variants". Results

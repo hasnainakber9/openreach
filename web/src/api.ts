@@ -69,14 +69,47 @@ export function useApi<T = any>(path: string | null, poll?: number) {
 export type ActionType = 'view_profile' | 'follow' | 'endorse' | 'like_post' | 'connect' | 'message' | 'email' | 'withdraw_invite';
 export type ConditionKind = 'is_connected' | 'accepted_within' | 'has_email' | 'replied';
 
+// A/B testing: connect, message and email steps may hold 2–5 variants (A–E). The single-text fields
+// always mirror variant A so older readers keep working.
+export type VariantId = 'A' | 'B' | 'C' | 'D' | 'E';
+export type AbMetric = 'accepted' | 'replied';
+export interface AbTest {
+  autoPickAfter: number | null;
+  metric?: AbMetric;
+}
+type AbFields<V> = { variants?: ({ id: VariantId } & V)[]; abtest?: AbTest };
+
 export type SeqNode =
   | { id: string; type: 'view_profile' | 'follow' | 'like_post' | 'withdraw_invite'; next: string | null }
   | { id: string; type: 'endorse'; count: number; next: string | null }
-  | { id: string; type: 'connect'; note: string; next: string | null }
-  | { id: string; type: 'message'; text: string; next: string | null }
-  | { id: string; type: 'email'; subject: string; body: string; next: string | null }
+  | ({ id: string; type: 'connect'; note: string; next: string | null } & AbFields<{ note: string }>)
+  | ({ id: string; type: 'message'; text: string; next: string | null } & AbFields<{ text: string }>)
+  | ({ id: string; type: 'email'; subject: string; body: string; next: string | null } & AbFields<{ subject: string; body: string }>)
   | { id: string; type: 'wait'; days: number; hours: number; next: string | null }
   | { id: string; type: 'condition'; kind: ConditionKind; withinDays: number; yes: string | null; no: string | null };
+
+export type VariantNode = Extract<SeqNode, { type: 'connect' | 'message' | 'email' }>;
+
+// Results of one A/B tested step (GET /api/campaigns/:id/variants).
+export interface VariantStat {
+  id: VariantId;
+  sent: number;
+  accepted: number;
+  replied: number;
+  rate: number;
+  leader: boolean;
+  significant: boolean;
+}
+export interface AbTestReport {
+  nodeId: string;
+  nodeType: VariantNode['type'];
+  metric: AbMetric;
+  autoPickAfter: number | null;
+  winner: VariantId | null;
+  decidedBy: 'auto' | 'user' | null;
+  decidedAt: number | null;
+  variants: VariantStat[];
+}
 
 export interface Sequence {
   start: string | null;

@@ -50,7 +50,7 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
     const extra = q.campaignId ? 'AND a.campaign_id = $camp' : '';
     if (q.campaignId) p.camp = q.campaignId;
     return ctx.db.all(
-      `SELECT a.id, a.type, a.status, a.detail, a.created_at AS createdAt, a.lead_id AS leadId, a.campaign_id AS campaignId,
+      `SELECT a.id, a.type, a.status, a.detail, a.node_id AS nodeId, a.variant, a.created_at AS createdAt, a.lead_id AS leadId, a.campaign_id AS campaignId,
               l.first_name || ' ' || l.last_name AS leadName, l.profile_url AS profileUrl, c.name AS campaignName, ac.name AS accountName
        FROM activity a LEFT JOIN leads l ON l.id = a.lead_id LEFT JOIN campaigns c ON c.id = a.campaign_id LEFT JOIN accounts ac ON ac.id = a.account_id
        WHERE a.workspace_id = $ws ${extra} ORDER BY a.id DESC LIMIT ${q.limit}`,

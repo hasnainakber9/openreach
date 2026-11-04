@@ -32,6 +32,8 @@ const STATUS_TONE: Record<string, string> = {
   completed: 'neutral',
   ok: 'good',
   untested: 'neutral',
+  winner: 'good',
+  leading: 'info',
 };
 
 const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', none: 'Not connected', ok: 'Working', untested: 'Not tested' };

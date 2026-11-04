@@ -542,6 +542,7 @@ function LeadDrawer({ id, onClose, onChanged }: { id: number; onClose: () => voi
               <div className="spread">
                 <strong>
                   {ACTION_LABELS[a.type as keyof typeof ACTION_LABELS] ?? a.type}
+                  {a.variant && <span className="muted"> · variant {a.variant}</span>}
                   {a.status !== 'ok' && <span className="muted"> ({a.status})</span>}
                 </strong>
                 <span className="muted" style={{ fontSize: 12.5 }}>

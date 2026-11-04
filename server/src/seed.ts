@@ -44,12 +44,22 @@ const listId = db.insert('lead_lists', { workspace_id: ws, name: 'Heads of Growt
 const people = await new SimulatorDriver(db, accountId, 'Demo', realClock).search('https://www.linkedin.com/search/results/people/?keywords=head%20of%20growth', 60);
 importLeads(ctx, ws, listId, people.map((p) => ({ ...personToLead(p), email: null })));
 
+// The demo invites with two notes, so the Results tab has an A/B test to show.
+const sequence = defaultSequence();
+const invite = sequence.nodes.n3;
+if (invite.type === 'connect') {
+  invite.variants = [
+    { id: 'A', note: invite.note },
+    { id: 'B', note: 'Hi {{firstName}}, I work with growth teams like yours at {{company|your company}}. Happy to connect?' },
+  ];
+}
+
 const campaignId = db.insert('campaigns', {
   workspace_id: ws,
   account_id: accountId,
   name: 'Growth leaders – intro',
   status: 'active',
-  sequence: JSON.stringify(defaultSequence()),
+  sequence: JSON.stringify(sequence),
   settings: '{}',
   created_at: now,
   started_at: now,

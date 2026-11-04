@@ -23,18 +23,55 @@ export type ConditionKind = (typeof CONDITION_KINDS)[number];
 
 const ptr = z.string().min(1).nullable().default(null);
 
+// A/B testing: connect, message and email steps can hold 2–5 variants with ids A–E. The single-text
+// fields stay required and hold variant A, so sequences saved before variants existed keep working.
+export const VARIANT_IDS = ['A', 'B', 'C', 'D', 'E'] as const;
+export type VariantId = (typeof VARIANT_IDS)[number];
+export const VARIANT_NODE_TYPES = ['connect', 'message', 'email'] as const;
+export const AB_METRICS = ['accepted', 'replied'] as const;
+export type AbMetric = (typeof AB_METRICS)[number];
+
+const variantList = <T extends z.ZodRawShape>(shape: T) =>
+  z
+    .array(z.object({ id: z.enum(VARIANT_IDS), ...shape }))
+    .min(2, 'An A/B test needs at least 2 variants')
+    .max(5, 'An A/B test can have at most 5 variants')
+    .refine((vs) => new Set(vs.map((v) => v.id)).size === vs.length, 'Each variant needs its own letter')
+    .optional();
+
+// `autoPickAfter`: once the step has sent this many times, the best variant gets every later lead.
+const abtest = z
+  .object({ autoPickAfter: z.number().int().min(20).max(10000).nullable().default(null), metric: z.enum(AB_METRICS).optional() })
+  .optional();
+
 export const NodeSchema = z.discriminatedUnion('type', [
   z.object({ id: z.string(), type: z.literal('view_profile'), next: ptr }),
   z.object({ id: z.string(), type: z.literal('follow'), next: ptr }),
   z.object({ id: z.string(), type: z.literal('endorse'), count: z.number().int().min(1).max(5).default(3), next: ptr }),
   z.object({ id: z.string(), type: z.literal('like_post'), next: ptr }),
-  z.object({ id: z.string(), type: z.literal('connect'), note: z.string().max(2000).default(''), next: ptr }),
-  z.object({ id: z.string(), type: z.literal('message'), text: z.string().min(1).max(8000), next: ptr }),
+  z.object({
+    id: z.string(),
+    type: z.literal('connect'),
+    note: z.string().max(2000).default(''),
+    variants: variantList({ note: z.string().max(2000).default('') }),
+    abtest,
+    next: ptr,
+  }),
+  z.object({
+    id: z.string(),
+    type: z.literal('message'),
+    text: z.string().min(1).max(8000),
+    variants: variantList({ text: z.string().min(1).max(8000) }),
+    abtest,
+    next: ptr,
+  }),
   z.object({
     id: z.string(),
     type: z.literal('email'),
     subject: z.string().min(1).max(300),
     body: z.string().min(1).max(20000),
+    variants: variantList({ subject: z.string().min(1).max(300), body: z.string().min(1).max(20000) }),
+    abtest,
     next: ptr,
   }),
   z.object({ id: z.string(), type: z.literal('withdraw_invite'), next: ptr }),
@@ -70,6 +107,39 @@ export const CampaignSettingsSchema = z.object({
 });
 export type CampaignSettings = z.infer<typeof CampaignSettingsSchema>;
 
+export type VariantNode = Extract<SeqNode, { type: (typeof VARIANT_NODE_TYPES)[number] }>;
+// One variant's content, whatever the step type (only the fields of that type are set).
+export type VariantContent = { id: VariantId; note?: string; text?: string; subject?: string; body?: string };
+
+export function isVariantNode(n: SeqNode): n is VariantNode {
+  return (VARIANT_NODE_TYPES as readonly string[]).includes(n.type);
+}
+
+// The step's variants; a plain step is a single variant A made of its own fields.
+export function nodeVariants(n: VariantNode): VariantContent[] {
+  if (n.variants?.length) return [...(n.variants as VariantContent[])].sort((a, b) => a.id.localeCompare(b.id));
+  if (n.type === 'connect') return [{ id: 'A', note: n.note }];
+  if (n.type === 'message') return [{ id: 'A', text: n.text }];
+  return [{ id: 'A', subject: n.subject, body: n.body }];
+}
+
+export const isAbTest = (n: SeqNode): n is VariantNode => isVariantNode(n) && (n.variants?.length ?? 0) >= 2;
+
+// What a step's variants are judged on: acceptance for invitations, replies for everything else.
+export function abMetric(n: VariantNode): AbMetric {
+  return n.abtest?.metric ?? (n.type === 'connect' ? 'accepted' : 'replied');
+}
+
+// The step as it is sent with one variant's content in its single-text fields.
+export function withVariant<T extends VariantNode>(n: T, id: VariantId | null): T {
+  const v = id ? (n.variants as VariantContent[] | undefined)?.find((x) => x.id === id) : undefined;
+  if (!v) return n;
+  const node: VariantNode = n;
+  if (node.type === 'connect') return { ...n, note: v.note ?? '' };
+  if (node.type === 'message') return { ...n, text: v.text ?? node.text };
+  return { ...n, subject: v.subject ?? node.subject, body: v.body ?? node.body };
+}
+
 export function successors(n: SeqNode): (string | null)[] {
   return n.type === 'condition' ? [n.yes, n.no] : [n.next];
 }
@@ -97,6 +167,12 @@ export function validateSequence(seq: Sequence): string[] {
     path.delete(id);
   };
   walk(seq.start, new Set());
+
+  for (const n of Object.values(seq.nodes)) {
+    if (isVariantNode(n) && n.type !== 'connect' && n.abtest?.metric === 'accepted') {
+      errors.push(`Step "${n.id}" can only be judged on replies: acceptance applies to invitations`);
+    }
+  }
 
   const reachable = (t: SeqNode['type']) => [...seen].some((id) => seq.nodes[id].type === t);
   for (const id of seen) {

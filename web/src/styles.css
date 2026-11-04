@@ -1080,6 +1080,48 @@ th.num {
   white-space: pre-wrap;
 }
 
+/* A/B variants in the step editor */
+.variant-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.variant-tabs {
+  display: inline-flex;
+  gap: 4px;
+}
+.variant-tab {
+  min-width: 34px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.variant-tab:hover {
+  border-color: var(--accent);
+}
+.variant-tab.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.variant-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.variant-text {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- Inbox ---------- */
 .inbox {
   display: grid;

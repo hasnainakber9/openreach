@@ -16,6 +16,9 @@ export interface ActivityInput {
   status?: ActivityStatus;
   detail?: string | null;
   timezone?: string;
+  // The sequence step that did it, and the A/B variant it sent (null when the step has no variants).
+  nodeId?: string | null;
+  variant?: string | null;
 }
 
 // `day` is the account's local calendar day, which is what daily limits are counted against.
@@ -29,6 +32,8 @@ export function logActivity(ctx: Ctx, a: ActivityInput): number {
     type: a.type,
     status: a.status ?? 'ok',
     detail: a.detail ?? null,
+    node_id: a.nodeId ?? null,
+    variant: a.variant ?? null,
     day: localParts(now, a.timezone ?? 'UTC').date,
     created_at: now,
   });
