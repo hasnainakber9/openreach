@@ -177,3 +177,68 @@ export interface LeadList {
   connected: number | null;
   createdAt: number;
 }
+
+export type Role = 'owner' | 'admin' | 'member' | 'client';
+
+export type ProviderKind = 'ai' | 'email_finder' | 'email_verifier' | 'enrichment' | 'crm' | 'sms';
+
+export interface FieldSpec {
+  key: string;
+  label: string;
+  type: 'text' | 'password' | 'url' | 'number' | 'select' | 'textarea' | 'toggle';
+  secret?: boolean;
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+  options?: { value: string; label: string }[];
+}
+
+export interface ProviderDef {
+  id: string;
+  kind: ProviderKind;
+  label: string;
+  description: string;
+  docsUrl: string | null;
+  simulated: boolean;
+  fields: FieldSpec[];
+}
+
+export interface KindStatus {
+  provider: string | null;
+  label: string;
+  simulated: boolean;
+  integrationId: number | null;
+}
+
+export interface Integration {
+  id: number;
+  kind: ProviderKind;
+  provider: string;
+  providerLabel: string;
+  simulated: boolean;
+  label: string;
+  enabled: boolean;
+  priority: number;
+  settings: Record<string, unknown>;
+  credentials: Record<string, string>; // masked
+  hasCredentials: boolean;
+  lastStatus: 'ok' | 'error' | null;
+  lastMessage: string | null;
+  lastCheckedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Job {
+  id: number;
+  type: string;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  attempts: number;
+  maxAttempts: number;
+  progress: { done: number; total: number | null } | null;
+  lastError: string | null;
+  runAt: number;
+  createdAt: number;
+  finishedAt: number | null;
+  result?: unknown;
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { api, syncClock, useApi } from './api';
+import { api, syncClock, useApi, type Role } from './api';
 import { Button, ErrorNote, Field } from './components/ui';
 import Accounts from './pages/Accounts';
 import CampaignDetail from './pages/CampaignDetail';
@@ -14,10 +14,31 @@ export interface Me {
   id: number;
   name: string;
   email: string;
-  role: 'owner' | 'admin' | 'member';
+  role: Role;
   workspace_id: number;
   workspace_name: string;
+  // Optional areas switched on by the server (billing, agency).
+  features: Record<string, boolean>;
 }
+
+// The sidebar. A page adds its entry here when it exists; `roles` and `feature` hide entries a user can't use.
+interface NavItem {
+  to: string;
+  label: string;
+  end?: boolean;
+  roles?: Role[];
+  feature?: string;
+  badge?: 'inbox';
+}
+
+const NAV: NavItem[] = [
+  { to: '/', label: 'Dashboard', end: true },
+  { to: '/campaigns', label: 'Campaigns' },
+  { to: '/leads', label: 'Leads' },
+  { to: '/inbox', label: 'Inbox', badge: 'inbox' },
+  { to: '/accounts', label: 'LinkedIn accounts' },
+  { to: '/settings', label: 'Settings' },
+];
 
 export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
@@ -39,6 +60,8 @@ export default function App() {
 
 function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
   const unread = useApi<any[]>('/api/inbox?unread=true', 30_000);
+  const badges: Record<NonNullable<NavItem['badge']>, number> = { inbox: unread.data?.length ?? 0 };
+  const nav = NAV.filter((n) => (!n.roles || n.roles.includes(me.role)) && (!n.feature || me.features?.[n.feature]));
   const signOut = async () => {
     await api('/api/auth/logout', { body: {} });
     onSignOut();
@@ -55,18 +78,13 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
           </span>
           OpenReach
         </div>
-        <nav className="nav">
-          <NavLink to="/" end>
-            Dashboard
-          </NavLink>
-          <NavLink to="/campaigns">Campaigns</NavLink>
-          <NavLink to="/leads">Leads</NavLink>
-          <NavLink to="/inbox">
-            Inbox
-            {!!unread.data?.length && <span className="nav-badge">{unread.data.length}</span>}
-          </NavLink>
-          <NavLink to="/accounts">LinkedIn accounts</NavLink>
-          <NavLink to="/settings">Settings</NavLink>
+        <nav className="nav" aria-label="Main">
+          {nav.map((n) => (
+            <NavLink key={n.to} to={n.to} end={n.end}>
+              {n.label}
+              {!!(n.badge && badges[n.badge]) && <span className="nav-badge">{badges[n.badge!]}</span>}
+            </NavLink>
+          ))}
         </nav>
         <div className="sidebar-foot">
           <div style={{ fontWeight: 600 }}>{me.name}</div>

@@ -1,3 +1,4 @@
+import { buildApp } from '../src/app.js';
 import { ManualClock, MINUTE } from '../src/clock.js';
 import type { Config } from '../src/config.js';
 import { buildContext, type Ctx } from '../src/context.js';
@@ -37,6 +38,8 @@ export function testConfig(): Config {
     headless: true,
     webDist: '/nonexistent',
     runWorker: false,
+    publicUrl: 'http://localhost:8787',
+    jobConcurrency: 4,
   };
 }
 
@@ -54,6 +57,10 @@ export function makeWorld(sim: Partial<SimulatorOptions> = {}, account: Record<s
   const random = seededRandom(7);
   const ctx = buildContext(testConfig(), clock, { db: new DB(':memory:'), random }) as World['ctx'];
   ctx.webhooks.deliver = false;
+  // Tests never touch the network; a test that needs HTTP passes fakeFetch().
+  ctx.fetch = async () => {
+    throw new Error('Network access in tests');
+  };
   ctx.drivers.simOptions = { random: seededRandom(99), latencyMs: 0, ...sim };
   const workspaceId = ctx.db.insert('workspaces', { name: 'Test', created_at: clock.now() });
   const accountId = ctx.db.insert('accounts', {
@@ -121,4 +128,71 @@ export function counts(w: World, campaignId: number) {
 export function states(w: World, campaignId: number) {
   const rows = w.ctx.db.all<{ state: string; n: number }>('SELECT state, COUNT(*) AS n FROM campaign_leads WHERE campaign_id = ? GROUP BY state', [campaignId]);
   return Object.fromEntries(rows.map((r) => [r.state, r.n]));
+}
+
+// Runs every due background job (and jobs they make due) until none are left.
+export async function drainJobs(w: World) {
+  await w.ctx.jobs.drain();
+}
+
+export interface FakeRoute {
+  method?: string;
+  url: RegExp;
+  reply: (req: { url: string; method: string; headers: Record<string, string>; body: string | null }) => { status?: number; json?: unknown; text?: string; headers?: Record<string, string> };
+}
+
+// A stand-in for ctx.fetch that answers from `routes` and records every call. Unmatched calls fail like a network error.
+export function fakeFetch(routes: FakeRoute[]) {
+  const calls: { url: string; method: string; headers: Record<string, string>; body: string | null }[] = [];
+  const fn = (async (input: any, init: any = {}) => {
+    const url = String(input instanceof URL ? input.href : typeof input === 'string' ? input : input.url);
+    const method = (init.method ?? 'GET').toUpperCase();
+    const headers = Object.fromEntries(Object.entries((init.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), String(v)]));
+    const req = { url, method, headers, body: init.body == null ? null : String(init.body) };
+    calls.push(req);
+    const route = routes.find((r) => (!r.method || r.method.toUpperCase() === method) && r.url.test(url));
+    if (!route) throw new TypeError(`fetch failed: no fake route for ${method} ${url}`);
+    const out = route.reply(req);
+    const body = out.json !== undefined ? JSON.stringify(out.json) : (out.text ?? '');
+    return new Response(body, { status: out.status ?? 200, headers: { 'content-type': out.json !== undefined ? 'application/json' : 'text/plain', ...out.headers } });
+  }) as typeof fetch;
+  return Object.assign(fn, { calls });
+}
+
+// HTTP API harness: register the first user (owner), add teammates and switch between them.
+export async function makeApi(w: World = makeWorld()) {
+  const app = await buildApp(w.ctx);
+  let current = '';
+  const call = async (method: string, url: string, payload?: unknown, as?: { cookie: string }) => {
+    const res = await app.inject({ method: method as any, url, payload: payload as any, headers: (as?.cookie ?? current) ? { cookie: as?.cookie ?? current } : {} });
+    const set = res.headers['set-cookie'];
+    if (set && !as) current = (Array.isArray(set) ? set[0] : set).split(';')[0];
+    return { status: res.statusCode, body: res.headers['content-type']?.includes('json') ? res.json() : res.body, raw: res.body };
+  };
+  const signIn = async (email: string, password: string) => {
+    const res = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email, password } });
+    const set = res.headers['set-cookie'];
+    return { id: res.json().user.id as number, cookie: (Array.isArray(set) ? set[0] : set!).split(';')[0] };
+  };
+  let n = 0;
+  // Registers a new workspace and signs in as its owner.
+  const register = async (workspace = 'Acme') => {
+    const email = `owner${++n}@example.com`;
+    current = '';
+    const r = await call('POST', '/api/auth/register', { name: `Owner ${n}`, email, password: 'correct-horse', workspace });
+    if (r.status !== 200) throw new Error(`register failed: ${JSON.stringify(r.body)}`);
+    const owner = { id: r.body.user.id as number, workspaceId: r.body.user.workspace_id as number, cookie: current };
+    return owner;
+  };
+  // Adds a user to the current user's workspace (the current user must be an admin).
+  const addUser = async (role: 'admin' | 'member') => {
+    const email = `${role}${++n}@example.com`;
+    const r = await call('POST', '/api/team', { name: `${role} ${n}`, email, password: 'correct-horse', role });
+    if (r.status !== 200) throw new Error(`addUser failed: ${JSON.stringify(r.body)}`);
+    return signIn(email, 'correct-horse');
+  };
+  const as = (u: { cookie: string }) => {
+    current = u.cookie;
+  };
+  return { w, app, call, register, addUser, as };
 }

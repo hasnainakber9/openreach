@@ -18,10 +18,13 @@ export function parse<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer
 
 export const idParam = z.object({ id: z.coerce.number().int().positive() });
 
+// `client` (read-only access for agency clients) is enforced from g5-agency on.
+export type Role = 'owner' | 'admin' | 'member' | 'client';
+
 export interface SessionUser {
   id: number;
   workspace_id: number;
-  role: 'owner' | 'admin' | 'member';
+  role: Role;
   name: string;
   email: string;
 }
@@ -37,11 +40,21 @@ export function user(req: FastifyRequest): SessionUser {
   return req.user;
 }
 
-export function requireAdmin(req: FastifyRequest) {
+export function requireRole(req: FastifyRequest, ...roles: Role[]) {
+  return checkRole(req, roles, "Your role can't do this");
+}
+
+function checkRole(req: FastifyRequest, roles: Role[], message: string) {
   const u = user(req);
-  if (u.role === 'member') throw new HttpError(403, 'Only admins can do this');
+  if (!roles.includes(u.role)) throw new HttpError(403, message);
   return u;
 }
+
+// Positive checks, so a role added later never slips through by default.
+export const requireAdmin = (req: FastifyRequest) => checkRole(req, ['owner', 'admin'], 'Only admins can do this');
+export const requireWriter = (req: FastifyRequest) => checkRole(req, ['owner', 'admin', 'member'], 'Your role is read-only');
+export const requireOwner = (req: FastifyRequest) => checkRole(req, ['owner'], 'Only the workspace owner can do this');
+export const isAdmin = (u: SessionUser) => u.role === 'owner' || u.role === 'admin';
 
 export function notFound(what: string): never {
   throw new HttpError(404, `${what} not found`);

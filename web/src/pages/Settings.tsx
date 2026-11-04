@@ -3,8 +3,9 @@ import { api, useApi } from '../api';
 import type { Me } from '../App';
 import { Button, Field, Modal, Tabs, useAction, useToast } from '../components/ui';
 import { timeAgo } from '../format';
+import Integrations from './Integrations';
 
-type Tab = 'team' | 'blacklist' | 'webhooks' | 'profile';
+type Tab = 'team' | 'blacklist' | 'integrations' | 'profile';
 
 export default function Settings({ me }: { me: Me }) {
   const [tab, setTab] = useState<Tab>('team');
@@ -22,13 +23,18 @@ export default function Settings({ me }: { me: Me }) {
         tabs={[
           { id: 'team', label: 'Team' },
           { id: 'blacklist', label: 'Blacklist' },
-          { id: 'webhooks', label: 'Webhooks & CRM' },
+          { id: 'integrations', label: 'Integrations' },
           { id: 'profile', label: 'Your profile' },
         ]}
       />
       {tab === 'team' && <Team me={me} />}
       {tab === 'blacklist' && <Blacklist />}
-      {tab === 'webhooks' && <Webhooks />}
+      {tab === 'integrations' && (
+        <div className="stack">
+          <Integrations me={me} />
+          <Webhooks />
+        </div>
+      )}
       {tab === 'profile' && <Profile />}
     </>
   );
@@ -39,7 +45,7 @@ function Team({ me }: { me: Me }) {
   const [adding, setAdding] = useState(false);
   const [f, setF] = useState({ name: '', email: '', password: '', role: 'member' });
   const { busy, run } = useAction();
-  const admin = me.role !== 'member';
+  const admin = me.role === 'owner' || me.role === 'admin';
   return (
     <div className="card card-flush">
       <div className="spread" style={{ padding: 16 }}>
@@ -212,7 +218,7 @@ function Webhooks() {
   return (
     <div className="stack">
       <div className="card stack">
-        <h2>Send events to your CRM</h2>
+        <h2>Webhooks</h2>
         <p className="muted" style={{ margin: 0 }}>
           OpenReach POSTs JSON to your URL when things happen. Use it with HubSpot, Pipedrive or Salesforce through Zapier, Make or n8n, or your own endpoint. Each request carries an <code>X-OpenReach-Signature</code> header: HMAC-SHA256 of the body with the webhook's secret.
         </p>

@@ -5,6 +5,7 @@ import { json } from '../db/db.js';
 import { CampaignSettingsSchema, defaultSequence, SequenceSchema, validateSequence, type Sequence } from '../engine/sequence.js';
 import { leadVars, render, unknownVariables, VARIABLE_NAMES } from '../engine/template.js';
 import { HttpError, idParam, notFound, parse, user } from '../http.js';
+import { contactTypesSql } from '../services/activity.js';
 import { addLeadsToCampaign, campaignSequence } from '../services/leads.js';
 import type { CampaignRow, LeadRow } from '../types.js';
 import { serializeLead } from './leads.js';
@@ -27,7 +28,7 @@ export function campaignStats(ctx: Ctx, campaignId: number) {
   const messaged = acts.message ?? 0;
   const replied = acts.replied ?? 0;
   const contacted = ctx.db.get<{ n: number }>(
-    "SELECT COUNT(DISTINCT lead_id) AS n FROM activity WHERE campaign_id = ? AND status = 'ok' AND type IN ('connect', 'message', 'email')",
+    `SELECT COUNT(DISTINCT lead_id) AS n FROM activity WHERE campaign_id = ? AND status = 'ok' AND type IN (${contactTypesSql()})`,
     [campaignId],
   )!.n;
   const pct = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 10 : 0);

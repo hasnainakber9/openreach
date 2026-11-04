@@ -33,7 +33,9 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
   };
   const me = (id: number) => {
     const u = ctx.db.get('SELECT u.id, u.name, u.email, u.role, w.id AS workspace_id, w.name AS workspace_name FROM users u JOIN workspaces w ON w.id = u.workspace_id WHERE u.id = ?', [id]);
-    return { user: u };
+    // Feature flags for optional areas of the UI (billing, agency) that later steps switch on.
+    const features: Record<string, boolean> = {};
+    return { user: u ? { ...u, features } : u };
   };
 
   app.get('/api/auth/status', async () => {

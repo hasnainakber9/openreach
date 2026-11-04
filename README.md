@@ -18,7 +18,7 @@ OpenReach is an independent project. It is not affiliated with LinkedIn or with 
 | **Unified inbox** | Conversations from every account in one place. Replies are detected automatically and stop the lead's sequence. You can reply from the inbox. |
 | **Analytics** | Daily activity, an acceptance and reply funnel, and per-campaign results and timelines. Live activity feed. |
 | **Team** | Workspaces with owner, admin and member roles. |
-| **Integrations** | Signed webhooks (`lead.connected`, `lead.replied`, `lead.finished`, ...) for Zapier, Make, n8n or your CRM. CSV export of any list or campaign. |
+| **Integrations** | Signed webhooks (`lead.connected`, `lead.replied`, `lead.finished`, ...) for Zapier, Make, n8n or your CRM. CSV export of any list or campaign. **Settings → Integrations** holds per-workspace provider settings (AI, email finding and verification, enrichment, CRM, SMS) with encrypted keys and a *Test connection* button. Until you add one, a built-in simulator stands in, so every feature works offline with made-up data that never reaches anyone (CRM sync only runs once you add a CRM). |
 | **Blacklist** | By profile, company, keyword or email domain. Checked when leads are added and again before every action. |
 
 ## Quick start
@@ -123,7 +123,7 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 |---|---|---|
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | |
 | `DATA_DIR` | `./data` | SQLite database, browser profiles, generated secret |
-| `APP_SECRET` | generated into `DATA_DIR/app-secret` | Key for encrypting session cookies and SMTP passwords. Back it up: changing it makes saved sessions unreadable. |
+| `APP_SECRET` | generated into `DATA_DIR/app-secret` | Key for encrypting session cookies, SMTP passwords and integration API keys. Back it up: changing it makes saved sessions unreadable. |
 | `SETUP_TOKEN` | | If set, creating the first (owner) account requires this value. **Set it on any public server**, or whoever opens the URL first owns the installation. |
 | `ALLOW_SIGNUP` | `false` | Let anyone create a new workspace after the first user |
 | `RUN_WORKER` | `true` | Set `false` to run the API without the campaign engine |
@@ -132,6 +132,8 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 | `PLAYWRIGHT_HEADLESS` | `true` | `false` shows the browser window (useful for debugging locally) |
 | `PLAYWRIGHT_EXECUTABLE_PATH` | | Use a specific Chrome/Chromium binary |
 | `DEMO_SPEED` | `1` | Speed up the scheduling clock (demo/simulator only) |
+| `PUBLIC_URL` | | External https:// address of this server. Used for links that leave the app (unsubscribe, tracking, invites); never taken from request headers. |
+| `JOB_CONCURRENCY` | `4` | Background jobs (enrichment, AI, CRM sync, ...) running at once. Jobs run inside the campaign engine, so they need `RUN_WORKER`. |
 
 ## API and webhooks
 
@@ -150,7 +152,7 @@ To verify a delivery, compute `sha256=` + HMAC-SHA256(body, secret) and compare 
 - **Email finding** (looking up work emails from third-party databases) is not included. Email steps use addresses from your CSV, or from a 1st-degree connection's contact info.
 - **InMail** and Sales Navigator messaging are not supported. Sales Navigator *search import* is best effort.
 - LinkedIn only shows coarse message timestamps, so inbox messages are time-stamped when they are first synced.
-- SQLite and an in-process scheduler suit one server running dozens of accounts. Beyond that you'd want Postgres and a job queue.
+- SQLite and an in-process scheduler (with a database-backed job queue for background work) suit one server running dozens of accounts. Beyond that you'd want Postgres.
 
 ## License
 

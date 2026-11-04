@@ -4,6 +4,7 @@ import type { Person } from '../drivers/types.js';
 import { profileUrl, publicIdFromUrl } from '../drivers/types.js';
 import { CampaignSettingsSchema, SequenceSchema, type Sequence } from '../engine/sequence.js';
 import type { CampaignRow, LeadRow } from '../types.js';
+import { suppressionReason } from './suppression.js';
 
 export interface LeadInput {
   profileUrl: string;
@@ -122,7 +123,7 @@ export function addLeadsToCampaign(ctx: Ctx, campaign: CampaignRow, leadIds: num
   const settings = campaignSettings(campaign);
   const start = seq.start ? seq.nodes[seq.start] : null;
   const now = ctx.clock.now();
-  const result = { added: 0, alreadyInCampaign: 0, inOtherCampaign: 0, blacklisted: 0, alreadyConnected: 0 };
+  const result = { added: 0, alreadyInCampaign: 0, inOtherCampaign: 0, blacklisted: 0, suppressed: 0, alreadyConnected: 0 };
   ctx.db.tx(() => {
     for (const id of leadIds) {
       const lead = ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ? AND workspace_id = ?', [id, campaign.workspace_id]);
@@ -137,6 +138,10 @@ export function addLeadsToCampaign(ctx: Ctx, campaign: CampaignRow, leadIds: num
       }
       if (blacklistReason(ctx, lead)) {
         result.blacklisted++;
+        continue;
+      }
+      if (suppressionReason(ctx, lead)) {
+        result.suppressed++;
         continue;
       }
       if (settings.skipAlreadyConnected && lead.connection_status === 'connected') {

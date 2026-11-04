@@ -7,21 +7,23 @@ export type Params = Record<string, SQLInputValue> | SQLInputValue[];
 export type Row = Record<string, any>;
 
 export class DB {
+  readonly dialect = 'sqlite' as const;
   readonly raw: DatabaseSync;
   private depth = 0;
 
-  constructor(path: string) {
+  // `migrateTo` (tests only) stops after the entries with index < migrateTo; a later migrate() runs the rest.
+  constructor(path: string, opts: { migrateTo?: number } = {}) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.raw = new DatabaseSync(path);
     this.raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-    this.migrate();
+    this.migrate(opts.migrateTo);
   }
 
-  private migrate() {
+  migrate(upTo = MIGRATIONS.length) {
     this.raw.exec('CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY)');
     const done = new Set(this.raw.prepare('SELECT id FROM migrations').all().map((r: any) => r.id as number));
     MIGRATIONS.forEach((sql, i) => {
-      if (done.has(i)) return;
+      if (done.has(i) || i >= upTo) return;
       this.tx(() => {
         this.raw.exec(sql);
         this.raw.prepare('INSERT INTO migrations (id) VALUES (?)').run(i);

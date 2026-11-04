@@ -18,6 +18,8 @@ export interface Config {
   executablePath?: string;
   webDist: string;
   runWorker: boolean;
+  publicUrl?: string;
+  jobConcurrency: number;
 }
 
 export function loadConfig(env = process.env): Config {
@@ -40,6 +42,9 @@ export function loadConfig(env = process.env): Config {
     executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined,
     webDist: resolve(env.WEB_DIST ?? new URL('../../web/dist', import.meta.url).pathname),
     runWorker: env.RUN_WORKER !== 'false',
+    // External base URL for links that leave the app (unsubscribe, tracking, invites). Never taken from the Host header.
+    publicUrl: env.PUBLIC_URL?.trim().replace(/\/+$/, '') || undefined,
+    jobConcurrency: Math.max(1, Number(env.JOB_CONCURRENCY ?? 4) || 4),
   };
 }
 

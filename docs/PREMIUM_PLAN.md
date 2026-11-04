@@ -15,7 +15,7 @@ HeyReach. We write our own code, copy, UI and names. Never copy their code, text
 
 | Step | Migration | Status | Deviations |
 |---|---|---|---|
-| foundation | M1 | planned | |
+| foundation | M1 | done | `features` sits on the `user` object of `/api/auth/me` (the web stores that object as `Me`). NAV `badge` is typed `'inbox'` only; g3-tasks-sms adds `'tasks'` with its count. Extra small files: `providers/hash.ts` (hash helpers for simulators), `test/suppression.test.ts`. |
 | g1-rotation | M2 | planned | |
 | g1-abtest | M3 | planned | |
 | g1-sources | M4 | planned | |
@@ -185,7 +185,7 @@ Durable queue in the `jobs` table, run by `JobQueue` (`ctx.jobs`) inside the eng
 ```ts
 ctx.jobs.enqueue(type, payload, { workspaceId, runAt?, dedupeKey?, maxAttempts? }): number   // returns job id (existing id if deduped)
 ctx.jobs.register(type, handler, { concurrency?: number; maxAttempts?: number; timeoutMs?: number })
-type Handler<T> = (job: { id: number; workspaceId: number | null; payload: T; attempts: number }, h: { ctx: Ctx; progress(done: number, total?: number): void }) => Promise<unknown>
+type Handler<T> = (job: { id: number; workspaceId: number | null; payload: T; attempts: number }, h: { ctx: Ctx; progress(done: number, total?: number): void; signal: AbortSignal }) => Promise<unknown>
 throw new RetryLater(ms, reason)   // reschedule without using up an attempt (rate limits, waiting on something)
 throw new PermanentError(message)  // fail now, no retry (bad config, missing row)
 ```
@@ -205,7 +205,10 @@ throw new PermanentError(message)  // fail now, no retry (bad config, missing ro
   integration's `last_status = 'error'`. `RATE_LIMIT` becomes `RetryLater(retryAfterMs ?? 60s)`.
 - Running jobs carry `locked_until = now + timeoutMs (default 10 min)`; `h.progress()` also pushes `locked_until`
   forward, and long handlers (`leads.import`, `email.sync`) register a larger `timeoutMs` and report progress at least
-  every few minutes. Crash recovery: the first tick after start re-queues every `running` job (SQLite has one worker
+  every few minutes. The timeout is **enforced** in `run()` (a wall-clock timer re-armed by `progress()`, since the demo
+  clock runs fast): a run that goes `timeoutMs` without finishing or reporting progress is settled as a normal
+  (retryable) failure, `h.signal` is aborted (handlers pass it to fetch/Playwright calls), its concurrency slots are
+  freed, and anything the abandoned promise does later (result, error, `progress()`) is ignored. Crash recovery: the first tick after start re-queues every `running` job (SQLite has one worker
   process, so they are all orphans); later ticks re-queue `running` jobs whose lock expired **and that are not in this
   process's in-flight set** (that case only matters for Postgres multi-instance). Without this, a 1000-profile import
   would be re-queued mid-run and scrape twice.
@@ -571,6 +574,10 @@ CREATE INDEX conversations_lead ON conversations(lead_id);
   Also register a small `application/x-www-form-urlencoded` content-type parser (`URLSearchParams` → plain object, no
   new dependency): g3-mailboxes needs it for RFC 8058 one-click unsubscribe and the confirmation form, g3-tasks-sms for
   Twilio. (Fastify answers 415 without it; the plan used to add it only in g3-tasks-sms, after g3-mailboxes needed it.)
+  Form bodies are the one thing a cross-site `<form>` can send without a CORS preflight, so the `onRequest` hook answers
+  415 to them on every `/api/` path except the provider-callback prefixes in `FORM_PREFIXES` (`/api/public/twilio/`);
+  paths outside `/api` (`/u/:token`) accept them. This blocks login CSRF and same-site form posts to the JSON API
+  (review finding). Never add a route that signs someone in or acts as the session user to `FORM_PREFIXES`.
 - `webhooks.ts`: `subscribe()`; add `lead.suppressed`.
 - `routes/auth.ts`: `/api/auth/me` adds `features: {}`.
 - `Config`: `publicUrl?: string`, `jobConcurrency: number`. Ctx: `fetch`, `jobs`, `providers`.
@@ -1291,7 +1298,7 @@ channel nodes `sms { text (≤ 1600), variants? }` and `whatsapp { text (≤ 160
 - `simulated`: records, never transmits; `verifySignature` always returns `false`. (A "test signature" accepted by the
   simulated provider would be a public backdoor, since it is the default provider for every workspace.)
 
-**Inbound**: `POST /api/public/twilio/:integrationId/inbound` (form-encoded, foundation's parser). Only works for an
+**Inbound**: `POST /api/public/twilio/:integrationId/inbound` (form-encoded, foundation's parser; its prefix is already in `app.ts` `FORM_PREFIXES`). Only works for an
 integration row with provider `twilio` (anything else → 404). Looks up the integration (its workspace), verifies
 `X-Twilio-Signature` with that integration's auth token against `PUBLIC_URL` (missing `PUBLIC_URL` → 503 and an
 integration warning), ignores duplicates by `MessageSid`. Tests create a `twilio` integration with a test auth token

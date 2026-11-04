@@ -1222,3 +1222,50 @@ th.num {
     grid-template-columns: 100px 1fr 70px;
   }
 }
+
+/* ---------- Integrations ---------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge-sim {
+  background: var(--info-soft);
+  color: var(--info-text);
+  cursor: help;
+}
+.integration-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.integration-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  flex-wrap: wrap;
+}
+.integration-row + .integration-row {
+  border-top: 1px solid var(--line);
+}
+.integration-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.integration-row .icon-btn {
+  font-size: 16px;
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}

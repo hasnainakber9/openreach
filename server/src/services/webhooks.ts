@@ -9,8 +9,10 @@ export const WEBHOOK_EVENTS = [
   'lead.failed',
   'action.performed',
   'account.needs_login',
+  'lead.suppressed',
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
+export type EventSubscriber = (workspaceId: number, event: WebhookEvent, data: Record<string, unknown>) => void;
 
 interface HookRow {
   id: number;
@@ -24,10 +26,24 @@ interface HookRow {
 export class Webhooks {
   sent: { url: string; event: string; body: unknown }[] = [];
   deliver = true;
+  private subscribers: EventSubscriber[] = [];
 
   constructor(private db: DB) {}
 
+  // In-process listeners (for example CRM sync). They should only enqueue jobs, never do slow work inline.
+  subscribe(fn: EventSubscriber) {
+    this.subscribers.push(fn);
+    return () => void (this.subscribers = this.subscribers.filter((s) => s !== fn));
+  }
+
   emit(workspaceId: number, event: WebhookEvent, data: Record<string, unknown>) {
+    for (const fn of this.subscribers) {
+      try {
+        fn(workspaceId, event, data);
+      } catch (e) {
+        console.error(`[webhooks] subscriber failed on ${event}`, e);
+      }
+    }
     const hooks = this.db.all<HookRow>('SELECT id, url, events, secret FROM webhooks WHERE workspace_id = ? AND active = 1', [workspaceId]);
     for (const h of hooks) {
       const events = json<string[]>(h.events, []);

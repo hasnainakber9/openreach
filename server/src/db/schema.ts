@@ -197,4 +197,120 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (account_id, public_id)
   );
   `,
+  // [M1] foundation: job queue, integrations, usage, workspace settings, suppressions, channel-agnostic conversations
+  `
+  CREATE TABLE jobs (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER REFERENCES workspaces(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    run_at INTEGER NOT NULL,
+    dedupe_key TEXT,
+    locked_until INTEGER,
+    progress TEXT,
+    result TEXT,
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+  CREATE INDEX jobs_due ON jobs(status, run_at);
+  CREATE INDEX jobs_workspace ON jobs(workspace_id, type, status);
+  -- One live job per dedupe key; finished jobs keep their key for history.
+  CREATE UNIQUE INDEX jobs_dedupe ON jobs(dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
+
+  -- Per-workspace external service configs. Secrets live sealed in credentials_enc.
+  CREATE TABLE integrations (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    credentials_enc TEXT,
+    settings TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 0,
+    last_status TEXT,
+    last_message TEXT,
+    last_checked_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (workspace_id, kind, provider)
+  );
+
+  CREATE TABLE usage_events (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    credits INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    ok INTEGER NOT NULL DEFAULT 1,
+    month TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX usage_events_month ON usage_events(workspace_id, month, kind);
+
+  CREATE TABLE workspace_settings (
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, name)
+  );
+
+  -- Identities that must never be contacted again (unsubscribe, STOP, not interested, manual).
+  CREATE TABLE suppressions (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT,
+    lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (workspace_id, kind, value)
+  );
+
+  -- Conversations become channel-agnostic: email/SMS threads have no LinkedIn account.
+  -- Rebuilt together with messages so foreign keys stay valid while foreign_keys = ON.
+  CREATE TABLE conversations_new (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'linkedin',
+    account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+    lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+    thread_id TEXT NOT NULL,
+    participant_name TEXT NOT NULL DEFAULT '',
+    participant_url TEXT NOT NULL DEFAULT '',
+    last_message_at INTEGER NOT NULL DEFAULT 0,
+    unread INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (account_id, thread_id)
+  );
+  INSERT INTO conversations_new (id, workspace_id, channel, account_id, lead_id, thread_id, participant_name, participant_url, last_message_at, unread)
+    SELECT id, workspace_id, 'linkedin', account_id, lead_id, thread_id, participant_name, participant_url, last_message_at, unread FROM conversations;
+  CREATE TABLE messages_new (
+    id INTEGER PRIMARY KEY,
+    conversation_id INTEGER NOT NULL REFERENCES conversations_new(id) ON DELETE CASCADE,
+    external_id TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    body TEXT NOT NULL,
+    sent_at INTEGER NOT NULL,
+    UNIQUE (conversation_id, external_id)
+  );
+  INSERT INTO messages_new (id, conversation_id, external_id, direction, body, sent_at)
+    SELECT id, conversation_id, external_id, direction, body, sent_at FROM messages;
+  DROP TABLE messages;
+  DROP TABLE conversations;
+  -- Renaming also rewrites messages_new's REFERENCES clause.
+  ALTER TABLE conversations_new RENAME TO conversations;
+  ALTER TABLE messages_new RENAME TO messages;
+  CREATE INDEX conversations_workspace ON conversations(workspace_id, last_message_at);
+  CREATE INDEX conversations_lead ON conversations(lead_id);
+  `,
 ];

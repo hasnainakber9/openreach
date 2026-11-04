@@ -30,9 +30,11 @@ const STATUS_TONE: Record<string, string> = {
   skipped: 'neutral',
   running: 'info',
   completed: 'neutral',
+  ok: 'good',
+  untested: 'neutral',
 };
 
-const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', none: 'Not connected' };
+const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', none: 'Not connected', ok: 'Working', untested: 'Not tested' };
 
 export function Pill({ status, children }: { status: string; children?: ReactNode }) {
   const tone = STATUS_TONE[status] ?? 'neutral';
@@ -89,6 +91,78 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
         {hint && <span className="field-hint">{hint}</span>}
       </span>
     </label>
+  );
+}
+
+// Secrets are never sent back to the browser, only a mask. Blank keeps the saved value.
+export function SecretField({
+  label,
+  saved,
+  value,
+  onChange,
+  required,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  saved?: string | null;
+  value: string;
+  onChange: (v: string) => void;
+  required?: boolean;
+  placeholder?: string;
+  hint?: ReactNode;
+}) {
+  return (
+    <Field
+      label={label}
+      hint={
+        <>
+          {saved ? `Saved ${saved}. Leave blank to keep it.` : null}
+          {saved && hint ? ' ' : null}
+          {hint}
+        </>
+      }
+    >
+      <input type="password" value={value} onChange={(e) => onChange(e.target.value)} required={required && !saved} placeholder={saved ? 'Leave blank to keep' : placeholder} autoComplete="off" spellCheck={false} />
+    </Field>
+  );
+}
+
+export function ProviderBadge({ simulated }: { simulated: boolean }) {
+  if (!simulated) return null;
+  return (
+    <span className="badge badge-sim" title="Built-in simulator: works offline with made-up data and never contacts anyone">
+      Simulated
+    </span>
+  );
+}
+
+// A destructive button that asks for a second click instead of a browser dialog.
+export function ConfirmButton({
+  onConfirm,
+  confirmLabel = 'Click again to confirm',
+  children,
+  ...rest
+}: Omit<Parameters<typeof Button>[0], 'onClick'> & { onConfirm: () => void; confirmLabel?: string }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  return (
+    <Button
+      {...rest}
+      variant={armed ? 'danger' : (rest.variant ?? 'default')}
+      onBlur={() => setArmed(false)}
+      onClick={() => {
+        if (!armed) return setArmed(true);
+        setArmed(false);
+        onConfirm();
+      }}
+    >
+      <span aria-live="polite">{armed ? confirmLabel : children}</span>
+    </Button>
   );
 }
 

@@ -5,7 +5,8 @@ import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { publicIdFromUrl } from '../drivers/types.js';
 import { localParts } from '../engine/limits.js';
-import { idParam, notFound, parse, requireAdmin, user } from '../http.js';
+import { idParam, isAdmin, notFound, parse, requireAdmin, user } from '../http.js';
+import { contactTypesSql } from '../services/activity.js';
 import { token } from '../services/crypto.js';
 import { WEBHOOK_EVENTS } from '../services/webhooks.js';
 
@@ -28,7 +29,7 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
     const totals: Record<string, number> = {};
     for (const r of rows) totals[r.type] = (totals[r.type] ?? 0) + r.n;
     const distinct = (type: string) => ctx.db.get<{ n: number }>(`SELECT COUNT(DISTINCT lead_id) AS n FROM activity WHERE ${w} AND type = '${type}'`, p)!.n;
-    const contacted = ctx.db.get<{ n: number }>(`SELECT COUNT(DISTINCT lead_id) AS n FROM activity WHERE ${w} AND type IN ('connect', 'message', 'email')`, p)!.n;
+    const contacted = ctx.db.get<{ n: number }>(`SELECT COUNT(DISTINCT lead_id) AS n FROM activity WHERE ${w} AND type IN (${contactTypesSql()})`, p)!.n;
     const invited = distinct('connect');
     const accepted = distinct('accepted');
     const replied = distinct('replied');
@@ -87,7 +88,7 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
     return ctx.db
       .all<any>('SELECT id, url, events, secret, active, last_status AS lastStatus, created_at AS createdAt FROM webhooks WHERE workspace_id = ? ORDER BY id', [user(req).workspace_id])
       // Only admins can see signing secrets.
-      .map((h) => ({ ...h, secret: user(req).role === 'member' ? null : h.secret, events: json(h.events, []), active: !!h.active }));
+      .map((h) => ({ ...h, secret: isAdmin(user(req)) ? h.secret : null, events: json(h.events, []), active: !!h.active }));
   });
 
   app.get('/api/webhooks/events', async () => WEBHOOK_EVENTS);

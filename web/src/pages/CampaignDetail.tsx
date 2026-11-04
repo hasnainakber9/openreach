@@ -140,6 +140,7 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
         r.alreadyInCampaign && `${r.alreadyInCampaign} already here`,
         r.inOtherCampaign && `${r.inOtherCampaign} in another campaign`,
         r.blacklisted && `${r.blacklisted} blacklisted`,
+        r.suppressed && `${r.suppressed} opted out`,
         r.alreadyConnected && `${r.alreadyConnected} already connected`,
       ].filter(Boolean);
       alert(`Added ${r.added} lead${r.added === 1 ? '' : 's'}.${skipped.length ? ` Skipped: ${skipped.join(', ')}.` : ''}`);

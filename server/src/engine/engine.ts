@@ -4,6 +4,7 @@ import { json } from '../db/db.js';
 import { DriverError, type LinkedInDriver } from '../drivers/types.js';
 import { logActivity } from '../services/activity.js';
 import type { SmtpConfig } from '../services/email.js';
+import { suppressionReason } from '../services/suppression.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
 import type { AccountRow, CampaignLeadRow, CampaignLeadState, CampaignRow, LeadRow } from '../types.js';
 import { effectiveLimits, isWorkingTime, localParts, randomDelay, type Limits, type Schedule } from './limits.js';
@@ -69,10 +70,12 @@ export class Engine {
 
   // Runs one pass over every active account. Accounts work in parallel; each account does
   // at most one LinkedIn action per pass and then waits out its randomized delay.
+  // Background jobs run in the same pass, so they only run where the engine runs (RUN_WORKER).
   async tick(): Promise<void> {
     const accounts = this.ctx.db.all<AccountRow>("SELECT * FROM accounts WHERE status = 'active'");
-    await Promise.all(
-      accounts
+    await Promise.all([
+      this.ctx.jobs.tick().catch((e) => console.error('[jobs] tick failed', e)),
+      ...accounts
         .filter((a) => !this.busy.has(a.id))
         .map(async (a) => {
           this.busy.add(a.id);
@@ -84,7 +87,7 @@ export class Engine {
             this.busy.delete(a.id);
           }
         }),
-    );
+    ]);
   }
 
   async runAccount(a: AccountRow) {
@@ -237,6 +240,12 @@ export class Engine {
     if (banned) {
       logActivity(ctx, { ...base, status: 'skipped', detail: banned });
       this.finish(campaign, job, 'skipped', banned);
+      return false;
+    }
+    const suppressed = suppressionReason(ctx, lead);
+    if (suppressed) {
+      logActivity(ctx, { ...base, status: 'skipped', detail: suppressed });
+      this.finish(campaign, job, 'skipped', suppressed);
       return false;
     }
 
