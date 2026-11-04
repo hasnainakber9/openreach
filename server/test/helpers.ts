@@ -7,6 +7,7 @@ import { Engine } from '../src/engine/engine.js';
 import type { Sequence } from '../src/engine/sequence.js';
 import type { SimulatorOptions } from '../src/drivers/simulator.js';
 import { importLeads, addLeadsToCampaign } from '../src/services/leads.js';
+import { setCampaignAccounts } from '../src/services/rotation.js';
 import type { AccountRow, CampaignRow } from '../src/types.js';
 
 // Monday 2026-01-05 08:00 UTC: an hour before the default working day starts.
@@ -85,6 +86,22 @@ export function makeWorld(sim: Partial<SimulatorOptions> = {}, account: Record<s
   };
 }
 
+// Adds another simulated LinkedIn account to the world's workspace (same defaults as the first).
+export function addAccount(w: World, overrides: Record<string, any> = {}) {
+  const id = w.ctx.db.insert('accounts', {
+    workspace_id: w.workspaceId,
+    name: 'Sim Seat 2',
+    driver: 'simulator',
+    timezone: 'UTC',
+    warmup: 0,
+    delay_min_sec: 60,
+    delay_max_sec: 120,
+    created_at: w.ctx.clock.now(),
+    ...overrides,
+  });
+  return { id, row: () => w.ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [id])! };
+}
+
 export function addLeads(w: World, n: number, prefix = 'lead') {
   importLeads(
     w.ctx,
@@ -95,10 +112,10 @@ export function addLeads(w: World, n: number, prefix = 'lead') {
   return w.ctx.db.all<{ id: number }>('SELECT id FROM leads WHERE public_id LIKE ? ORDER BY id', [`${prefix}-%`]).map((r) => r.id);
 }
 
-export function makeCampaign(w: World, sequence: Sequence, settings: Record<string, unknown> = {}, leadIds: number[] = []) {
+export function makeCampaign(w: World, sequence: Sequence, settings: Record<string, unknown> = {}, leadIds: number[] = [], accountIds: number[] = [w.accountId]) {
   const id = w.ctx.db.insert('campaigns', {
     workspace_id: w.workspaceId,
-    account_id: w.accountId,
+    account_id: accountIds[0] ?? null,
     name: 'Campaign',
     status: 'active',
     sequence: JSON.stringify(sequence),
@@ -106,6 +123,7 @@ export function makeCampaign(w: World, sequence: Sequence, settings: Record<stri
     created_at: w.ctx.clock.now(),
     started_at: w.ctx.clock.now(),
   });
+  setCampaignAccounts(w.ctx, id, accountIds);
   const campaign = w.ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [id])!;
   const added = addLeadsToCampaign(w.ctx, campaign, leadIds);
   return { id, added };

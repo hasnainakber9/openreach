@@ -313,4 +313,51 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX conversations_workspace ON conversations(workspace_id, last_message_at);
   CREATE INDEX conversations_lead ON conversations(lead_id);
   `,
+  // [M2] g1-rotation: several sender accounts per campaign, per-lead sender pinning, per-account connections
+  `
+  CREATE TABLE campaign_accounts (
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, account_id)
+  );
+  CREATE INDEX campaign_accounts_account ON campaign_accounts(account_id);
+  INSERT INTO campaign_accounts (campaign_id, account_id, created_at)
+    SELECT id, account_id, created_at FROM campaigns WHERE account_id IN (SELECT id FROM accounts);
+
+  -- The sender a lead is pinned to, and when it was first contacted (pinned + contacted = never moves).
+  ALTER TABLE campaign_leads ADD COLUMN account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL;
+  ALTER TABLE campaign_leads ADD COLUMN contacted_at INTEGER;
+  CREATE INDEX campaign_leads_account ON campaign_leads(account_id, state, next_run_at);
+
+  -- Leads that already had an action keep the account that did it.
+  UPDATE campaign_leads SET account_id = (SELECT c.account_id FROM campaigns c WHERE c.id = campaign_leads.campaign_id AND c.account_id IN (SELECT id FROM accounts))
+    WHERE EXISTS (SELECT 1 FROM activity a WHERE a.campaign_id = campaign_leads.campaign_id AND a.lead_id = campaign_leads.lead_id AND a.status = 'ok' AND a.account_id IS NOT NULL);
+  UPDATE campaign_leads SET contacted_at = (SELECT MIN(a.created_at) FROM activity a WHERE a.campaign_id = campaign_leads.campaign_id AND a.lead_id = campaign_leads.lead_id AND a.status = 'ok' AND a.type IN ('connect', 'message', 'email'))
+    WHERE account_id IS NOT NULL;
+
+  -- Connection state per (lead, account); leads.connection_status stays as "connected to any of our accounts".
+  CREATE TABLE lead_connections (
+    lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    connected_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (lead_id, account_id)
+  );
+  CREATE INDEX lead_connections_account ON lead_connections(account_id, status);
+  -- Credit the aggregate to the account that last invited/messaged the lead, else to the one whose
+  -- profile view saw the 1st-degree badge (the old way a lead became connected).
+  INSERT INTO lead_connections (lead_id, account_id, status, connected_at, updated_at)
+    SELECT l.id,
+           (SELECT a.account_id FROM activity a
+             WHERE a.lead_id = l.id AND a.account_id IN (SELECT id FROM accounts)
+               AND (a.type IN ('connect', 'accepted', 'message') OR (a.type = 'view_profile' AND a.status = 'ok'))
+             ORDER BY CASE WHEN a.type = 'view_profile' THEN 1 ELSE 0 END, a.id DESC LIMIT 1),
+           l.connection_status, l.connected_at, l.created_at
+    FROM leads l
+    WHERE l.connection_status IN ('pending', 'connected')
+      AND EXISTS (SELECT 1 FROM activity a WHERE a.lead_id = l.id AND a.account_id IN (SELECT id FROM accounts)
+                    AND (a.type IN ('connect', 'accepted', 'message') OR (a.type = 'view_profile' AND a.status = 'ok')));
+  `,
 ];

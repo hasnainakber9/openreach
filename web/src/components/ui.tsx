@@ -94,6 +94,54 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
   );
 }
 
+export interface CheckOption<T extends string | number> {
+  value: T;
+  label: ReactNode;
+  status?: string;
+  sub?: ReactNode;
+}
+
+// Accessible multi-select: a labelled group of checkboxes, each with an optional status pill.
+// The selection comes back in option order.
+export function CheckList<T extends string | number>({
+  label,
+  options,
+  value,
+  onChange,
+  hint,
+  empty,
+}: {
+  label: string;
+  options: CheckOption<T>[];
+  value: T[];
+  onChange: (v: T[]) => void;
+  hint?: ReactNode;
+  empty?: ReactNode;
+}) {
+  const toggle = (v: T, on: boolean) => {
+    const next = new Set(value);
+    on ? next.add(v) : next.delete(v);
+    onChange(options.filter((o) => next.has(o.value)).map((o) => o.value));
+  };
+  return (
+    <fieldset className="field checklist">
+      <legend className="field-label">{label}</legend>
+      {!options.length && empty && <span className="field-hint">{empty}</span>}
+      {options.map((o) => (
+        <label key={o.value} className="checklist-item">
+          <input type="checkbox" checked={value.includes(o.value)} onChange={(e) => toggle(o.value, e.target.checked)} />
+          <span className="checklist-text">
+            <span>{o.label}</span>
+            {o.sub && <span className="field-hint">{o.sub}</span>}
+          </span>
+          {o.status && <Pill status={o.status} />}
+        </label>
+      ))}
+      {hint && <span className="field-hint">{hint}</span>}
+    </fieldset>
+  );
+}
+
 // Secrets are never sent back to the browser, only a mask. Blank keeps the saved value.
 export function SecretField({
   label,

@@ -6,7 +6,8 @@ import { DriverError } from '../drivers/types.js';
 import { accountLimits, schedule, usage } from '../engine/engine.js';
 import { isValidTimezone, isWorkingTime, nextWorkingTime } from '../engine/limits.js';
 import { syncAccount } from '../engine/sync.js';
-import { HttpError, idParam, notFound, parse, user } from '../http.js';
+import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
+import { releaseUnstartedLeads, retireAccount } from '../services/rotation.js';
 import type { AccountRow } from '../types.js';
 
 const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM');
@@ -112,6 +113,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
   app.get('/api/accounts/:id', async (req) => serializeAccount(ctx, load(req)));
 
   app.post('/api/accounts', async (req) => {
+    requireWriter(req);
     const body = parse(accountBody, req.body);
     if (body.driver === 'playwright' && !body.liAt) throw new HttpError(400, 'A LinkedIn session cookie (li_at) is required');
     const id = ctx.db.insert('accounts', { workspace_id: user(req).workspace_id, created_at: ctx.clock.now(), ...columns(body) });
@@ -119,6 +121,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 
   app.patch('/api/accounts/:id', async (req) => {
+    requireWriter(req);
     const a = load(req);
     const body = parse(accountBody.partial(), req.body);
     ctx.db.update('accounts', a.id, columns(body, a));
@@ -126,21 +129,31 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 
   app.delete('/api/accounts/:id', async (req) => {
+    requireWriter(req);
     const a = load(req);
     await ctx.drivers.drop(a.id);
-    ctx.db.run("UPDATE campaigns SET status = 'paused' WHERE account_id = ? AND status = 'active'", [a.id]);
-    ctx.db.run('DELETE FROM accounts WHERE id = ?', [a.id]);
-    ctx.db.run('DELETE FROM sim_people WHERE account_id = ?', [a.id]);
+    // Only campaigns left without any sender pause; the others carry on from their remaining accounts.
+    ctx.db.tx(() => {
+      retireAccount(ctx, a.id);
+      ctx.db.run('DELETE FROM accounts WHERE id = ?', [a.id]);
+      ctx.db.run('DELETE FROM sim_people WHERE account_id = ?', [a.id]);
+    });
     return { ok: true };
   });
 
   app.post('/api/accounts/:id/pause', async (req) => {
+    requireWriter(req);
     const a = load(req);
-    ctx.db.run("UPDATE accounts SET status = 'paused' WHERE id = ?", [a.id]);
+    ctx.db.tx(() => {
+      ctx.db.run("UPDATE accounts SET status = 'paused' WHERE id = ?", [a.id]);
+      // Leads it hasn't contacted yet can go out from the campaign's other senders meanwhile.
+      releaseUnstartedLeads(ctx, a.id);
+    });
     return { ok: true };
   });
 
   app.post('/api/accounts/:id/resume', async (req) => {
+    requireWriter(req);
     const a = load(req);
     if (a.driver === 'playwright' && !a.session_enc) throw new HttpError(400, 'Add a LinkedIn session cookie first');
     ctx.db.run("UPDATE accounts SET status = 'active', status_message = NULL, cooldowns = '{}' WHERE id = ?", [a.id]);
@@ -158,6 +171,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
       const msg = (e as Error).message;
       if (e instanceof DriverError && (e.code === 'SESSION_EXPIRED' || e.code === 'CHECKPOINT')) {
         ctx.db.run("UPDATE accounts SET status = 'needs_login', status_message = ? WHERE id = ?", [msg, a.id]);
+        releaseUnstartedLeads(ctx, a.id);
       }
       throw new HttpError(422, msg);
     }

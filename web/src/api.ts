@@ -94,6 +94,22 @@ export interface CampaignStats {
   acceptanceRate: number;
   replyRate: number;
   atNode: Record<string, number>;
+  bySender: SenderStats[];
+}
+
+// Results for one sending account in a campaign.
+export interface SenderStats {
+  accountId: number;
+  name: string;
+  status: string;
+  leads: number;
+  active: number;
+  invited: number;
+  accepted: number;
+  messaged: number;
+  replied: number;
+  acceptanceRate: number;
+  replyRate: number;
 }
 
 export interface CampaignSettings {
@@ -107,8 +123,11 @@ export interface Campaign {
   id: number;
   name: string;
   status: 'draft' | 'active' | 'paused' | 'completed';
+  // The first sender; kept for older code paths.
   account: { id: number; name: string; status: string } | null;
   accountId: number | null;
+  accounts: { id: number; name: string; status: string }[];
+  accountIds: number[];
   settings: CampaignSettings;
   createdAt: number;
   startedAt: number | null;
@@ -117,6 +136,17 @@ export interface Campaign {
   sequence?: Sequence;
   problems?: string[];
   warnings?: string[];
+}
+
+export interface CampaignLead {
+  lead: Lead;
+  state: string;
+  nodeId: string | null;
+  nodeType: string | null;
+  nextRunAt: number;
+  lastError: string | null;
+  addedAt: number;
+  sender: { id: number; name: string } | null;
 }
 
 export interface Account {

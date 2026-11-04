@@ -75,4 +75,9 @@ export interface CampaignLeadRow {
   last_error: string | null;
   added_at: number;
   finished_at: number | null;
+  // Sender this lead is pinned to (null until its first LinkedIn action is scheduled).
+  account_id: number | null;
+  contacted_at: number | null;
 }
+
+export type ConnectionStatus = LeadRow['connection_status'];

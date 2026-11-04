@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, useApi, type Account, type Campaign, type LeadList, type Sequence } from '../api';
+import { api, useApi, type Account, type Campaign, type CampaignLead, type LeadList, type Sequence } from '../api';
 import { Funnel, LineChart } from '../components/LineChart';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
-import { Button, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
-import { ACTION_LABELS, CONDITION_LABELS, fullName, pct, timeAgo } from '../format';
+import { Button, CheckList, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
+import { ACTION_LABELS, CONDITION_LABELS, fullName, pct, senderSummary, timeAgo } from '../format';
 
 type Tab = 'sequence' | 'leads' | 'results' | 'settings';
 
@@ -57,10 +57,17 @@ export default function CampaignDetail() {
             <Pill status={c.status} />
           </div>
           <p>
-            {c.account ? (
+            {c.accounts.length ? (
               <>
-                Runs from <strong>{c.account.name}</strong>
-                {c.account.status !== 'active' && <> · account is {c.account.status.replace('_', ' ')}</>}
+                Runs from <strong title={c.accounts.map((a) => a.name).join(', ')}>{senderSummary(c.accounts)}</strong>
+                {c.accounts
+                  .filter((a) => a.status !== 'active')
+                  .map((a) => (
+                    <span key={a.id}>
+                      {' '}
+                      · {a.name} is {a.status.replace('_', ' ')}
+                    </span>
+                  ))}
               </>
             ) : (
               'No LinkedIn account selected'
@@ -127,7 +134,7 @@ function stepLabel(seq: Sequence | undefined, nodeId: string | null) {
 function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: () => void }) {
   const [state, setState] = useState('');
   const [page, setPage] = useState(1);
-  const leads = useApi<{ total: number; items: any[] }>(`/api/campaigns/${campaign.id}/leads?page=${page}&pageSize=50${state ? `&state=${state}` : ''}`, 15_000);
+  const leads = useApi<{ total: number; items: CampaignLead[] }>(`/api/campaigns/${campaign.id}/leads?page=${page}&pageSize=50${state ? `&state=${state}` : ''}`, 15_000);
   const lists = useApi<LeadList[]>('/api/lists');
   const [listId, setListId] = useState<number | ''>('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -206,6 +213,7 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
                   <th>State</th>
                   <th>Current step</th>
                   <th>Next</th>
+                  <th>Sender</th>
                   <th>Connection</th>
                 </tr>
               </thead>
@@ -238,6 +246,9 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
                       {r.lastError && <div className="cell-sub" style={{ color: 'var(--critical-text)' }}>{r.lastError}</div>}
                     </td>
                     <td className="muted">{r.state === 'active' ? timeAgo(r.nextRunAt) : '—'}</td>
+                    <td className={r.sender ? undefined : 'muted'} title={r.sender ? undefined : 'Assigned when its first LinkedIn step runs'}>
+                      {r.sender?.name ?? 'Not assigned yet'}
+                    </td>
                     <td>
                       <Pill status={r.lead.connectionStatus} />
                     </td>
@@ -295,6 +306,49 @@ function Results({ campaign }: { campaign: Campaign }) {
           />
         </div>
       </div>
+      {!!s.bySender.length && (
+        <div className="card card-flush">
+          <h2 style={{ padding: '16px 16px 4px' }}>By sender</h2>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th className="num">Leads</th>
+                  <th className="num">Invited</th>
+                  <th className="num">Accepted</th>
+                  <th className="num">Messaged</th>
+                  <th className="num">Replied</th>
+                </tr>
+              </thead>
+              <tbody>
+                {s.bySender.map((r) => (
+                  <tr key={r.accountId}>
+                    <td>
+                      <div className="row">
+                        <span className="cell-title">{r.name}</span>
+                        {r.status !== 'active' && <Pill status={r.status} />}
+                      </div>
+                      {!campaign.accountIds.includes(r.accountId) && <div className="cell-sub">No longer a sender; finishing its conversations</div>}
+                    </td>
+                    <td className="num">
+                      {r.leads} <span className="muted">({r.active} in progress)</span>
+                    </td>
+                    <td className="num">{r.invited}</td>
+                    <td className="num">
+                      {r.accepted} <span className="muted">({pct(r.acceptanceRate)})</span>
+                    </td>
+                    <td className="num">{r.messaged}</td>
+                    <td className="num">
+                      {r.replied} <span className="muted">({pct(r.replyRate)})</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       <div className="card">
         <h2 style={{ marginBottom: 8 }}>Activity</h2>
         {!feed.data?.length && <p className="muted">Nothing has happened in this campaign yet.</p>}
@@ -322,7 +376,7 @@ function Results({ campaign }: { campaign: Campaign }) {
 
 function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campaign; onSaved: () => void; onDeleted: () => void }) {
   const accounts = useApi<Account[]>('/api/accounts');
-  const [form, setForm] = useState({ name: campaign.name, accountId: campaign.accountId, ...campaign.settings });
+  const [form, setForm] = useState({ name: campaign.name, accountIds: campaign.accountIds, ...campaign.settings });
   const { busy, run } = useAction();
   const nav = useNavigate();
 
@@ -330,8 +384,8 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
     run(
       'save',
       async () => {
-        const { name, accountId, ...settings } = form;
-        await api(`/api/campaigns/${campaign.id}`, { method: 'PATCH', body: { name, accountId, settings } });
+        const { name, accountIds, ...settings } = form;
+        await api(`/api/campaigns/${campaign.id}`, { method: 'PATCH', body: { name, accountIds, settings } });
         onSaved();
       },
       'Settings saved',
@@ -343,16 +397,14 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
         <Field label="Campaign name">
           <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         </Field>
-        <Field label="LinkedIn account" hint={campaign.status === 'active' ? 'Pause the campaign to switch accounts.' : undefined}>
-          <select value={form.accountId ?? ''} disabled={campaign.status === 'active'} onChange={(e) => setForm({ ...form, accountId: e.target.value ? Number(e.target.value) : null })}>
-            <option value="">None</option>
-            {accounts.data?.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <CheckList
+          label="Send from"
+          options={(accounts.data ?? []).map((a) => ({ value: a.id, label: a.name, sub: a.driver === 'simulator' ? 'Simulated' : undefined, status: a.status }))}
+          value={form.accountIds}
+          onChange={(accountIds) => setForm({ ...form, accountIds })}
+          empty="No LinkedIn accounts yet. Add one on the LinkedIn accounts page."
+          hint="New leads go to the account with the most room left today; each account keeps to its own limits and hours. A lead stays with the account that first contacted it, even if you remove that account here."
+        />
         <Toggle checked={form.stopOnReply} onChange={(v) => setForm({ ...form, stopOnReply: v })} label="Stop when a lead replies" hint="Recommended. Replies are picked up from the LinkedIn inbox." />
         <Toggle checked={form.skipIfInOtherCampaign} onChange={(v) => setForm({ ...form, skipIfInOtherCampaign: v })} label="Skip leads already running in another campaign" />
         <Toggle checked={form.skipAlreadyConnected} onChange={(v) => setForm({ ...form, skipAlreadyConnected: v })} label="Skip people you're already connected to" />

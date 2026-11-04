@@ -15,6 +15,9 @@ export const ACTION_TYPES = [
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
+// Nodes the engine advances on its own (they only read the database), whatever the account's hours or limits.
+export const FREE_NODE_TYPES = ['wait', 'condition'] as const;
+
 export const CONDITION_KINDS = ['is_connected', 'accepted_within', 'has_email', 'replied'] as const;
 export type ConditionKind = (typeof CONDITION_KINDS)[number];
 

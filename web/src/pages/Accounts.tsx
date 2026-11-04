@@ -149,7 +149,7 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
 
   const remove = () =>
     account &&
-    confirm(`Remove "${account.name}"? Its campaigns will be paused.`) &&
+    confirm(`Remove "${account.name}"? Leads it already contacted stop, and campaigns with no other sender are paused.`) &&
     run('del', async () => {
       await api(`/api/accounts/${account.id}`, { method: 'DELETE' });
       onSaved();

@@ -4,9 +4,10 @@ import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { CampaignSettingsSchema, defaultSequence, SequenceSchema, validateSequence, type Sequence } from '../engine/sequence.js';
 import { leadVars, render, unknownVariables, VARIABLE_NAMES } from '../engine/template.js';
-import { HttpError, idParam, notFound, parse, user } from '../http.js';
+import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
 import { contactTypesSql } from '../services/activity.js';
 import { addLeadsToCampaign, campaignSequence } from '../services/leads.js';
+import { campaignAccountIds, campaignAccounts, setCampaignAccounts } from '../services/rotation.js';
 import type { CampaignRow, LeadRow } from '../types.js';
 import { serializeLead } from './leads.js';
 
@@ -31,7 +32,6 @@ export function campaignStats(ctx: Ctx, campaignId: number) {
     `SELECT COUNT(DISTINCT lead_id) AS n FROM activity WHERE campaign_id = ? AND status = 'ok' AND type IN (${contactTypesSql()})`,
     [campaignId],
   )!.n;
-  const pct = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 10 : 0);
   return {
     total,
     active: states.active ?? 0,
@@ -44,30 +44,83 @@ export function campaignStats(ctx: Ctx, campaignId: number) {
     acceptanceRate: pct(accepted, invited),
     replyRate: pct(replied, contacted),
     atNode,
+    bySender: senderStats(ctx, campaignId),
   };
 }
 
+const pct = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 10 : 0);
+
+// Results per sending account: current senders plus any account that pinned or worked a lead here.
+function senderStats(ctx: Ctx, campaignId: number) {
+  const acts = ctx.db.all<{ account_id: number; type: string; n: number }>(
+    "SELECT account_id, type, COUNT(DISTINCT lead_id) AS n FROM activity WHERE campaign_id = ? AND status = 'ok' AND account_id IS NOT NULL GROUP BY account_id, type",
+    [campaignId],
+  );
+  const contacted = ctx.db.all<{ account_id: number; n: number }>(
+    `SELECT account_id, COUNT(DISTINCT lead_id) AS n FROM activity WHERE campaign_id = ? AND status = 'ok' AND account_id IS NOT NULL AND type IN (${contactTypesSql()}) GROUP BY account_id`,
+    [campaignId],
+  );
+  const pinned = ctx.db.all<{ account_id: number; n: number; active: number }>(
+    "SELECT account_id, COUNT(*) AS n, SUM(CASE WHEN state = 'active' THEN 1 ELSE 0 END) AS active FROM campaign_leads WHERE campaign_id = ? AND account_id IS NOT NULL GROUP BY account_id",
+    [campaignId],
+  );
+  const ids = [...new Set([...campaignAccountIds(ctx, campaignId), ...pinned.map((r) => r.account_id), ...acts.map((r) => r.account_id)])];
+  return ids.map((id) => {
+    const account = ctx.db.get<{ name: string; status: string }>('SELECT name, status FROM accounts WHERE id = ?', [id]);
+    const n = (type: string) => acts.find((r) => r.account_id === id && r.type === type)?.n ?? 0;
+    const p = pinned.find((r) => r.account_id === id);
+    const invited = n('connect');
+    const accepted = n('accepted');
+    const replied = n('replied');
+    const reached = contacted.find((r) => r.account_id === id)?.n ?? 0;
+    return {
+      accountId: id,
+      name: account?.name ?? 'Removed account',
+      status: account?.status ?? 'removed',
+      leads: p?.n ?? 0,
+      active: p?.active ?? 0,
+      invited,
+      accepted,
+      messaged: n('message'),
+      replied,
+      acceptanceRate: pct(accepted, invited),
+      replyRate: pct(replied, reached),
+    };
+  });
+}
+
 const settingsPatch = CampaignSettingsSchema.partial();
+const accountIdsSchema = z.array(z.number().int().positive()).max(20);
 
 export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   const load = (req: any): CampaignRow => {
     const { id } = parse(idParam, req.params);
     return ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ? AND workspace_id = ?', [id, user(req).workspace_id]) ?? notFound('Campaign');
   };
-  const ownsAccount = (req: any, accountId: number | null | undefined) => {
-    if (accountId == null) return;
-    if (!ctx.db.get('SELECT 1 FROM accounts WHERE id = ? AND workspace_id = ?', [accountId, user(req).workspace_id])) notFound('Account');
+  // Sender list from a create/patch body. `accountId` (one sender) is still accepted for older clients.
+  // Every id must belong to the caller's workspace; a foreign id is a 404 like any other row.
+  const senderIds = (req: any, body: { accountIds?: number[]; accountId?: number | null }): number[] | undefined => {
+    const ids = body.accountIds ?? (body.accountId === undefined ? undefined : body.accountId === null ? [] : [body.accountId]);
+    if (!ids) return undefined;
+    const unique = [...new Set(ids)];
+    if (!unique.length) return unique;
+    const found = ctx.db.all<{ id: number }>(`SELECT id FROM accounts WHERE workspace_id = ? AND id IN (${unique.map(() => '?').join(',')})`, [user(req).workspace_id, ...unique]);
+    if (found.length !== unique.length) notFound('Account');
+    return unique;
   };
 
   const serialize = (c: CampaignRow, full = false) => {
     const seq = campaignSequence(c);
-    const account = c.account_id ? ctx.db.get<{ id: number; name: string; status: string }>('SELECT id, name, status FROM accounts WHERE id = ?', [c.account_id]) : null;
+    const accounts = campaignAccounts(ctx, c.id);
     return {
       id: c.id,
       name: c.name,
       status: c.status,
-      account: account ?? null,
-      accountId: c.account_id,
+      // `account`/`accountId` are the first sender, kept for older clients.
+      account: accounts[0] ?? null,
+      accountId: accounts[0]?.id ?? null,
+      accounts,
+      accountIds: accounts.map((a) => a.id),
       settings: CampaignSettingsSchema.parse(json(c.settings, {})),
       createdAt: c.created_at,
       startedAt: c.started_at,
@@ -84,30 +137,37 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   app.get('/api/campaigns/:id', async (req) => serialize(load(req), true));
 
   app.post('/api/campaigns', async (req) => {
-    const body = parse(z.object({ name: z.string().min(1).max(150), accountId: z.number().int().nullable().optional(), sequence: SequenceSchema.optional(), settings: settingsPatch.optional() }), req.body);
-    ownsAccount(req, body.accountId);
-    const id = ctx.db.insert('campaigns', {
-      workspace_id: user(req).workspace_id,
-      account_id: body.accountId ?? null,
-      name: body.name,
-      status: 'draft',
-      sequence: JSON.stringify(body.sequence ?? defaultSequence()),
-      settings: JSON.stringify(CampaignSettingsSchema.parse(body.settings ?? {})),
-      created_at: ctx.clock.now(),
+    requireWriter(req);
+    const body = parse(
+      z.object({ name: z.string().min(1).max(150), accountId: z.number().int().nullable().optional(), accountIds: accountIdsSchema.optional(), sequence: SequenceSchema.optional(), settings: settingsPatch.optional() }),
+      req.body,
+    );
+    const senders = senderIds(req, body) ?? [];
+    const id = ctx.db.tx(() => {
+      const id = ctx.db.insert('campaigns', {
+        workspace_id: user(req).workspace_id,
+        account_id: senders[0] ?? null,
+        name: body.name,
+        status: 'draft',
+        sequence: JSON.stringify(body.sequence ?? defaultSequence()),
+        settings: JSON.stringify(CampaignSettingsSchema.parse(body.settings ?? {})),
+        created_at: ctx.clock.now(),
+      });
+      setCampaignAccounts(ctx, id, senders);
+      return id;
     });
     return serialize(ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [id])!, true);
   });
 
   app.patch('/api/campaigns/:id', async (req) => {
+    requireWriter(req);
     const c = load(req);
-    const body = parse(z.object({ name: z.string().min(1).max(150), accountId: z.number().int().nullable(), sequence: SequenceSchema, settings: settingsPatch }).partial(), req.body);
-    ownsAccount(req, body.accountId);
+    const body = parse(z.object({ name: z.string().min(1).max(150), accountId: z.number().int().nullable(), accountIds: accountIdsSchema, sequence: SequenceSchema, settings: settingsPatch }).partial(), req.body);
+    // Senders can change while the campaign runs: leads they already contacted stay with them.
+    const senders = senderIds(req, body);
+    if (senders && !senders.length && c.status === 'active') throw new HttpError(409, 'A running campaign needs at least one LinkedIn account. Pause it first.');
     const cols: Record<string, any> = {};
     if (body.name) cols.name = body.name;
-    if (body.accountId !== undefined) {
-      if (c.status === 'active' && body.accountId !== c.account_id) throw new HttpError(409, 'Pause the campaign before switching its LinkedIn account');
-      cols.account_id = body.accountId;
-    }
     if (body.settings) cols.settings = JSON.stringify(CampaignSettingsSchema.parse({ ...json(c.settings, {}), ...body.settings }));
     if (body.sequence) {
       const problems = validateSequence(body.sequence);
@@ -116,14 +176,16 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     }
     ctx.db.tx(() => {
       ctx.db.update('campaigns', c.id, cols);
+      if (senders) setCampaignAccounts(ctx, c.id, senders);
       if (body.sequence) reconcile(ctx, c.id, body.sequence);
     });
     return serialize(ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [c.id])!, true);
   });
 
   app.post('/api/campaigns/:id/start', async (req) => {
+    requireWriter(req);
     const c = load(req);
-    if (!c.account_id) throw new HttpError(400, 'Choose a LinkedIn account for this campaign first');
+    if (!campaignAccountIds(ctx, c.id).length) throw new HttpError(400, 'Choose a LinkedIn account for this campaign first');
     const problems = validateSequence(campaignSequence(c));
     if (problems.length) throw new HttpError(400, problems[0], problems);
     if (!campaignSequence(c).start) throw new HttpError(400, 'Add at least one step');
@@ -132,24 +194,32 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 
   app.post('/api/campaigns/:id/pause', async (req) => {
+    requireWriter(req);
     const c = load(req);
     ctx.db.run("UPDATE campaigns SET status = 'paused' WHERE id = ?", [c.id]);
     return serialize(load(req));
   });
 
   app.post('/api/campaigns/:id/duplicate', async (req) => {
+    requireWriter(req);
     const c = load(req);
-    const id = ctx.db.insert('campaigns', { workspace_id: c.workspace_id, account_id: c.account_id, name: `${c.name} (copy)`, status: 'draft', sequence: c.sequence, settings: c.settings, created_at: ctx.clock.now() });
+    const id = ctx.db.tx(() => {
+      const id = ctx.db.insert('campaigns', { workspace_id: c.workspace_id, account_id: c.account_id, name: `${c.name} (copy)`, status: 'draft', sequence: c.sequence, settings: c.settings, created_at: ctx.clock.now() });
+      setCampaignAccounts(ctx, id, campaignAccountIds(ctx, c.id));
+      return id;
+    });
     return { id };
   });
 
   app.delete('/api/campaigns/:id', async (req) => {
+    requireWriter(req);
     const c = load(req);
     ctx.db.run('DELETE FROM campaigns WHERE id = ?', [c.id]);
     return { ok: true };
   });
 
   app.post('/api/campaigns/:id/leads', async (req) => {
+    requireWriter(req);
     const c = load(req);
     const body = parse(z.object({ listId: z.number().int().optional(), leadIds: z.array(z.number().int()).max(50000).optional() }), req.body);
     let ids = body.leadIds ?? [];
@@ -159,6 +229,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 
   app.post('/api/campaigns/:id/leads/remove', async (req) => {
+    requireWriter(req);
     const c = load(req);
     const { leadIds } = parse(z.object({ leadIds: z.array(z.number().int()).min(1) }), req.body);
     const r = ctx.db.run(`DELETE FROM campaign_leads WHERE campaign_id = ? AND lead_id IN (${leadIds.map(Number).join(',')})`, [c.id]);
@@ -171,15 +242,15 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     const where = q.state ? 'AND cl.state = $state' : '';
     const p = { c: c.id, ...(q.state ? { state: q.state } : {}) };
     const total = ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM campaign_leads cl WHERE cl.campaign_id = $c ${where}`, p)!.n;
-    const rows = ctx.db.all<LeadRow & { cl_state: string; node_id: string; node_type: string; next_run_at: number; last_error: string; added_at: number }>(
-      `SELECT l.*, cl.state AS cl_state, cl.node_id, cl.node_type, cl.next_run_at, cl.last_error, cl.added_at
-       FROM campaign_leads cl JOIN leads l ON l.id = cl.lead_id WHERE cl.campaign_id = $c ${where}
+    const rows = ctx.db.all<LeadRow & { cl_state: string; node_id: string; node_type: string; next_run_at: number; last_error: string; added_at: number; sender_id: number | null; sender_name: string | null }>(
+      `SELECT l.*, cl.state AS cl_state, cl.node_id, cl.node_type, cl.next_run_at, cl.last_error, cl.added_at, s.id AS sender_id, s.name AS sender_name
+       FROM campaign_leads cl JOIN leads l ON l.id = cl.lead_id LEFT JOIN accounts s ON s.id = cl.account_id WHERE cl.campaign_id = $c ${where}
        ORDER BY cl.id LIMIT ${q.pageSize} OFFSET ${(q.page - 1) * q.pageSize}`,
       p,
     );
     return {
       total,
-      items: rows.map((r) => ({ lead: serializeLead(r), state: r.cl_state, nodeId: r.node_id, nodeType: r.node_type, nextRunAt: r.next_run_at, lastError: r.last_error, addedAt: r.added_at })),
+      items: rows.map((r) => ({ lead: serializeLead(r), state: r.cl_state, nodeId: r.node_id, nodeType: r.node_type, nextRunAt: r.next_run_at, lastError: r.last_error, addedAt: r.added_at, sender: r.sender_id ? { id: r.sender_id, name: r.sender_name! } : null })),
     };
   });
 

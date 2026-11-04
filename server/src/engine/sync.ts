@@ -3,6 +3,7 @@ import type { Ctx } from '../context.js';
 import type { InboxThread } from '../drivers/types.js';
 import { logActivity } from '../services/activity.js';
 import { campaignSettings, publicLead } from '../services/leads.js';
+import { connectionWith, setConnection } from '../services/rotation.js';
 import type { AccountRow, CampaignRow, LeadRow } from '../types.js';
 
 // Pulls what happened on LinkedIn since the last sync: accepted invitations and new messages.
@@ -17,7 +18,9 @@ export async function syncAccount(ctx: Ctx, a: AccountRow) {
   let accepted = 0;
   for (const p of connections) {
     const lead = ctx.db.get<LeadRow>('SELECT * FROM leads WHERE workspace_id = ? AND public_id = ?', [a.workspace_id, p.publicId]);
-    if (!lead || lead.connection_status === 'connected') continue;
+    // Skip only people this account already knows it is connected to: with several senders, a lead
+    // connected through account A can still accept B's invite, and B needs to record that.
+    if (!lead || connectionWith(ctx, lead, a.id) === 'connected') continue;
     markConnected(ctx, a, lead);
     accepted++;
   }
@@ -29,9 +32,14 @@ export async function syncAccount(ctx: Ctx, a: AccountRow) {
 
 export function markConnected(ctx: Ctx, a: AccountRow, lead: LeadRow) {
   const now = ctx.clock.now();
-  const wasPending = lead.connection_status === 'pending';
-  ctx.db.update('leads', lead.id, { connection_status: 'connected', connected_at: now });
-  const active = ctx.db.get<{ campaign_id: number }>("SELECT campaign_id FROM campaign_leads WHERE lead_id = ? AND state = 'active'", [lead.id]);
+  const wasPending = connectionWith(ctx, lead, a.id) === 'pending';
+  const wasConnected = ctx.db.get<{ connection_status: string }>('SELECT connection_status FROM leads WHERE id = ?', [lead.id])?.connection_status === 'connected';
+  setConnection(ctx, lead.id, a.id, 'connected');
+  // Attribute the acceptance to the campaign only when this account is (or may become) the lead's sender.
+  const active = ctx.db.get<{ campaign_id: number }>(
+    "SELECT campaign_id FROM campaign_leads WHERE lead_id = ? AND state = 'active' AND (account_id IS NULL OR account_id = ?)",
+    [lead.id, a.id],
+  );
   logActivity(ctx, {
     workspaceId: a.workspace_id,
     accountId: a.id,
@@ -42,7 +50,8 @@ export function markConnected(ctx: Ctx, a: AccountRow, lead: LeadRow) {
     timezone: a.timezone,
   });
   ctx.db.run("UPDATE campaign_leads SET next_run_at = ? WHERE lead_id = ? AND state = 'active' AND node_type = 'condition'", [now, lead.id]);
-  ctx.webhooks.emit(a.workspace_id, 'lead.connected', { lead: publicLead({ ...lead, connection_status: 'connected' }) });
+  // The event means "now connected to us"; a second sender connecting too doesn't fire it again.
+  if (!wasConnected) ctx.webhooks.emit(a.workspace_id, 'lead.connected', { lead: publicLead({ ...lead, connection_status: 'connected' }), account: { id: a.id, name: a.name } });
 }
 
 // Returns the number of new inbound messages.
@@ -92,7 +101,7 @@ export function storeThread(ctx: Ctx, a: AccountRow, t: InboxThread): number {
 
   if (inbound && lead) {
     ctx.db.update('leads', lead.id, { replied_at: now });
-    if (lead.connection_status !== 'connected') markConnected(ctx, a, lead);
+    if (connectionWith(ctx, lead, a.id) !== 'connected') markConnected(ctx, a, lead);
     const active = ctx.db.all<{ id: number; campaign_id: number }>("SELECT id, campaign_id FROM campaign_leads WHERE lead_id = ? AND state = 'active'", [lead.id]);
     for (const cl of active) {
       const c = ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [cl.campaign_id])!;
@@ -101,7 +110,7 @@ export function storeThread(ctx: Ctx, a: AccountRow, t: InboxThread): number {
     }
     const last = [...t.messages].reverse().find((m) => m.direction === 'in');
     logActivity(ctx, { workspaceId: a.workspace_id, accountId: a.id, campaignId: active[0]?.campaign_id, leadId: lead.id, type: 'replied', detail: last?.body.slice(0, 500), timezone: a.timezone });
-    ctx.webhooks.emit(a.workspace_id, 'lead.replied', { lead: publicLead(lead), message: last?.body });
+    ctx.webhooks.emit(a.workspace_id, 'lead.replied', { lead: publicLead(lead), message: last?.body, account: { id: a.id, name: a.name } });
   }
   return inbound;
 }

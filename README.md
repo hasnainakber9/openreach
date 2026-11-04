@@ -14,7 +14,7 @@ OpenReach is an independent project. It is not affiliated with LinkedIn or with 
 | **Personalization** | `{{firstName}}`, `{{company\|your team}}` fallbacks, `{Hi\|Hello}` spintax, and any CSV column as a variable. Live preview against a real lead. |
 | **Lead import** | CSV upload with automatic column mapping. LinkedIn and Sales Navigator search URLs are scraped in the background. Single profiles can be added by hand. Duplicates are removed per workspace. |
 | **Safety** | Per-account daily and weekly limits, a 7-day warm-up ramp, working hours and days in the account's time zone, randomized pauses between actions, and human-like scrolling and typing. LinkedIn's own pushback (for example the weekly invite cap) puts that action on a 24-hour cool-down. |
-| **Multiple accounts** | Each account has its own session, proxy, schedule and limits. Each campaign runs from one account. |
+| **Multiple accounts and sender rotation** | Each account has its own session, proxy, schedule and limits. A campaign can send from several accounts: each new lead goes to the account with the most room left today (or to the one it is already connected to), and stays with the account that first contacted it, so a person always hears from the same sender. Every account still keeps to its own limits, hours and delays. If an account is paused or logged out, the others take over the leads it hadn't contacted yet. The campaign page shows each lead's sender and results per sender. |
 | **Unified inbox** | Conversations from every account in one place. Replies are detected automatically and stop the lead's sequence. You can reply from the inbox. |
 | **Analytics** | Daily activity, an acceptance and reply funnel, and per-campaign results and timelines. Live activity feed. |
 | **Team** | Workspaces with owner, admin and member roles. |
@@ -41,7 +41,7 @@ npm run seed -w server                      # demo@openreach.local / demo-passwo
 DEMO_SPEED=600 TICK_MS=300 npm start        # one simulated day ≈ 2.4 minutes
 ```
 
-The seed creates a simulated LinkedIn account, 60 leads and a running campaign. With `DEMO_SPEED`, the scheduler's clock runs faster, so within a few minutes you'll see invitations accepted, follow-ups sent and replies landing in the inbox.
+The seed creates two simulated LinkedIn accounts, 60 leads and a running campaign that rotates between them. With `DEMO_SPEED`, the scheduler's clock runs faster, so within a few minutes you'll see invitations accepted, follow-ups sent and replies landing in the inbox.
 
 ### Development
 
@@ -112,6 +112,7 @@ server/
 - Every lead in a campaign has a position in the sequence tree and a `next_run_at` time. Waits and conditions only read the database, so they advance immediately at any hour. Actions wait for their account to be inside working hours, under its limits and past its randomized cool-off from the previous action.
 - About every 45 minutes during working hours, each account syncs its recent connections and inbox. An accepted invite moves the lead down the *Yes* branch straight away. A reply stops the lead (configurable per campaign).
 - Each account's actions run one at a time through a single browser. Different accounts run in parallel.
+- When a campaign has several senders, a lead is pinned to one of them just before its first LinkedIn step. Rotation only decides which account takes a lead; it never lets an account go past its own limits. Removing a sender from a campaign (or deleting the account) hands its not-yet-contacted leads to the others; leads it already contacted keep running from it (or stop, if the account is deleted).
 
 ### When LinkedIn changes its markup
 

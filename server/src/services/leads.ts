@@ -4,6 +4,7 @@ import type { Person } from '../drivers/types.js';
 import { profileUrl, publicIdFromUrl } from '../drivers/types.js';
 import { CampaignSettingsSchema, SequenceSchema, type Sequence } from '../engine/sequence.js';
 import type { CampaignRow, LeadRow } from '../types.js';
+import { setConnection } from './rotation.js';
 import { suppressionReason } from './suppression.js';
 
 export interface LeadInput {
@@ -76,7 +77,8 @@ export function importLeads(ctx: Ctx, workspaceId: number, listId: number, input
 }
 
 // Fills in blanks on a lead from freshly scraped profile data; never overwrites what the user entered.
-export function enrichLead(ctx: Ctx, lead: LeadRow, p: Person) {
+// `accountId` is the account that viewed the profile: a 1st-degree badge means that account is connected.
+export function enrichLead(ctx: Ctx, lead: LeadRow, p: Person, accountId?: number) {
   const patch: Record<string, string | number | null> = {};
   const fill = (col: keyof LeadRow, v: string | null | undefined) => {
     if (v && !lead[col]) patch[col] = v;
@@ -89,11 +91,15 @@ export function enrichLead(ctx: Ctx, lead: LeadRow, p: Person) {
   fill('location', p.location);
   fill('email', p.email);
   fill('phone', p.phone);
-  if (p.degree === 1 && lead.connection_status !== 'connected') {
+  if (p.degree === 1 && accountId == null && lead.connection_status !== 'connected') {
     patch.connection_status = 'connected';
     patch.connected_at = ctx.clock.now();
   }
   ctx.db.update('leads', lead.id, patch);
+  if (p.degree === 1 && accountId != null) {
+    setConnection(ctx, lead.id, accountId, 'connected');
+    return ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id])!;
+  }
   return { ...lead, ...patch } as LeadRow;
 }
 

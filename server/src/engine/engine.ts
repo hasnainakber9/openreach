@@ -2,60 +2,36 @@ import { DAY, HOUR, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { DriverError, type LinkedInDriver } from '../drivers/types.js';
-import { logActivity } from '../services/activity.js';
+import { CONTACT_ACTIVITY_TYPES, logActivity } from '../services/activity.js';
 import type { SmtpConfig } from '../services/email.js';
 import { suppressionReason } from '../services/suppression.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
-import type { AccountRow, CampaignLeadRow, CampaignLeadState, CampaignRow, LeadRow } from '../types.js';
-import { effectiveLimits, isWorkingTime, localParts, randomDelay, type Limits, type Schedule } from './limits.js';
-import { ACTION_TYPES, type ActionType, type SeqNode } from './sequence.js';
+import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLegacy, pinLead, releaseUnstartedLeads, setConnection, type CapacityCache } from '../services/rotation.js';
+import type { AccountRow, CampaignLeadRow, CampaignLeadState, CampaignRow, ConnectionStatus, LeadRow } from '../types.js';
+import { exhaustedActions, schedule } from './capacity.js';
+import { isWorkingTime, randomDelay } from './limits.js';
+import { ACTION_TYPES, FREE_NODE_TYPES, type ActionType, type SeqNode } from './sequence.js';
 import { syncAccount } from './sync.js';
 import { clampNote, leadVars, render } from './template.js';
 
+// Kept here too: routes and tests import them from the engine.
+export { accountLimits, exhaustedActions, schedule, usage } from './capacity.js';
+
 const MAX_ATTEMPTS = 3;
-const FREE_STEPS_PER_TICK = 500;
+const FREE_STEPS_PER_TICK = 2000;
+// How many due leads an account looks through per tick for one it may act on.
+const ACTION_CANDIDATES = 20;
+// How long a lead is held for the account acting on it.
+const ACTION_LEASE = 10 * MINUTE;
 
-export function schedule(a: AccountRow): Schedule {
-  return { timezone: a.timezone, work_days: json(a.work_days, [1, 2, 3, 4, 5]), work_start: a.work_start, work_end: a.work_end };
-}
-
-export function accountLimits(ctx: Ctx, a: AccountRow): Limits {
-  return effectiveLimits(json(a.limits, {}), a.created_at, ctx.clock.now(), !!a.warmup);
-}
-
-// Today's successful actions per type for an account, plus connects over the last 7 days.
-export function usage(ctx: Ctx, a: AccountRow): Record<string, number> {
-  const now = ctx.clock.now();
-  const today = localParts(now, a.timezone).date;
-  const rows = ctx.db.all<{ type: string; n: number }>(
-    "SELECT type, COUNT(*) AS n FROM activity WHERE account_id = ? AND day = ? AND status = 'ok' GROUP BY type",
-    [a.id, today],
-  );
-  const out: Record<string, number> = Object.fromEntries(rows.map((r) => [r.type, r.n]));
-  out.connect_weekly = ctx.db.get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM activity WHERE account_id = ? AND type = 'connect' AND status = 'ok' AND created_at >= ?",
-    [a.id, now - 7 * DAY],
-  )!.n;
-  return out;
-}
-
-export function exhaustedActions(ctx: Ctx, a: AccountRow): ActionType[] {
-  const limits = accountLimits(ctx, a);
-  const used = usage(ctx, a);
-  const cooldowns = json<Record<string, number>>(a.cooldowns, {});
-  const now = ctx.clock.now();
-  return ACTION_TYPES.filter((t) => {
-    if ((cooldowns[t] ?? 0) > now) return true;
-    if ((used[t] ?? 0) >= limits[t]) return true;
-    return t === 'connect' && used.connect_weekly >= limits.connect_weekly;
-  });
-}
+type DueJob = CampaignLeadRow & { c_seq: string; c_settings: string; c_name: string };
 
 class StopAccount extends Error {}
 
 export class Engine {
   private busy = new Set<number>();
   private timer: NodeJS.Timeout | null = null;
+  private capacity: CapacityCache = new Map();
 
   constructor(private ctx: Ctx) {}
 
@@ -68,10 +44,12 @@ export class Engine {
     this.timer = null;
   }
 
-  // Runs one pass over every active account. Accounts work in parallel; each account does
-  // at most one LinkedIn action per pass and then waits out its randomized delay.
-  // Background jobs run in the same pass, so they only run where the engine runs (RUN_WORKER).
+  // Runs one pass: free steps (waits, conditions) for every campaign, then every active account
+  // in parallel. Each account does at most one LinkedIn action per pass and then waits out its
+  // randomized delay. Background jobs run in the same pass, so they only run where the engine runs.
   async tick(): Promise<void> {
+    this.capacity = new Map();
+    this.advanceFreeSteps();
     const accounts = this.ctx.db.all<AccountRow>("SELECT * FROM accounts WHERE status = 'active'");
     await Promise.all([
       this.ctx.jobs.tick().catch((e) => console.error('[jobs] tick failed', e)),
@@ -98,9 +76,9 @@ export class Engine {
     if (working && now - a.last_sync_at >= ctx.config.syncIntervalMin * MINUTE) {
       ctx.db.run('UPDATE accounts SET last_sync_at = ? WHERE id = ?', [now, a.id]);
       await this.guarded(a, () => syncAccount(ctx, a));
+      // Accepted invites wake their leads; move them on before picking this pass's action.
+      this.advanceFreeSteps();
     }
-
-    this.advanceFreeSteps(a);
 
     if (!working || a.next_action_at > now) return;
     const job = this.nextActionJob(a);
@@ -111,13 +89,15 @@ export class Engine {
     }
   }
 
-  // Session problems stop the account until the user reconnects it.
+  // Session problems stop the account until the user reconnects it. Leads it hasn't contacted
+  // yet go back to the pool so the campaign's other senders can take them.
   private async guarded<T>(a: AccountRow, fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
     } catch (e) {
       if (e instanceof DriverError && (e.code === 'SESSION_EXPIRED' || e.code === 'CHECKPOINT')) {
         this.ctx.db.run("UPDATE accounts SET status = 'needs_login', status_message = ? WHERE id = ?", [e.message, a.id]);
+        releaseUnstartedLeads(this.ctx, a.id);
         this.ctx.webhooks.emit(a.workspace_id, 'account.needs_login', { accountId: a.id, name: a.name, reason: e.message });
         await this.ctx.drivers.drop(a.id);
         throw new StopAccount();
@@ -126,30 +106,54 @@ export class Engine {
     }
   }
 
-  private dueJobs(a: AccountRow, where: string, params: any[], limit: number) {
-    return this.ctx.db.all<CampaignLeadRow & { c_seq: string; c_settings: string; c_name: string }>(
+  // Due leads this account may work on: pinned to it (even in campaigns it was since removed from,
+  // so conversations finish from the same sender), then unassigned leads of its campaigns.
+  private dueJobs(a: AccountRow, where: string, params: unknown[], limit: number): DueJob[] {
+    return this.ctx.db.all<DueJob>(
       `SELECT cl.*, c.sequence AS c_seq, c.settings AS c_settings, c.name AS c_name
        FROM campaign_leads cl JOIN campaigns c ON c.id = cl.campaign_id
-       WHERE c.account_id = ? AND c.status = 'active' AND cl.state = 'active' AND cl.next_run_at <= ? AND ${where}
-       ORDER BY cl.next_run_at, cl.id LIMIT ${limit}`,
-      [a.id, this.ctx.clock.now(), ...params],
+       WHERE c.status = 'active' AND c.workspace_id = ? AND cl.state = 'active' AND cl.next_run_at <= ? AND ${where}
+         AND (cl.account_id = ? OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_accounts ca WHERE ca.campaign_id = c.id AND ca.account_id = ?)))
+       ORDER BY CASE WHEN cl.account_id IS NULL THEN 1 ELSE 0 END, cl.next_run_at, cl.id LIMIT ${limit}`,
+      [a.workspace_id, this.ctx.clock.now(), ...(params as any[]), a.id, a.id],
     );
   }
 
   // Waits and conditions only read the database, so they advance immediately, any time of day.
-  advanceFreeSteps(a: AccountRow) {
-    const jobs = this.dueJobs(a, "(cl.node_type IN ('wait', 'condition') OR cl.node_type IS NULL)", [], FREE_STEPS_PER_TICK);
+  // A lead whose sender is paused or logged out stays frozen (its sync isn't running, so an
+  // "accepted within" deadline must not run out); unassigned leads move while any sender is active.
+  advanceFreeSteps() {
+    const types = [...FREE_NODE_TYPES];
+    const jobs = this.ctx.db.all<CampaignLeadRow>(
+      `SELECT cl.* FROM campaign_leads cl JOIN campaigns c ON c.id = cl.campaign_id
+       WHERE c.status = 'active' AND cl.state = 'active' AND cl.next_run_at <= ?
+         AND (cl.node_type IN (${types.map(() => '?').join(',')}) OR cl.node_type IS NULL)
+         AND ((cl.account_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = cl.account_id AND a.status = 'active'))
+           OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_accounts ca JOIN accounts a ON a.id = ca.account_id WHERE ca.campaign_id = c.id AND a.status = 'active'))
+           OR NOT EXISTS (SELECT 1 FROM campaign_accounts ca WHERE ca.campaign_id = c.id))
+       ORDER BY cl.next_run_at, cl.id LIMIT ${FREE_STEPS_PER_TICK}`,
+      [this.ctx.clock.now(), ...types],
+    );
     for (const job of jobs) {
       const campaign = this.campaign(job.campaign_id);
       this.ctx.db.tx(() => this.walk(campaign, job));
     }
   }
 
-  private nextActionJob(a: AccountRow) {
+  // The next lead this account should act on. Unassigned leads are offered to the campaign's best
+  // sender; when that is another account the lead is pinned there and its own loop picks it up.
+  private nextActionJob(a: AccountRow): DueJob | null {
     const blocked = exhaustedActions(this.ctx, a);
     const allowed = ACTION_TYPES.filter((t) => !blocked.includes(t));
     if (!allowed.length) return null;
-    return this.dueJobs(a, `cl.node_type IN (${allowed.map(() => '?').join(',')})`, allowed, 1)[0] ?? null;
+    const candidates = this.dueJobs(a, `cl.node_type IN (${allowed.map(() => '?').join(',')})`, allowed, ACTION_CANDIDATES);
+    for (const job of candidates) {
+      if (job.account_id === a.id) return job;
+      const sender = chooseSender(this.ctx, this.campaign(job.campaign_id), this.lead(job.lead_id), job.node_type as ActionType, this.capacity);
+      if (sender == null || !pinLead(this.ctx, job.id, sender)) continue;
+      if (sender === a.id) return { ...job, account_id: a.id };
+    }
+    return null;
   }
 
   private campaign(id: number) {
@@ -158,6 +162,21 @@ export class Engine {
 
   private lead(id: number) {
     return this.ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [id])!;
+  }
+
+  // Connection as the lead's sender sees it. An unassigned lead connected to any of the campaign's
+  // senders counts as connected and is pinned to that sender, which will message them.
+  private connected(campaign: CampaignRow, job: CampaignLeadRow, lead: LeadRow): { connected: boolean; job: CampaignLeadRow } {
+    if (job.account_id != null) return { connected: connectionWith(this.ctx, lead, job.account_id, campaign.account_id) === 'connected', job };
+    const ids = campaignAccountIds(this.ctx, campaign.id);
+    const via = connectedSender(this.ctx, lead.id, ids);
+    if (via != null && pinLead(this.ctx, job.id, via)) return { connected: true, job: { ...job, account_id: via } };
+    // Legacy leads without per-account rows only have the aggregate, credited to the first sender.
+    const first = campaign.account_id;
+    if (first != null && ids.includes(first) && isLegacy(this.ctx, lead) && lead.connection_status === 'connected' && pinLead(this.ctx, job.id, first)) {
+      return { connected: true, job: { ...job, account_id: first } };
+    }
+    return { connected: false, job };
   }
 
   // Follows free nodes from the job's current position until it reaches an action, a wait
@@ -178,12 +197,14 @@ export class Engine {
       if (node.type === 'condition') {
         const lead = this.lead(cur.lead_id);
         let branch: boolean;
-        if (node.kind === 'is_connected') branch = lead.connection_status === 'connected';
+        if (node.kind === 'is_connected') ({ connected: branch, job: cur } = this.connected(campaign, cur, lead));
         else if (node.kind === 'has_email') branch = !!lead.email;
         else if (node.kind === 'replied') branch = lead.replied_at != null;
         else {
           const deadline = cur.node_entered_at + node.withinDays * DAY;
-          if (lead.connection_status === 'connected') branch = true;
+          const c = this.connected(campaign, cur, lead);
+          cur = c.job;
+          if (c.connected) branch = true;
           else if (now >= deadline) branch = false;
           // Connection sync wakes this job as soon as the invite is accepted.
           else return this.ctx.db.update('campaign_leads', cur.id, { next_run_at: Math.min(deadline, now + 6 * HOUR) });
@@ -191,7 +212,7 @@ export class Engine {
         cur = this.moveTo(campaign, cur, branch ? node.yes : node.no);
         continue;
       }
-      return; // an action: the scheduler picks it up when the account has capacity
+      return; // an action: the scheduler picks it up when an account has capacity
     }
   }
 
@@ -253,13 +274,28 @@ export class Engine {
     const advance = (status: 'ok' | 'skipped', detail?: string) => {
       ctx.db.tx(() => {
         logActivity(ctx, { ...base, status, detail });
+        // From the first real contact on, the lead stays with this sender. The pin is written again
+        // because a pause or sender change may have released the lead while the action ran.
+        if (status === 'ok' && job.contacted_at == null && (CONTACT_ACTIVITY_TYPES as readonly string[]).includes(node.type)) {
+          ctx.db.update('campaign_leads', job.id, { contacted_at: ctx.clock.now(), account_id: a.id });
+        }
         const moved = this.moveTo(campaign, job, node.next);
         if (moved.state === 'active') this.walk(campaign, moved);
       });
       if (status === 'ok') {
-        ctx.webhooks.emit(a.workspace_id, 'action.performed', { type: node.type, detail, campaign: { id: campaign.id, name: campaign.name }, lead: publicLead(this.lead(lead.id)) });
+        ctx.webhooks.emit(a.workspace_id, 'action.performed', {
+          type: node.type,
+          detail,
+          campaign: { id: campaign.id, name: campaign.name },
+          lead: publicLead(this.lead(lead.id)),
+          account: { id: a.id, name: a.name },
+        });
       }
     };
+
+    // Lease the lead while the action runs (a browser action takes seconds): if it is released
+    // meanwhile, no other sender sees it as due until this one has finished and moved it on.
+    if (ctx.db.run('UPDATE campaign_leads SET next_run_at = ? WHERE id = ? AND account_id = ?', [ctx.clock.now() + ACTION_LEASE, job.id, a.id]).changes === 0) return false;
 
     try {
       if (node.type === 'email') {
@@ -271,13 +307,11 @@ export class Engine {
         return false;
       }
 
-      const outcome = await ctx.drivers.use(a, (d) => this.perform(d, node, lead, vars, settings.noteLimit));
-      if (outcome.lead) lead = enrichLead(ctx, lead, outcome.lead);
-      if (outcome.connection) {
-        const patch: Record<string, unknown> = { connection_status: outcome.connection };
-        if (outcome.connection === 'connected' && lead.connection_status !== 'connected') patch.connected_at = ctx.clock.now();
-        ctx.db.update('leads', lead.id, patch as any);
-      }
+      const conn = connectionWith(ctx, lead, a.id, campaign.account_id);
+      const outcome = await ctx.drivers.use(a, (d) => this.perform(d, node, lead, conn, vars, settings.noteLimit));
+      if (outcome.lead) lead = enrichLead(ctx, lead, outcome.lead, a.id);
+      // Connection state is tracked per sender; the lead's own status is the aggregate.
+      if (outcome.connection) setConnection(ctx, lead.id, a.id, outcome.connection);
       if (outcome.message) recordOutbound(ctx, a, lead, outcome.message);
       advance(outcome.status, outcome.detail);
       return true;
@@ -288,6 +322,8 @@ export class Engine {
       switch (e.code) {
         case 'SESSION_EXPIRED':
         case 'CHECKPOINT':
+          // Nothing was sent: drop the lease so the lead can go out from another sender right away.
+          ctx.db.update('campaign_leads', job.id, { next_run_at: job.next_run_at });
           throw e;
         case 'NOT_AVAILABLE':
           advance('skipped', e.message);
@@ -318,13 +354,15 @@ export class Engine {
     this.ctx.db.update('campaign_leads', job.id, { attempts, last_error: message, next_run_at: this.ctx.clock.now() + 30 * MINUTE * attempts });
   }
 
+  // `conn` is the lead's connection with the acting account (not with any account).
   private async perform(
     d: LinkedInDriver,
     node: Exclude<SeqNode, { type: 'wait' | 'condition' | 'email' }>,
     lead: LeadRow,
+    conn: ConnectionStatus,
     vars: Record<string, string>,
     noteLimit: number,
-  ): Promise<{ status: 'ok' | 'skipped'; detail?: string; lead?: Awaited<ReturnType<LinkedInDriver['viewProfile']>>; connection?: LeadRow['connection_status']; message?: string }> {
+  ): Promise<{ status: 'ok' | 'skipped'; detail?: string; lead?: Awaited<ReturnType<LinkedInDriver['viewProfile']>>; connection?: ConnectionStatus; message?: string }> {
     const url = lead.profile_url;
     switch (node.type) {
       case 'view_profile': {
@@ -343,7 +381,7 @@ export class Engine {
         return liked ? { status: 'ok' } : { status: 'skipped', detail: 'no recent posts' };
       }
       case 'connect': {
-        if (lead.connection_status === 'connected') return { status: 'skipped', detail: 'already connected' };
+        if (conn === 'connected') return { status: 'skipped', detail: 'already connected' };
         const note = node.note.trim() ? clampNote(render(node.note, vars, this.ctx.random), noteLimit) : '';
         const r = await d.connect(url, note);
         if (r === 'already_connected') return { status: 'skipped', detail: 'already connected', connection: 'connected' };
@@ -356,7 +394,7 @@ export class Engine {
         return { status: 'ok', detail: text, message: text, connection: 'connected' };
       }
       case 'withdraw_invite': {
-        if (lead.connection_status === 'connected') return { status: 'skipped', detail: 'already connected' };
+        if (conn === 'connected') return { status: 'skipped', detail: 'already connected' };
         const done = await d.withdrawInvite(url);
         return done ? { status: 'ok', connection: 'none' } : { status: 'skipped', detail: 'no pending invitation' };
       }

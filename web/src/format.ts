@@ -38,6 +38,12 @@ export function dateTime(ms: number | null | undefined): string {
 
 export const fullName = (l: { firstName: string; lastName: string }) => `${l.firstName} ${l.lastName}`.trim() || 'Unnamed';
 
+// A campaign's senders in a few words: "Seat A, Seat B +1".
+export function senderSummary(accounts: { name: string }[], max = 2): string {
+  const shown = accounts.slice(0, max).map((a) => a.name).join(', ');
+  return accounts.length > max ? `${shown} +${accounts.length - max}` : shown;
+}
+
 export const pct = (n: number) => `${Number.isFinite(n) ? Math.round(n * 10) / 10 : 0}%`;
 
 export const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];

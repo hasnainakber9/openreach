@@ -16,7 +16,7 @@ HeyReach. We write our own code, copy, UI and names. Never copy their code, text
 | Step | Migration | Status | Deviations |
 |---|---|---|---|
 | foundation | M1 | done | `features` sits on the `user` object of `/api/auth/me` (the web stores that object as `Me`). NAV `badge` is typed `'inbox'` only; g3-tasks-sms adds `'tasks'` with its count. Extra small files: `providers/hash.ts` (hash helpers for simulators), `test/suppression.test.ts`. |
-| g1-rotation | M2 | planned | |
+| g1-rotation | M2 | done | Limit/usage helpers moved to `engine/capacity.ts` (re-exported from `engine.ts`) to avoid an import cycle with `services/rotation.ts`. `chooseSender` rule 1 only returns *active* senders (a lead connected to a logged-out account is not stuck), and rule 2 leaves a lead unassigned when every sender's queue already covers its remaining capacity (score ≤ 0) instead of overbooking one. `runAccount` re-runs the global `advanceFreeSteps()` right after a sync so accepted invites move on in the same pass. `markConnected` links the `accepted` activity to the campaign only when the lead is unassigned or pinned to that account (keeps per-sender stats honest). Campaign and account mutating routes now call `requireWriter`. Seed creates two simulated seats. `enrichLead(ctx, lead, person, accountId?)`. |
 | g1-abtest | M3 | planned | |
 | g1-sources | M4 | planned | |
 | g2-ai-writer | M5 | planned | |
@@ -665,13 +665,19 @@ CREATE TABLE lead_connections (
   PRIMARY KEY (lead_id, account_id)
 );
 CREATE INDEX lead_connections_account ON lead_connections(account_id, status);
+-- Deviation (review): also credit a successful view_profile (before M2 a 1st-degree badge seen on a view was the usual
+-- way a lead became connected, and it logged only view_profile); invites/messages/acceptances win over views.
 INSERT INTO lead_connections (lead_id, account_id, status, connected_at, updated_at)
   SELECT l.id,
-         (SELECT a.account_id FROM activity a WHERE a.lead_id = l.id AND a.type IN ('connect', 'accepted', 'message') AND a.account_id IN (SELECT id FROM accounts) ORDER BY a.id DESC LIMIT 1),
+         (SELECT a.account_id FROM activity a
+           WHERE a.lead_id = l.id AND a.account_id IN (SELECT id FROM accounts)
+             AND (a.type IN ('connect', 'accepted', 'message') OR (a.type = 'view_profile' AND a.status = 'ok'))
+           ORDER BY CASE WHEN a.type = 'view_profile' THEN 1 ELSE 0 END, a.id DESC LIMIT 1),
          l.connection_status, l.connected_at, l.created_at
   FROM leads l
   WHERE l.connection_status IN ('pending', 'connected')
-    AND EXISTS (SELECT 1 FROM activity a WHERE a.lead_id = l.id AND a.type IN ('connect', 'accepted', 'message') AND a.account_id IN (SELECT id FROM accounts));
+    AND EXISTS (SELECT 1 FROM activity a WHERE a.lead_id = l.id AND a.account_id IN (SELECT id FROM accounts)
+                  AND (a.type IN ('connect', 'accepted', 'message') OR (a.type = 'view_profile' AND a.status = 'ok')));
 ```
 
 **Server**
@@ -680,7 +686,13 @@ INSERT INTO lead_connections (lead_id, account_id, status, connected_at, updated
   - `setCampaignAccounts(ctx, campaignId, accountIds)`: replaces rows in a tx, keeps `campaigns.account_id = accountIds[0] ?? null`
     (old readers and the legacy JSON field keep working), releases unstarted leads pinned to removed accounts.
   - `campaignAccountIds(ctx, campaignId)`.
-  - `connectionWith(ctx, lead, accountId)`: `lead_connections` row status, else (legacy: lead has no rows at all) `lead.connection_status`, else `'none'`.
+  - `connectionWith(ctx, lead, accountId, legacyAccountId?)`: `lead_connections` row status, else (legacy: lead has no
+    rows at all) `lead.connection_status`, else `'none'`. Deviation (review): inside a campaign the engine passes
+    `campaigns.account_id` as `legacyAccountId` and the legacy aggregate counts only for that first sender, so a second
+    sender doesn't skip its own invite; `chooseSender` and the `is_connected`/`accepted_within` conditions pin a legacy
+    lead to that first sender. Sync (no campaign) keeps crediting any account.
+  - `retireAccount(ctx, accountId)` (before an account is deleted) also deletes its `lead_connections` rows and calls
+    `refreshConnectionStatus(lead, 'none')`, so a lead known only to the deleted account is not left "connected" with no rows.
   - `chooseSender(ctx, campaign, lead, actionType, capacity)`: (1) if the lead has a `lead_connections` row (connected
     first, then pending, newest first) with an account in the campaign, return it even if busy; (2) among campaign
     accounts that are `active`, inside working hours and not exhausted for `actionType`, pick the highest
@@ -688,6 +700,9 @@ INSERT INTO lead_connections (lead_id, account_id, status, connected_at, updated
     `contacted_at IS NULL` and `node_type = type` (all campaigns); tie → fewer active pinned leads → lower id. `capacity`
     is a per-tick cache `Map<accountId, { limits, used }>` so a tick does not recompute usage per lead.
   - `releaseUnstartedLeads(ctx, accountId, campaignId?)`: `UPDATE campaign_leads SET account_id = NULL WHERE account_id = ? AND state = 'active' AND contacted_at IS NULL`.
+    Because a pause/sender change/session check can release a lead while its account's action is still running, the
+    engine leases the row before the driver call (`next_run_at = now + 10 min WHERE account_id = a`, abort if 0 rows) and
+    writes `account_id = a` together with `contacted_at`, so no second sender acts meanwhile and the contact stays pinned.
 - `engine/sync.ts → markConnected(ctx, a, lead)`: upsert `lead_connections(lead, a, 'connected')`; keep updating
   `leads.connection_status`. Engine `connect` success upserts `(lead, account, 'pending')`; `withdraw_invite` deletes it.
   `syncAccount` today skips a person when `lead.connection_status === 'connected'`; with several accounts that would
