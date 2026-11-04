@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type AbMetric, type ConditionKind, type SeqNode, type Sequence, type VariantId, type VariantNode } from '../api';
+import { api, type AbMetric, type ConditionKind, type InMailVia, type SeqNode, type Sequence, type VariantId, type VariantNode } from '../api';
 import { ACTION_LABELS, CONDITION_LABELS } from '../format';
 import { Icon } from './Icon';
 import { Button, Field, Toggle } from './ui';
@@ -17,10 +17,12 @@ const PALETTE: { type: SeqNode['type']; kind?: ConditionKind; label: string }[] 
   { type: 'endorse', label: ACTION_LABELS.endorse },
   { type: 'email', label: ACTION_LABELS.email },
   { type: 'withdraw_invite', label: ACTION_LABELS.withdraw_invite },
+  { type: 'inmail', label: ACTION_LABELS.inmail },
   { type: 'condition', kind: 'accepted_within', label: 'If invite accepted' },
   { type: 'condition', kind: 'is_connected', label: 'If already connected' },
   { type: 'condition', kind: 'has_email', label: 'If email known' },
   { type: 'condition', kind: 'replied', label: 'If replied' },
+  { type: 'condition', kind: 'is_open_profile', label: 'If open profile' },
 ];
 
 const VARIABLES = ['firstName', 'lastName', 'company', 'title', 'headline', 'location'];
@@ -36,6 +38,8 @@ function makeNode(type: SeqNode['type'], kind: ConditionKind = 'accepted_within'
       return { id, type, text: 'Hi {{firstName}}, ', next: null };
     case 'email':
       return { id, type, subject: 'Quick question, {{firstName}}', body: 'Hi {{firstName}},\n\n', next: null };
+    case 'inmail':
+      return { id, type, subject: 'Idea for {{company|your team}}', body: 'Hi {{firstName}},\n\n', via: 'profile', next: null };
     case 'wait':
       return { id, type, days: 1, hours: 0, next: null };
     case 'endorse':
@@ -83,7 +87,7 @@ const MAX_VARIANTS = 5;
 type Content = { note?: string; text?: string; subject?: string; body?: string };
 type Variant = Content & { id: VariantId };
 
-const isVariantNode = (n: SeqNode): n is VariantNode => n.type === 'connect' || n.type === 'message' || n.type === 'email';
+const isVariantNode = (n: SeqNode): n is VariantNode => n.type === 'connect' || n.type === 'message' || n.type === 'email' || n.type === 'inmail';
 
 function contentOf(n: VariantNode): Content {
   if (n.type === 'connect') return { note: n.note };
@@ -295,6 +299,19 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
       </div>
 
       {isVariantNode(node) && <VariantEditor node={node} onChange={onChange} />}
+      {node.type === 'inmail' && (
+        <>
+          <Field label="Send from" hint="Sales Navigator writes from the lead's Sales Navigator page; the account needs Sales Navigator.">
+            <select value={node.via} onChange={(e) => onChange({ ...node, via: e.target.value as InMailVia })}>
+              <option value="profile">LinkedIn profile (Premium InMail)</option>
+              <option value="sales_navigator">Sales Navigator</option>
+            </select>
+          </Field>
+          <div className="note">
+            InMail reaches people you aren't connected to. It uses the account's InMail credits (Premium or Sales Navigator), except for open profiles, which are free. Without credits, leads who aren't open profiles are skipped. Leads who are already connected get a normal message instead (it counts toward the account's daily message limit).
+          </div>
+        </>
+      )}
       {node.type === 'wait' && (
         <div className="grid grid-2">
           <Field label="Days">
@@ -321,6 +338,9 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
               ))}
             </select>
           </Field>
+          {node.kind === 'is_open_profile' && (
+            <span className="field-hint">Known once a View profile step has visited the lead. Leads not viewed yet go down No, so put a View profile step before this.</span>
+          )}
           {node.kind === 'accepted_within' && (
             <Field label="Wait for acceptance (days)" hint="Leads who accept go down Yes as soon as it's detected. The rest go down No when this time runs out.">
               <input type="number" min={1} max={90} value={node.withinDays} onChange={(e) => onChange({ ...node, withinDays: Math.max(1, Number(e.target.value)) })} />
@@ -427,6 +447,14 @@ function ContentFields({ type, value, onChange, variantId }: { type: VariantNode
     );
   }
   if (type === 'message') return <TemplateField label={`Message${suffix}`} value={value.text ?? ''} onChange={(text) => onChange({ ...value, text })} rows={6} />;
+  if (type === 'inmail') {
+    return (
+      <>
+        <TemplateField label={`Subject${suffix}`} value={value.subject ?? ''} onChange={(subject) => onChange({ ...value, subject })} rows={1} limit={200} />
+        <TemplateField label={`Message${suffix}`} value={value.body ?? ''} onChange={(body) => onChange({ ...value, body })} rows={7} limit={1900} />
+      </>
+    );
+  }
   return (
     <>
       <TemplateField label={`Subject${suffix}`} value={value.subject ?? ''} onChange={(subject) => onChange({ ...value, subject })} rows={1} />

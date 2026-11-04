@@ -3,9 +3,9 @@ import { api, serverNow, useApi, type Account } from '../api';
 import { Button, Empty, ErrorNote, Field, Meter, Modal, Pill, Toggle, useAction } from '../components/ui';
 import { ACTION_LABELS, timeAgo, WEEKDAYS } from '../format';
 
-const LIMIT_KEYS = ['connect', 'connect_weekly', 'message', 'view_profile', 'follow', 'like_post', 'endorse', 'withdraw_invite', 'email'] as const;
-const LIMIT_LABEL: Record<string, string> = { ...ACTION_LABELS, connect: 'Invites / day', connect_weekly: 'Invites / week', message: 'Messages / day' };
-const DEFAULTS: Record<string, number> = { view_profile: 80, follow: 30, endorse: 20, like_post: 30, connect: 20, connect_weekly: 100, message: 50, email: 60, withdraw_invite: 20 };
+const LIMIT_KEYS = ['connect', 'connect_weekly', 'message', 'view_profile', 'follow', 'like_post', 'endorse', 'withdraw_invite', 'email', 'inmail', 'scrape'] as const;
+const LIMIT_LABEL: Record<string, string> = { ...ACTION_LABELS, connect: 'Invites / day', connect_weekly: 'Invites / week', message: 'Messages / day', inmail: 'InMails / day', scrape: 'Profiles imported / day' };
+const DEFAULTS: Record<string, number> = { view_profile: 80, follow: 30, endorse: 20, like_post: 30, connect: 20, connect_weekly: 100, message: 50, email: 60, withdraw_invite: 20, inmail: 10, scrape: 1000 };
 
 export default function Accounts() {
   const accounts = useApi<Account[]>('/api/accounts', 10_000);
@@ -68,6 +68,8 @@ export default function Accounts() {
               <Meter label="Invites this week" used={a.usedToday.connect_weekly ?? 0} limit={a.effectiveLimits.connect_weekly} />
               <Meter label="Messages today" used={a.usedToday.message ?? 0} limit={a.effectiveLimits.message} />
               <Meter label="Profile views today" used={a.usedToday.view_profile ?? 0} limit={a.effectiveLimits.view_profile} />
+              <Meter label="InMails today" used={a.usedToday.inmail ?? 0} limit={a.effectiveLimits.inmail} />
+              <Meter label="Profiles imported today" used={a.usedToday.scrape ?? 0} limit={a.effectiveLimits.scrape} />
             </div>
             <div className="muted" style={{ fontSize: 13 }}>
               {a.workDays.map((d) => WEEKDAYS[d]).join(', ')} · {a.workStart}–{a.workEnd} ({a.timezone}) · {a.working ? 'working now' : `next window ${timeAgo(a.nextWorkingAt)}`} · last sync {timeAgo(a.lastSyncAt || null)}

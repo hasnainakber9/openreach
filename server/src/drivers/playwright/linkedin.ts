@@ -5,7 +5,9 @@ import {
   profileUrl,
   publicIdFromUrl,
   type ConnectResult,
+  type EngagerFilter,
   type InboxThread,
+  type InMail,
   type LinkedInDriver,
   type Person,
   type SessionInfo,
@@ -363,20 +365,11 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
       u.searchParams.set('page', String(pageNo));
       const page = await this.go(u.toString());
       await this.browse(page);
-      const rows = await page.evaluate((sel) => {
-        return Array.from(document.querySelectorAll<HTMLAnchorElement>(sel)).map((a) => {
-          const card = a.closest('li') ?? a.parentElement;
-          const lines = (card?.textContent ? (card as HTMLElement).innerText : '').split('\n').map((l) => l.trim()).filter(Boolean);
-          return { href: a.href.split('?')[0], name: a.innerText.trim().split('\n')[0], lines };
-        });
-      }, SEL.searchResultLinks);
       const before = found.size;
-      for (const r of rows) {
-        const id = publicIdFromUrl(r.href);
-        if (!id || found.has(id) || !r.name || /LinkedIn Member/i.test(r.name)) continue;
-        const [firstName, ...rest] = r.name.replace(/\s*[•·].*$/, '').split(/\s+/);
-        const after = r.lines.filter((l) => !l.includes(r.name) && !/^(•|Connect|Message|Follow|View)/.test(l) && !/degree connection/i.test(l));
-        found.set(id, { publicId: id, profileUrl: profileUrl(id), firstName, lastName: rest.join(' '), headline: after[0] ?? '', location: after[1] ?? '' });
+      for (const r of await readLinks(page, SEL.searchResultLinks)) {
+        const p = linkToPerson(r, true);
+        if (!p || found.has(p.publicId)) continue;
+        found.set(p.publicId, p);
         if (found.size >= limit) break;
       }
       onPage?.(found.size);
@@ -386,11 +379,173 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     return [...found.values()];
   }
 
+  // Reads people from profile links matching `selector`, then asks `more` for the next batch (a
+  // "Show more" button or infinite scroll) until `limit` people are found or nothing new appears.
+  private async collectList(page: Page, selector: string, found: Map<string, Person>, limit: number, more: () => Promise<boolean>, onPage?: (found: number) => void) {
+    for (let round = 0; found.size < limit && round < 200; round++) {
+      const before = found.size;
+      for (const r of await readLinks(page, selector)) {
+        const p = linkToPerson(r);
+        if (p && !found.has(p.publicId)) found.set(p.publicId, p);
+        if (found.size >= limit) break;
+      }
+      onPage?.(found.size);
+      if (found.size >= limit || (!(await more()) && found.size === before)) break;
+      await this.pause(1.5, 3.5);
+    }
+  }
+
+  // Clicks a "show more" button inside `scope` if there is one, else scrolls; true when the list may have grown.
+  private async showMore(page: Page, scope: Locator, label: RegExp, selector: string): Promise<boolean> {
+    const count = await page.locator(selector).count();
+    const button = scope.getByRole('button', { name: label }).first();
+    if ((await button.count()) && (await button.isVisible())) {
+      await button.scrollIntoViewIfNeeded();
+      await button.click();
+    } else {
+      await scope.hover().catch(() => {});
+      await page.mouse.wheel(0, 2500);
+    }
+    await this.pause(1, 2);
+    return (await page.locator(selector).count()) > count;
+  }
+
+  // Best effort: the reactions list opens from the post's reaction count; commenters are read from the
+  // post's comment list, loading more comments as needed. Not tested against the live site.
+  async postEngagers(postUrl: string, which: EngagerFilter, limit: number, onPage?: (found: number) => void): Promise<Person[]> {
+    const page = await this.go(postUrl);
+    await this.browse(page);
+    const found = new Map<string, Person>();
+    if (which.likers) {
+      const count = page.locator('main').getByRole('button', { name: LABELS.reactionsCount }).first();
+      if (await count.count()) {
+        await count.click();
+        await this.pause();
+        const dialog = page.locator(SEL.reactionsDialog).last();
+        await this.collectList(page, SEL.reactorLinks, found, limit, () => this.showMore(page, dialog, LABELS.showMoreResults, SEL.reactorLinks), onPage);
+        await page.keyboard.press('Escape');
+        await this.pause(0.5, 1.2);
+      }
+    }
+    if (which.commenters && found.size < limit) {
+      const main = page.locator('main').first();
+      await this.collectList(page, SEL.commentAuthorLinks, found, limit, () => this.showMore(page, main, LABELS.moreComments, SEL.commentAuthorLinks), onPage);
+    }
+    return [...found.values()];
+  }
+
+  // Best effort: an event's attendee list is a people search behind the event page's "attendees" link,
+  // which LinkedIn only shows to people who can see the attendees (usually fellow attendees).
+  async eventAttendees(eventUrl: string, limit: number, onPage?: (found: number) => void): Promise<Person[]> {
+    const page = await this.go(eventUrl);
+    const link = page.getByRole('link', { name: LABELS.eventAttendees }).first();
+    const href = (await link.count()) ? await link.getAttribute('href') : null;
+    if (!href) throw new DriverError('NOT_AVAILABLE', "This event doesn't show its attendees to this account (attend it first)");
+    await this.pause();
+    return this.search(new URL(href, page.url()).toString(), limit, onPage);
+  }
+
+  // Best effort: the member list of a group the account belongs to, loaded with "Show more results".
+  async groupMembers(groupUrl: string, limit: number, onPage?: (found: number) => void): Promise<Person[]> {
+    const id = groupUrl.match(/\/groups\/([^/?#]+)/)?.[1];
+    if (!id) throw new DriverError('NOT_FOUND', `Not a LinkedIn group URL: ${groupUrl}`);
+    const page = await this.go(URLS.groupMembers(decodeURIComponent(id)));
+    if (!(await page.locator(SEL.groupMemberLinks).first().waitFor({ timeout: 8000 }).then(() => true, () => false))) {
+      throw new DriverError('NOT_AVAILABLE', 'Only members of this group can see its member list');
+    }
+    const found = new Map<string, Person>();
+    const main = page.locator('main').first();
+    await this.collectList(page, SEL.groupMemberLinks, found, limit, () => this.showMore(page, main, LABELS.showMoreResults, SEL.groupMemberLinks), onPage);
+    return [...found.values()];
+  }
+
+  // Best effort: the profile's Message button opens the InMail composer (subject + body) for members you
+  // aren't connected to, when the account has credits or the profile is open; otherwise LinkedIn shows a
+  // Premium upsell. With Sales Navigator the message is written from the lead's Sales Navigator page.
+  async sendInMail(url: string, msg: InMail) {
+    const page = await this.go(url);
+    await this.browse(page);
+    if (msg.via === 'sales_navigator') {
+      const open = await this.profileAction(page, LABELS.viewInSalesNav);
+      if (!open) throw new DriverError('NOT_AVAILABLE', 'No "View in Sales Navigator" option on this profile (is Sales Navigator active on this account?)');
+      await open.click();
+      await page.waitForURL(/\/sales\//, { timeout: 20_000 }).catch(() => {
+        throw new DriverError('NOT_AVAILABLE', 'Sales Navigator did not open');
+      });
+      this.guard(page);
+      await this.pause(1.5, 3.5);
+      const btn = page.locator('main').getByRole('button', { name: LABELS.message }).first();
+      if (!(await btn.count())) throw new DriverError('NOT_AVAILABLE', 'No Message option for this lead in Sales Navigator');
+      await btn.click();
+    } else {
+      const btn = await this.profileAction(page, LABELS.message);
+      if (!btn) throw new DriverError('NOT_AVAILABLE', 'No Message option on this profile (InMail needs Premium credits or an open profile)');
+      await btn.click();
+    }
+    await this.pause();
+
+    // Either the composer opens or LinkedIn answers with a dialog (Premium upsell, no credits left).
+    const box = page.locator(SEL.inmailBody).last();
+    await box.or(page.getByRole('dialog')).first().waitFor({ timeout: 8000 }).catch(() => {});
+    await this.pause(0.5, 1.2);
+    if (!(await box.count())) {
+      const dialog = await page.getByRole('dialog').last().innerText().catch(() => '');
+      await page.keyboard.press('Escape');
+      if (LABELS.inmailNoCredits.test(dialog)) throw new DriverError('LIMIT_REACHED', 'No InMail credits left');
+      throw new DriverError('NOT_AVAILABLE', 'No InMail credits and the profile is not open');
+    }
+    const subject = page.locator(SEL.inmailSubject).last();
+    if (msg.subject.trim() && (await subject.count())) {
+      await this.type(subject, msg.subject);
+      await this.pause(0.5, 1.2);
+    }
+    const lines = msg.body.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      await this.type(box, lines[i]);
+      if (i < lines.length - 1) await page.keyboard.press('Shift+Enter');
+    }
+    await this.pause();
+    const send = page.locator(SEL.messageSend).last();
+    await ((await send.count()) ? send : page.getByRole('button', { name: LABELS.send }).last()).click();
+    await this.pause(1.5, 3);
+    if (LABELS.inmailNoCredits.test(await page.getByRole('dialog').last().innerText({ timeout: 1000 }).catch(() => ''))) {
+      throw new DriverError('LIMIT_REACHED', 'No InMail credits left');
+    }
+    const close = page.locator(SEL.messageOverlayClose).last();
+    if (await close.count()) await close.click().catch(() => {});
+  }
+
   async close() {
     await this.ctx?.close().catch(() => {});
     this.ctx = null;
     this.page = null;
   }
+}
+
+interface LinkRow {
+  href: string;
+  name: string;
+  lines: string[];
+}
+
+// Profile links on a list page (search results, reactions, comments, members) with their card's text.
+function readLinks(page: Page, selector: string): Promise<LinkRow[]> {
+  return page.evaluate((sel) => {
+    return Array.from(document.querySelectorAll<HTMLAnchorElement>(sel)).map((a) => {
+      const card = a.closest('li, article') ?? a.parentElement;
+      const lines = (card?.textContent ? (card as HTMLElement).innerText : '').split('\n').map((l) => l.trim()).filter(Boolean);
+      return { href: a.href.split('?')[0], name: a.innerText.trim().split('\n')[0], lines };
+    });
+  }, selector);
+}
+
+// Name from the link, headline (and on search results, location) from the card's next lines. Hidden members ("LinkedIn Member") are skipped.
+function linkToPerson(r: LinkRow, withLocation = false): Person | null {
+  const id = publicIdFromUrl(r.href);
+  if (!id || !r.name || /LinkedIn Member/i.test(r.name)) return null;
+  const [firstName, ...rest] = r.name.replace(/\s*[•·].*$/, '').split(/\s+/);
+  const after = r.lines.filter((l) => !l.includes(r.name) && !/^(•|·|Connect|Message|Follow|View|Like|Reply)/.test(l) && !/degree connection/i.test(l));
+  return { publicId: id, profileUrl: profileUrl(id), firstName, lastName: rest.join(' '), headline: after[0] ?? '', location: withLocation ? (after[1] ?? '') : '' };
 }
 
 function parseProxy(raw: string) {

@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto';
 import type { Clock } from '../clock.js';
-import { HOUR } from '../clock.js';
+import { DAY, HOUR } from '../clock.js';
 import type { DB } from '../db/db.js';
 import {
   DriverError,
   profileUrl,
   publicIdFromUrl,
   type ConnectResult,
+  type EngagerFilter,
   type InboxThread,
+  type InMail,
   type LinkedInDriver,
   type Person,
   type SessionInfo,
@@ -24,6 +26,8 @@ export interface SimulatorOptions {
   replyHours: [number, number];
   latencyMs: number;
   random: () => number;
+  // InMail credits per 30 days (0 = no Premium/Sales Navigator). InMail to open profiles is free.
+  inmailCredits: number;
 }
 
 export const DEFAULT_SIM: SimulatorOptions = {
@@ -33,6 +37,7 @@ export const DEFAULT_SIM: SimulatorOptions = {
   replyHours: [1, 36],
   latencyMs: 0,
   random: Math.random,
+  inmailCredits: 50,
 };
 
 const FIRST = ['Ava', 'Liam', 'Sofia', 'Noah', 'Amara', 'Mateo', 'Hana', 'Omar', 'Chloe', 'Ravi', 'Lena', 'Kwame', 'Mei', 'Diego', 'Zara', 'Ethan', 'Aisha', 'Lucas', 'Ingrid', 'Tariq', 'Maya', 'Jonas', 'Priya', 'Felix'];
@@ -76,6 +81,28 @@ export function simPerson(publicId: string): Person {
     email: hasEmail ? `${firstName}.${lastName}@${company.toLowerCase().replace(/[^a-z]/g, '')}.example`.toLowerCase() : null,
     degree: 2,
   };
+}
+
+// About a third of simulated members have an open profile.
+export function simOpenProfile(publicId: string): boolean {
+  return createHash('sha256').update(publicId + ':open').digest().readUInt32BE(0) % 3 === 0;
+}
+
+// A fixed crowd behind a post, event or group: the same URL always yields the same people in the
+// same order (between `size` and 2 × `size` of them), so a second import of it finds only duplicates.
+function crowd(url: string, kind: string, size: number): (Person & { role: number })[] {
+  let key = url.trim().toLowerCase();
+  try {
+    key = new URL(url).pathname.replace(/\/+$/, '').toLowerCase();
+  } catch {}
+  key = `${kind}:${key}`;
+  const n = size + (createHash('sha256').update(key).digest().readUInt32BE(0) % size);
+  return Array.from({ length: n }, (_, i) => {
+    const h = createHash('md5').update(`${key}:${i}`).digest();
+    const first = FIRST[h[0] % FIRST.length].toLowerCase();
+    const last = LAST[h[1] % LAST.length].toLowerCase();
+    return { ...simPerson(`${first}-${last}-${h.toString('hex').slice(0, 6)}`), role: h[2] % 4 };
+  });
 }
 
 interface SimRow {
@@ -142,7 +169,7 @@ export class SimulatorDriver implements LinkedInDriver {
     const r = this.row(id);
     const p = simPerson(id);
     // Like LinkedIn, contact info is only visible to 1st-degree connections.
-    return { ...p, degree: r.connected ? 1 : 2, email: r.connected ? p.email : null };
+    return { ...p, degree: r.connected ? 1 : 2, email: r.connected ? p.email : null, openProfile: simOpenProfile(id) };
   }
 
   async follow(url: string) {
@@ -189,6 +216,31 @@ export class SimulatorDriver implements LinkedInDriver {
     const id = this.id(url);
     const r = this.row(id);
     if (!r.connected) throw new DriverError('NOT_AVAILABLE', 'Can only message 1st-degree connections');
+    this.maybeReply(id);
+  }
+
+  async sendInMail(url: string, _msg: InMail) {
+    await this.pause();
+    const id = this.id(url);
+    this.row(id);
+    if (!simOpenProfile(id)) {
+      if (this.o.inmailCredits <= 0) throw new DriverError('NOT_AVAILABLE', 'No InMail credits and the profile is not open');
+      if (this.inmailsUsed() >= this.o.inmailCredits) throw new DriverError('LIMIT_REACHED', 'No InMail credits left this month');
+    }
+    this.maybeReply(id);
+  }
+
+  // Credits spent in the last 30 days: InMails this account sent to profiles that aren't open.
+  private inmailsUsed(): number {
+    const rows = this.db.all<{ public_id: string }>(
+      "SELECT l.public_id FROM activity a JOIN leads l ON l.id = a.lead_id WHERE a.account_id = ? AND a.type = 'inmail' AND a.status = 'ok' AND a.created_at >= ?",
+      [this.accountId, this.clock.now() - 30 * DAY],
+    );
+    return rows.filter((r) => !simOpenProfile(r.public_id)).length;
+  }
+
+  private maybeReply(id: string) {
+    const r = this.row(id);
     if (r.reply_at == null && this.o.random() < this.o.replyRate) {
       this.db.run('UPDATE sim_people SET reply_at = ? WHERE account_id = ? AND public_id = ?', [this.clock.now() + this.between(this.o.replyHours), this.accountId, id]);
     }
@@ -230,6 +282,34 @@ export class SimulatorDriver implements LinkedInDriver {
       const last = LAST[(pick(LAST.length) + i) % LAST.length].toLowerCase();
       const id = `${first}-${last}-${createHash('md5').update(url + i).digest('hex').slice(0, 6)}`;
       out.push(simPerson(id));
+    }
+    onPage?.(out.length);
+    return out;
+  }
+
+  // Post engagers: about three in four reacted, one in four commented, and some of them did both.
+  async postEngagers(url: string, which: EngagerFilter, limit: number, onPage?: (found: number) => void): Promise<Person[]> {
+    const people = crowd(url, 'post', 20).filter((p) => (which.likers && p.role !== 0) || (which.commenters && p.role <= 1));
+    return this.pages(people, limit, onPage);
+  }
+
+  async eventAttendees(url: string, limit: number, onPage?: (found: number) => void): Promise<Person[]> {
+    return this.pages(crowd(url, 'event', 40), limit, onPage);
+  }
+
+  async groupMembers(url: string, limit: number, onPage?: (found: number) => void): Promise<Person[]> {
+    return this.pages(crowd(url, 'group', 150), limit, onPage);
+  }
+
+  // Hands people out ten at a time, like LinkedIn's paged lists.
+  private async pages(people: (Person & { role?: number })[], limit: number, onPage?: (found: number) => void): Promise<Person[]> {
+    const out: Person[] = [];
+    for (const { role: _role, ...p } of people.slice(0, limit)) {
+      if (out.length % 10 === 0) {
+        await this.pause();
+        onPage?.(out.length);
+      }
+      out.push(p);
     }
     onPage?.(out.length);
     return out;

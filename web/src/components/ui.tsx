@@ -34,6 +34,7 @@ const STATUS_TONE: Record<string, string> = {
   untested: 'neutral',
   winner: 'good',
   leading: 'info',
+  open_profile: 'info',
 };
 
 const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', none: 'Not connected', ok: 'Working', untested: 'Not tested' };
@@ -239,6 +240,24 @@ export function Meter({ used, limit, label }: { used: number; limit: number; lab
       <div className="meter-track">
         <div className={`meter-fill ${ratio >= 1 ? 'full' : ''}`} style={{ width: `${ratio * 100}%` }} />
       </div>
+    </div>
+  );
+}
+
+// A labelled bar for background work (imports). Without a known total it stays empty.
+export function ProgressBar({ done, total, label }: { done: number; total: number | null; label: string }) {
+  const ratio = total ? Math.min(1, done / total) : 0;
+  return (
+    <div
+      className="progress progress-bar"
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={total ?? undefined}
+      aria-valuenow={done}
+      title={total ? `${done} of ${total}` : `${done}`}
+    >
+      <span style={{ width: `${ratio * 100}%` }} />
     </div>
   );
 }

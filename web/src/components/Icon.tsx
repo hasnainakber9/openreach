@@ -33,6 +33,13 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M22 6l-10 7L2 6" />
     </>
   ),
+  inmail: (
+    <>
+      <rect x="1" y="6" width="15" height="12" rx="2" />
+      <path d="M16 8l-7.5 5L1 8" />
+      <path d="M19 9l3 3-3 3M22 12h-4" />
+    </>
+  ),
   withdraw_invite: (
     <>
       {USER}

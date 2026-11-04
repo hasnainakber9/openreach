@@ -8,12 +8,20 @@ export interface MockPerson {
   pending?: boolean;
   connectInMoreMenu?: boolean;
   email?: string;
+  // What the profile's Message button does for someone you aren't connected to: open the InMail
+  // composer, show the Premium upsell, or say the credits are used up. Unset: no Message button.
+  inmail?: 'compose' | 'upsell' | 'no_credits';
+  // Shows "View in Sales Navigator" (the account has Sales Navigator).
+  salesNav?: boolean;
 }
 
 export interface MockState {
   people: Record<string, MockPerson>;
-  events: { type: string; slug?: string; text?: string; count?: number }[];
+  events: { type: string; slug?: string; text?: string; subject?: string; count?: number }[];
   searchPages: number;
+  // People behind the mock post (/feed/update/...), and the size of every mock group's member list.
+  post?: { reactors: number; commenters: number };
+  groupMembers?: number;
 }
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -39,6 +47,8 @@ function profile(slug: string, p: MockPerson) {
           ? follow
           : connect;
   const menuItem = p.degree === '2nd' && !p.pending && p.connectInMoreMenu ? `<div role="button" aria-label="Invite ${esc(p.name)} to connect" id="connect">Connect</div>` : `<div role="button" aria-label="Follow ${esc(p.name)}" id="follow">Follow</div>`;
+  const inmail = p.degree === '2nd' && p.inmail ? `<button aria-label="Message ${esc(p.name)}" id="inmail">Message</button>` : '';
+  const salesNav = p.salesNav ? `<button aria-label="View in Sales Navigator" id="salesnav">Sales Navigator</button>` : '';
   return shell(
     `<section>
       <h1>${esc(p.name)}</h1>
@@ -48,6 +58,8 @@ function profile(slug: string, p: MockPerson) {
       <button aria-label="Current company: Northwind. Click to skip to experience card">Northwind</button>
       <a href="/in/${slug}/overlay/contact-info/" id="contact">Contact info</a>
       ${primary}
+      ${inmail}
+      ${salesNav}
       <button aria-label="More actions" id="more">More</button>
       <div class="artdeco-dropdown__content" id="menu" hidden>${menuItem}</div>
     </section>`,
@@ -80,6 +92,16 @@ function profile(slug: string, p: MockPerson) {
         document.body.appendChild(box);
         box.querySelector('button').onclick = () => log({ type: 'message', slug, text: box.querySelector('[contenteditable]').innerText });
       }
+      if (t.id === 'inmail') {
+        const mode = ${JSON.stringify(p.inmail ?? '')};
+        if (mode === 'upsell') return void dialog('<h2>Try Premium for free</h2><p>Message anyone with InMail.</p>');
+        if (mode === 'no_credits') return void dialog("<p>You've used all your InMail credits for this month.</p>");
+        const box = document.createElement('div');
+        box.innerHTML = '<input name="subject" placeholder="Subject (optional)"><div class="msg-form__contenteditable" contenteditable="true"></div><button class="msg-form__send-button">Send</button>';
+        document.body.appendChild(box);
+        box.querySelector('button').onclick = () => log({ type: 'inmail', slug, subject: box.querySelector('input').value, text: box.querySelector('[contenteditable]').innerText });
+      }
+      if (t.id === 'salesnav') location.href = '/sales/lead/ACwAAA-' + slug + ',NAME_SEARCH,x1';
     });`,
   );
 }
@@ -126,6 +148,82 @@ export function mockLinkedIn(state: MockState) {
         return `<li><a href="https://www.linkedin.com/in/person-${n}/?miniProfile=x">Person ${n}</a><div>• 2nd</div><div>Founder at Co ${n}</div><div>Berlin</div><button>Connect</button></li>`;
       });
       return { html: shell(`<ul>${items.join('')}</ul>`) };
+    }
+    m = path.match(/^\/sales\/lead\/ACwAAA-([^,/]+),/);
+    if (m) {
+      const slug = m[1];
+      const p = state.people[slug];
+      if (!p) return { status: 404, html: shell('<h2>Lead not found</h2>') };
+      return {
+        html: shell(
+          `<section><h1>${esc(p.name)}</h1><button aria-label="Message ${esc(p.name)}" id="snmsg">Message</button></section>`,
+          `document.getElementById('snmsg').onclick = () => {
+            const d = dialog('<input name="subject" placeholder="Subject"><textarea name="message"></textarea><button>Send</button>');
+            d.querySelector('button').onclick = () => { log({ type: 'salesnav', slug: ${JSON.stringify(slug)}, subject: d.querySelector('input').value, text: d.querySelector('textarea').value }); d.remove(); };
+          };`,
+        ),
+      };
+    }
+    if (/^\/(feed\/update|posts)\//.test(path)) {
+      const { reactors, commenters } = state.post ?? { reactors: 0, commenters: 0 };
+      const person = (kind: string, i: number | string) => `<a href="https://www.linkedin.com/in/${kind}-${i}/">${kind[0].toUpperCase() + kind.slice(1)} ${i}</a>`;
+      const comment = (i: number | string) => `<article class="comments-comment-entity">${person('commenter', i)}<div>CTO at Co ${i}</div><p>Great post!</p></article>`;
+      const reactor = (i: number | string) => `<li>${person('reactor', i)}<div>· 2nd</div><div>Founder at Co ${i}</div></li>`;
+      return {
+        html: shell(
+          `<article><p>Big news!</p><button aria-label="${reactors} reactions" id="reactions">${reactors}</button>
+            <section id="comments">${Array.from({ length: Math.min(5, commenters) }, (_, i) => comment(i)).join('')}</section>
+            <button id="morecomments" ${commenters > 5 ? '' : 'hidden'}>Load more comments</button></article>`,
+          `const reactors = ${reactors}, commenters = ${commenters};
+          const reactor = (i) => ${JSON.stringify(reactor('@'))}.replaceAll('@', String(i));
+          const comment = (i) => ${JSON.stringify(comment('@'))}.replaceAll('@', String(i));
+          let shownComments = Math.min(5, commenters);
+          document.getElementById('morecomments').onclick = (e) => {
+            const next = Math.min(commenters, shownComments + 5);
+            for (let i = shownComments; i < next; i++) document.getElementById('comments').insertAdjacentHTML('beforeend', comment(i));
+            shownComments = next;
+            if (shownComments >= commenters) e.target.hidden = true;
+          };
+          document.getElementById('reactions').onclick = () => {
+            let shown = Math.min(10, reactors);
+            const d = dialog('<ul id="reactors"></ul><button id="moreReactors">Show more results</button>');
+            const list = d.querySelector('#reactors');
+            for (let i = 0; i < shown; i++) list.insertAdjacentHTML('beforeend', reactor(i));
+            const more = d.querySelector('#moreReactors');
+            more.hidden = shown >= reactors;
+            more.onclick = () => {
+              const next = Math.min(reactors, shown + 10);
+              for (let i = shown; i < next; i++) list.insertAdjacentHTML('beforeend', reactor(i));
+              shown = next;
+              more.hidden = shown >= reactors;
+            };
+            document.addEventListener('keydown', (ev) => ev.key === 'Escape' && d.remove(), { once: true });
+          };`,
+        ),
+      };
+    }
+    m = path.match(/^\/events\/([^/]+)\/$/);
+    if (m) {
+      // Only attendees see the list; "hidden-..." events show none.
+      const link = m[1].startsWith('hidden') ? '' : `<a href="/search/results/people/?eventAttending=${m[1]}">See all attendees</a>`;
+      return { html: shell(`<h1>Growth Summit</h1>${link}`) };
+    }
+    m = path.match(/^\/groups\/([^/]+)\/members\/$/);
+    if (m) {
+      const total = state.groupMembers ?? 0;
+      const member = (i: number | string) => `<li><a href="https://www.linkedin.com/in/member-${i}/">Member ${i}</a><div>Designer at Studio ${i}</div></li>`;
+      return {
+        html: shell(
+          `<ul id="members">${Array.from({ length: Math.min(10, total) }, (_, i) => member(i)).join('')}</ul><button id="more" ${total > 10 ? '' : 'hidden'}>Show more results</button>`,
+          `let shown = Math.min(10, ${total});
+          document.getElementById('more').onclick = (e) => {
+            const next = Math.min(${total}, shown + 10);
+            for (let i = shown; i < next; i++) document.getElementById('members').insertAdjacentHTML('beforeend', ${JSON.stringify(member('@'))}.replaceAll('@', String(i)));
+            shown = next;
+            if (shown >= ${total}) e.target.hidden = true;
+          };`,
+        ),
+      };
     }
     if (path.startsWith('/messaging/')) {
       return {

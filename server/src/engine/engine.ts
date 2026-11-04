@@ -8,7 +8,7 @@ import { suppressionReason } from '../services/suppression.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
 import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLegacy, pinLead, releaseUnstartedLeads, setConnection, type CapacityCache } from '../services/rotation.js';
 import type { AccountRow, CampaignLeadRow, CampaignLeadState, CampaignRow, ConnectionStatus, LeadRow } from '../types.js';
-import { exhaustedActions, schedule } from './capacity.js';
+import { exhaustedActions, nextWorkingDay, schedule } from './capacity.js';
 import { isWorkingTime, randomDelay } from './limits.js';
 import { ACTION_TYPES, FREE_NODE_TYPES, isVariantNode, withVariant, type ActionType, type SeqNode } from './sequence.js';
 import { syncAccount } from './sync.js';
@@ -96,11 +96,8 @@ export class Engine {
     try {
       return await fn();
     } catch (e) {
-      if (e instanceof DriverError && (e.code === 'SESSION_EXPIRED' || e.code === 'CHECKPOINT')) {
-        this.ctx.db.run("UPDATE accounts SET status = 'needs_login', status_message = ? WHERE id = ?", [e.message, a.id]);
-        releaseUnstartedLeads(this.ctx, a.id);
-        this.ctx.webhooks.emit(a.workspace_id, 'account.needs_login', { accountId: a.id, name: a.name, reason: e.message });
-        await this.ctx.drivers.drop(a.id);
+      if (isSessionError(e)) {
+        await accountNeedsLogin(this.ctx, a, e.message);
         throw new StopAccount();
       }
       throw e;
@@ -201,6 +198,7 @@ export class Engine {
         if (node.kind === 'is_connected') ({ connected: branch, job: cur } = this.connected(campaign, cur, lead));
         else if (node.kind === 'has_email') branch = !!lead.email;
         else if (node.kind === 'replied') branch = lead.replied_at != null;
+        else if (node.kind === 'is_open_profile') branch = lead.open_profile === 1;
         else {
           const deadline = cur.node_entered_at + node.withinDays * DAY;
           const c = this.connected(campaign, cur, lead);
@@ -315,7 +313,25 @@ export class Engine {
       }
 
       const conn = connectionWith(ctx, lead, a.id, campaign.account_id);
-      const outcome = await ctx.drivers.use(a, (d) => this.perform(d, node, lead, conn, vars, settings.noteLimit));
+      // An InMail to a connection goes out as a regular message, so it is logged and limited as one:
+      // otherwise InMail steps could push the account past its own daily message cap.
+      if (node.type === 'inmail' && conn === 'connected') {
+        base.type = 'message';
+        if (exhaustedActions(ctx, a).includes('message')) {
+          const cooldown = json<Record<string, number>>(a.cooldowns, {}).message ?? 0;
+          ctx.db.update('campaign_leads', job.id, { next_run_at: Math.max(nextWorkingDay(ctx.clock.now(), a), cooldown) });
+          return false;
+        }
+      }
+      const outcome = await ctx.drivers.use(a, async (d) => {
+        // An import may have had the browser while this action waited for it; keep the pause after it.
+        const held = ctx.db.get<{ next_action_at: number }>('SELECT next_action_at FROM accounts WHERE id = ?', [a.id])!.next_action_at > ctx.clock.now();
+        return held ? null : this.perform(d, node, lead, conn, vars, settings.noteLimit);
+      });
+      if (!outcome) {
+        ctx.db.update('campaign_leads', job.id, { next_run_at: job.next_run_at });
+        return false;
+      }
       if (outcome.lead) lead = enrichLead(ctx, lead, outcome.lead, a.id);
       // Connection state is tracked per sender; the lead's own status is the aggregate.
       if (outcome.connection) setConnection(ctx, lead.id, a.id, outcome.connection);
@@ -342,7 +358,7 @@ export class Engine {
         case 'LIMIT_REACHED': {
           // LinkedIn said no; back off this action type for a day. The lead stays where it is.
           const cooldowns = json<Record<string, number>>(a.cooldowns, {});
-          cooldowns[node.type] = ctx.clock.now() + DAY;
+          cooldowns[base.type] = ctx.clock.now() + DAY;
           ctx.db.run('UPDATE accounts SET cooldowns = ? WHERE id = ?', [JSON.stringify(cooldowns), a.id]);
           logActivity(ctx, { ...base, status: 'failed', detail: e.message });
           return true;
@@ -405,8 +421,31 @@ export class Engine {
         const done = await d.withdrawInvite(url);
         return done ? { status: 'ok', connection: 'none' } : { status: 'skipped', detail: 'no pending invitation' };
       }
+      case 'inmail': {
+        const subject = render(node.subject, vars, this.ctx.random);
+        const body = render(node.body, vars, this.ctx.random);
+        // A connection can be messaged for free; spending an InMail credit on them would be a waste.
+        if (conn === 'connected') {
+          await d.sendMessage(url, body);
+          return { status: 'ok', detail: `${subject} (sent as a message: already connected)`, message: body };
+        }
+        await d.sendInMail(url, { subject, body, via: node.via });
+        return { status: 'ok', detail: subject, message: body };
+      }
     }
   }
+}
+
+export function isSessionError(e: unknown): e is DriverError {
+  return e instanceof DriverError && (e.code === 'SESSION_EXPIRED' || e.code === 'CHECKPOINT');
+}
+
+// Session problems stop the account until the user reconnects it (actions, syncs and imports alike).
+export async function accountNeedsLogin(ctx: Ctx, a: AccountRow, reason: string) {
+  ctx.db.run("UPDATE accounts SET status = 'needs_login', status_message = ? WHERE id = ?", [reason, a.id]);
+  releaseUnstartedLeads(ctx, a.id);
+  ctx.webhooks.emit(a.workspace_id, 'account.needs_login', { accountId: a.id, name: a.name, reason });
+  await ctx.drivers.drop(a.id);
 }
 
 // Messages sent by campaigns show up in the inbox right away; the next inbox sync matches

@@ -17,9 +17,15 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       'max-mueller': { name: 'Max Mueller', degree: '2nd' },
       'lena-hidden': { name: 'Lena Hidden', degree: '2nd', connectInMoreMenu: true },
       'pat-pending': { name: 'Pat Pending', degree: '2nd', pending: true },
+      'olga-open': { name: 'Olga Open', degree: '2nd', inmail: 'compose' },
+      'una-upsell': { name: 'Una Upsell', degree: '2nd', inmail: 'upsell' },
+      'nora-nocredit': { name: 'Nora Nocredit', degree: '2nd', inmail: 'no_credits' },
+      'sven-sales': { name: 'Sven Sales', degree: '2nd', salesNav: true },
     },
     events: [],
     searchPages: 2,
+    post: { reactors: 23, commenters: 12 },
+    groupMembers: 25,
   };
   const dir = mkdtempSync(join(tmpdir(), 'or-driver-'));
   const serve = mockLinkedIn(state);
@@ -112,6 +118,47 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       ['in', 'Hey Sam, sure.'],
     ]);
   }, 30_000);
+
+  it('collects a post’s reactions and comments, separately or together', async () => {
+    const post = 'https://www.linkedin.com/feed/update/urn:li:activity:7100000000000000001/';
+    const likers = await driver.postEngagers(post, { likers: true, commenters: false }, 100);
+    expect(likers).toHaveLength(23);
+    expect(likers[4]).toMatchObject({ publicId: 'reactor-4', firstName: 'Reactor', lastName: '4', headline: 'Founder at Co 4' });
+    const commenters = await driver.postEngagers(post, { likers: false, commenters: true }, 100);
+    expect(commenters.map((p) => p.publicId)).toEqual(Array.from({ length: 12 }, (_, i) => `commenter-${i}`));
+    expect(commenters[0].headline).toBe('CTO at Co 0');
+    const both = await driver.postEngagers(post, { likers: true, commenters: true }, 30);
+    expect(both).toHaveLength(30);
+    expect(both.filter((p) => p.publicId.startsWith('commenter-'))).toHaveLength(7);
+  }, 90_000);
+
+  it('collects event attendees through the attendee search, and says when they are hidden', async () => {
+    const people = await driver.eventAttendees('https://www.linkedin.com/events/7123456/', 15);
+    expect(people).toHaveLength(15);
+    expect(people[0].publicId).toBe('person-0');
+    await expect(driver.eventAttendees('https://www.linkedin.com/events/hidden-1/', 10)).rejects.toMatchObject({ code: 'NOT_AVAILABLE' });
+  }, 60_000);
+
+  it('collects group members with "Show more results"', async () => {
+    const people = await driver.groupMembers('https://www.linkedin.com/groups/12345/', 100);
+    expect(people).toHaveLength(25);
+    expect(people[24]).toMatchObject({ publicId: 'member-24', headline: 'Designer at Studio 24' });
+  }, 60_000);
+
+  it('sends an InMail with a subject, and reports no credits or no Premium distinctly', async () => {
+    await driver.sendInMail(url('olga-open'), { subject: 'Quick idea', body: 'Hello Olga,\nworth a chat?', via: 'profile' });
+    await settle();
+    expect(events('inmail').at(-1)).toEqual({ type: 'inmail', slug: 'olga-open', subject: 'Quick idea', text: 'Hello Olga,\nworth a chat?' });
+    await expect(driver.sendInMail(url('una-upsell'), { subject: 'Hi', body: 'Hi', via: 'profile' })).rejects.toMatchObject({ code: 'NOT_AVAILABLE' });
+    await expect(driver.sendInMail(url('nora-nocredit'), { subject: 'Hi', body: 'Hi', via: 'profile' })).rejects.toMatchObject({ code: 'LIMIT_REACHED' });
+  }, 60_000);
+
+  it('writes from Sales Navigator when asked', async () => {
+    await driver.sendInMail(url('sven-sales'), { subject: 'From Sales Navigator', body: 'Hi Sven', via: 'sales_navigator' });
+    await settle();
+    expect(events('salesnav').at(-1)).toEqual({ type: 'salesnav', slug: 'sven-sales', subject: 'From Sales Navigator', text: 'Hi Sven' });
+    await expect(driver.sendInMail(url('max-mueller'), { subject: 'x', body: 'x', via: 'sales_navigator' })).rejects.toMatchObject({ code: 'NOT_AVAILABLE' });
+  }, 60_000);
 
   it('reports missing profiles and security checkpoints as distinct errors', async () => {
     await expect(driver.viewProfile(url('nobody-here'))).rejects.toMatchObject({ code: 'NOT_FOUND' });

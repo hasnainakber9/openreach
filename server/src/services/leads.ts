@@ -36,17 +36,28 @@ export function personToLead(p: Person): LeadInput {
 }
 
 // Adds leads to a list, skipping any already in the workspace (matched on the profile slug).
-export function importLeads(ctx: Ctx, workspaceId: number, listId: number, inputs: LeadInput[]) {
+// With `skipBlacklisted` (LinkedIn imports), people on the blacklist or suppression list are left out
+// and counted, so scraped lists never bring back someone who asked not to be contacted.
+export function importLeads(ctx: Ctx, workspaceId: number, listId: number, inputs: LeadInput[], opts: { skipBlacklisted?: boolean } = {}) {
   let added = 0;
   let duplicates = 0;
   let invalid = 0;
+  let blacklisted = 0;
   const now = ctx.clock.now();
+  const banned = opts.skipBlacklisted ? blacklistMatcher(ctx, workspaceId) : null;
   ctx.db.tx(() => {
     for (const l of inputs) {
       const id = publicIdFromUrl(l.profileUrl ?? '');
       if (!id) {
         invalid++;
         continue;
+      }
+      if (banned) {
+        const row = { workspace_id: workspaceId, public_id: id, headline: l.headline ?? '', title: l.title ?? '', company: l.company ?? '', email: l.email ?? null, phone: l.phone ?? null } as LeadRow;
+        if (banned(row) || suppressionReason(ctx, row)) {
+          blacklisted++;
+          continue;
+        }
       }
       const r = ctx.db.run(
         `INSERT OR IGNORE INTO leads (workspace_id, list_id, public_id, profile_url, first_name, last_name, headline, title, company, location, email, phone, tags, custom, created_at)
@@ -73,7 +84,7 @@ export function importLeads(ctx: Ctx, workspaceId: number, listId: number, input
       else duplicates++;
     }
   });
-  return { added, duplicates, invalid };
+  return { added, duplicates, invalid, ...(banned ? { blacklisted } : {}) };
 }
 
 // Fills in blanks on a lead from freshly scraped profile data; never overwrites what the user entered.
@@ -91,6 +102,8 @@ export function enrichLead(ctx: Ctx, lead: LeadRow, p: Person, accountId?: numbe
   fill('location', p.location);
   fill('email', p.email);
   fill('phone', p.phone);
+  // Unlike the fields above this is live state, so the latest view wins.
+  if (p.openProfile !== undefined) patch.open_profile = p.openProfile ? 1 : 0;
   if (p.degree === 1 && accountId == null && lead.connection_status !== 'connected') {
     patch.connection_status = 'connected';
     patch.connected_at = ctx.clock.now();
@@ -104,16 +117,23 @@ export function enrichLead(ctx: Ctx, lead: LeadRow, p: Person, accountId?: numbe
 }
 
 export function blacklistReason(ctx: Ctx, lead: LeadRow): string | null {
-  const rows = ctx.db.all<{ kind: string; value: string }>('SELECT kind, value FROM blacklist WHERE workspace_id = ?', [lead.workspace_id]);
+  return blacklistMatcher(ctx, lead.workspace_id)(lead);
+}
+
+// Loads the workspace's blacklist once and checks leads against it (imports check many at a time).
+function blacklistMatcher(ctx: Ctx, workspaceId: number): (lead: Pick<LeadRow, 'public_id' | 'company' | 'headline' | 'title' | 'email'>) => string | null {
+  const rows = ctx.db.all<{ kind: string; value: string }>('SELECT kind, value FROM blacklist WHERE workspace_id = ?', [workspaceId]);
   const lc = (s: string | null) => (s ?? '').toLowerCase();
-  for (const r of rows) {
-    const v = r.value.toLowerCase();
-    if (r.kind === 'profile' && (publicIdFromUrl(r.value) ?? v) === lead.public_id) return 'profile is blacklisted';
-    if (r.kind === 'company' && lc(lead.company) === v) return `company "${r.value}" is blacklisted`;
-    if (r.kind === 'keyword' && [lead.headline, lead.title, lead.company].some((f) => lc(f).includes(v))) return `keyword "${r.value}" is blacklisted`;
-    if (r.kind === 'email_domain' && lc(lead.email).endsWith('@' + v.replace(/^@/, ''))) return `email domain "${r.value}" is blacklisted`;
-  }
-  return null;
+  return (lead) => {
+    for (const r of rows) {
+      const v = r.value.toLowerCase();
+      if (r.kind === 'profile' && (publicIdFromUrl(r.value) ?? v) === lead.public_id) return 'profile is blacklisted';
+      if (r.kind === 'company' && lc(lead.company) === v) return `company "${r.value}" is blacklisted`;
+      if (r.kind === 'keyword' && [lead.headline, lead.title, lead.company].some((f) => lc(f).includes(v))) return `keyword "${r.value}" is blacklisted`;
+      if (r.kind === 'email_domain' && lc(lead.email).endsWith('@' + v.replace(/^@/, ''))) return `email domain "${r.value}" is blacklisted`;
+    }
+    return null;
+  };
 }
 
 export function campaignSequence(c: CampaignRow): Sequence {

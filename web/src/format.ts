@@ -1,4 +1,4 @@
-import { serverNow, type ActionType, type ConditionKind, type ProviderKind } from './api';
+import { serverNow, type ActionType, type ConditionKind, type ImportKind, type ProviderKind } from './api';
 
 export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted' | 'replied' | 'ab_winner', string> = {
   view_profile: 'View profile',
@@ -9,6 +9,7 @@ export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted
   message: 'Send message',
   email: 'Send email',
   withdraw_invite: 'Withdraw invite',
+  inmail: 'Send InMail',
   wait: 'Wait',
   condition: 'Condition',
   accepted: 'Accepted invite',
@@ -21,6 +22,14 @@ export const CONDITION_LABELS: Record<ConditionKind, string> = {
   is_connected: 'Already connected',
   has_email: 'Has an email address',
   replied: 'Has replied',
+  is_open_profile: 'Has an open profile',
+};
+
+export const IMPORT_KIND_LABELS: Record<ImportKind, string> = {
+  search: 'Search',
+  post: 'Post',
+  event: 'Event',
+  group: 'Group',
 };
 
 export function timeAgo(ms: number | null | undefined, now = serverNow()): string {

@@ -406,4 +406,25 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (campaign_id, node_id, variant)
   );
   `,
+  // [M4] g1-sources: post/event/group imports on the job queue, per-account scrape budget, open profiles
+  `
+  ALTER TABLE imports ADD COLUMN kind TEXT NOT NULL DEFAULT 'search';
+  ALTER TABLE imports ADD COLUMN options TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE imports ADD COLUMN job_id INTEGER;
+  -- The account's local day the scrape ran on: today's rows make up its daily scrape budget.
+  ALTER TABLE imports ADD COLUMN day TEXT;
+  ALTER TABLE imports ADD COLUMN duplicates INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE imports ADD COLUMN blacklisted INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE imports ADD COLUMN note TEXT;
+  ALTER TABLE imports ADD COLUMN finished_at INTEGER;
+  CREATE INDEX imports_account_day ON imports(account_id, day);
+  -- NULL until a profile view tells; 1 when anyone may InMail the member without using a credit.
+  ALTER TABLE leads ADD COLUMN open_profile INTEGER;
+  `,
+  // [M4b] g1-sources follow-up: profiles an import loaded on `day`, summed over all its attempts. `found` is
+  // the current attempt's progress and restarts with a retry; the daily scrape budget must not.
+  `
+  ALTER TABLE imports ADD COLUMN scraped INTEGER NOT NULL DEFAULT 0;
+  UPDATE imports SET scraped = found WHERE day IS NOT NULL;
+  `,
 ];

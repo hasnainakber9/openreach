@@ -13,6 +13,21 @@ export interface Person {
   email?: string | null;
   phone?: string | null;
   degree?: 1 | 2 | 3 | null;
+  // Open Profile members accept InMail from anyone without using a credit. Set by viewProfile when visible.
+  openProfile?: boolean;
+}
+
+// An InMail goes to someone you are not connected to. `via: 'sales_navigator'` writes it from the
+// lead's Sales Navigator page instead of their LinkedIn profile (accounts with Sales Navigator).
+export interface InMail {
+  subject: string;
+  body: string;
+  via: 'profile' | 'sales_navigator';
+}
+
+export interface EngagerFilter {
+  likers: boolean;
+  commenters: boolean;
 }
 
 export type ConnectResult = 'sent' | 'already_connected' | 'already_pending';
@@ -50,6 +65,14 @@ export interface LinkedInDriver {
   recentConnections(limit: number): Promise<Person[]>;
   inbox(since: number): Promise<InboxThread[]>;
   search(url: string, limit: number, onPage?: (found: number) => void): Promise<Person[]>;
+  // Lead sources besides search: people who reacted to or commented on a post, an event's
+  // attendees and a group's members. `onPage` reports the running count, like search.
+  postEngagers(postUrl: string, which: EngagerFilter, limit: number, onPage?: (found: number) => void): Promise<Person[]>;
+  eventAttendees(eventUrl: string, limit: number, onPage?: (found: number) => void): Promise<Person[]>;
+  groupMembers(groupUrl: string, limit: number, onPage?: (found: number) => void): Promise<Person[]>;
+  // NOT_AVAILABLE when there is no way to InMail this person (no credits and not an open profile);
+  // LIMIT_REACHED when LinkedIn says the credits are used up.
+  sendInMail(profileUrl: string, msg: InMail): Promise<void>;
   close(): Promise<void>;
 }
 

@@ -46,6 +46,8 @@ export interface LeadRow {
   connected_at: number | null;
   replied_at: number | null;
   created_at: number;
+  // 1 when the member accepts free InMail from anyone, 0 when not, null until a profile view tells.
+  open_profile: number | null;
 }
 
 export interface CampaignRow {
@@ -81,3 +83,27 @@ export interface CampaignLeadRow {
 }
 
 export type ConnectionStatus = LeadRow['connection_status'];
+
+export type ImportKind = 'search' | 'post' | 'event' | 'group';
+
+export interface ImportRow {
+  id: number;
+  workspace_id: number;
+  list_id: number;
+  account_id: number | null;
+  kind: ImportKind;
+  source: string; // the LinkedIn URL
+  options: string; // JSON { limit, likers?, commenters? }
+  status: 'running' | 'done' | 'failed';
+  found: number;
+  added: number;
+  duplicates: number;
+  blacklisted: number; // blacklisted or suppressed people that were left out
+  error: string | null;
+  note: string | null;
+  job_id: number | null;
+  day: string | null;
+  scraped: number; // profiles loaded on `day` across all attempts (what the scrape budget counts)
+  created_at: number;
+  finished_at: number | null;
+}

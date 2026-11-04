@@ -101,7 +101,8 @@ export function bestVariant(stats: VariantStat[], metric: AbMetric): string | nu
   return (metric === 'accepted' ? leader.accepted : leader.replied) > 0 ? leader.id : null;
 }
 
-// Sent = distinct leads with an ok activity of the step's type for that variant. Accepted = connected to
+// Sent = distinct leads with an ok activity of the step's type for that variant (an InMail step's sends to
+// connections are logged as messages). Accepted = connected to
 // the sending account at or after the send (leads.connected_at when there is no per-account row).
 // Replied = a reply logged at or after the send. Sends made before the variant's text last changed (or before
 // its letter was reused) were of an older text and are left out.
@@ -114,11 +115,11 @@ export function variantRows(ctx: Ctx, campaignId: number, node: VariantNode): Va
             THEN 1 ELSE 0 END AS accepted,
        CASE WHEN EXISTS (SELECT 1 FROM activity r WHERE r.lead_id = s.lead_id AND r.type = 'replied' AND r.created_at >= s.sent_at) THEN 1 ELSE 0 END AS replied
      FROM (SELECT a.lead_id, MIN(a.variant) AS variant, MIN(a.account_id) AS account_id, MIN(a.created_at) AS sent_at
-           FROM activity a WHERE a.campaign_id = ? AND a.node_id = ? AND a.type = ? AND a.status = 'ok' AND a.variant IS NOT NULL
+           FROM activity a WHERE a.campaign_id = ? AND a.node_id = ? AND (a.type = ? OR (? = 'inmail' AND a.type = 'message')) AND a.status = 'ok' AND a.variant IS NOT NULL
              AND a.created_at >= COALESCE((SELECT st.started_at FROM campaign_variant_starts st
                                            WHERE st.campaign_id = a.campaign_id AND st.node_id = a.node_id AND st.variant = a.variant), 0)
            GROUP BY a.lead_id) s`,
-    [campaignId, node.id, node.type],
+    [campaignId, node.id, node.type, node.type],
   );
 }
 

@@ -66,10 +66,11 @@ export function useApi<T = any>(path: string | null, poll?: number) {
 
 // ---- Shared types (mirror the server's JSON) -------------------------------------
 
-export type ActionType = 'view_profile' | 'follow' | 'endorse' | 'like_post' | 'connect' | 'message' | 'email' | 'withdraw_invite';
-export type ConditionKind = 'is_connected' | 'accepted_within' | 'has_email' | 'replied';
+export type ActionType = 'view_profile' | 'follow' | 'endorse' | 'like_post' | 'connect' | 'message' | 'email' | 'withdraw_invite' | 'inmail';
+export type ConditionKind = 'is_connected' | 'accepted_within' | 'has_email' | 'replied' | 'is_open_profile';
+export type InMailVia = 'profile' | 'sales_navigator';
 
-// A/B testing: connect, message and email steps may hold 2–5 variants (A–E). The single-text fields
+// A/B testing: connect, message, email and InMail steps may hold 2–5 variants (A–E). The single-text fields
 // always mirror variant A so older readers keep working.
 export type VariantId = 'A' | 'B' | 'C' | 'D' | 'E';
 export type AbMetric = 'accepted' | 'replied';
@@ -85,10 +86,11 @@ export type SeqNode =
   | ({ id: string; type: 'connect'; note: string; next: string | null } & AbFields<{ note: string }>)
   | ({ id: string; type: 'message'; text: string; next: string | null } & AbFields<{ text: string }>)
   | ({ id: string; type: 'email'; subject: string; body: string; next: string | null } & AbFields<{ subject: string; body: string }>)
+  | ({ id: string; type: 'inmail'; subject: string; body: string; via: InMailVia; next: string | null } & AbFields<{ subject: string; body: string }>)
   | { id: string; type: 'wait'; days: number; hours: number; next: string | null }
   | { id: string; type: 'condition'; kind: ConditionKind; withinDays: number; yes: string | null; no: string | null };
 
-export type VariantNode = Extract<SeqNode, { type: 'connect' | 'message' | 'email' }>;
+export type VariantNode = Extract<SeqNode, { type: 'connect' | 'message' | 'email' | 'inmail' }>;
 
 // Results of one A/B tested step (GET /api/campaigns/:id/variants).
 export interface VariantStat {
@@ -229,6 +231,8 @@ export interface Lead {
   connectionStatus: 'none' | 'pending' | 'connected';
   connectedAt: number | null;
   repliedAt: number | null;
+  // Open Profile members take InMail without a credit; null until a profile view tells.
+  openProfile: boolean | null;
   createdAt: number;
   campaigns?: { id: number; name: string; state: string }[];
 }
@@ -239,6 +243,31 @@ export interface LeadList {
   leads: number;
   connected: number | null;
   createdAt: number;
+}
+
+export type ImportKind = 'search' | 'post' | 'event' | 'group';
+
+// A background LinkedIn import (GET /api/imports).
+export interface LeadImport {
+  id: number;
+  listId: number;
+  listName: string | null;
+  accountId: number | null;
+  accountName: string | null;
+  kind: ImportKind;
+  source: string;
+  options: { limit: number; likers: boolean | null; commenters: boolean | null };
+  status: 'running' | 'done' | 'failed';
+  found: number;
+  added: number;
+  duplicates: number;
+  blacklisted: number;
+  error: string | null;
+  note: string | null;
+  progress: { done: number; total: number | null };
+  jobId: number | null;
+  createdAt: number;
+  finishedAt: number | null;
 }
 
 export type Role = 'owner' | 'admin' | 'member' | 'client';

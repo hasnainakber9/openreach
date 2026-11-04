@@ -3,9 +3,10 @@ import { parse as parseCsv } from 'csv-parse/sync';
 import { z } from 'zod';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { csv, HttpError, idParam, notFound, parse, user } from '../http.js';
-import { importLeads, personToLead, type LeadInput } from '../services/leads.js';
-import type { AccountRow, LeadRow } from '../types.js';
+import { csv, HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
+import { IMPORT_KINDS, serializeImport, sourceUrlProblem, startImport } from '../services/imports.js';
+import { importLeads, type LeadInput } from '../services/leads.js';
+import type { AccountRow, ImportRow, LeadRow } from '../types.js';
 
 const FIELD_ALIASES: Record<string, keyof LeadInput | 'fullName'> = {
   profileurl: 'profileUrl', linkedinurl: 'profileUrl', linkedin: 'profileUrl', url: 'profileUrl', profile: 'profileUrl',
@@ -61,6 +62,7 @@ export function serializeLead(l: LeadRow) {
     connectionStatus: l.connection_status,
     connectedAt: l.connected_at,
     repliedAt: l.replied_at,
+    openProfile: l.open_profile == null ? null : l.open_profile === 1,
     createdAt: l.created_at,
   };
 }
@@ -230,27 +232,64 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     return { rows: leads.length, ...importLeads(ctx, user(req).workspace_id, body.listId, leads) };
   });
 
-  // Collects people from a LinkedIn or Sales Navigator search, in the background.
+  const account = (req: any, id: number) =>
+    ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ? AND workspace_id = ?', [id, user(req).workspace_id]) ?? notFound('Account');
+
+  // Collects people from a LinkedIn or Sales Navigator search in the background (kept for older clients).
   app.post('/api/leads/import/search', async (req) => {
-    const ws = user(req).workspace_id;
-    const body = parse(z.object({ listId: z.number().int(), accountId: z.number().int(), url: z.string().url().refine((u) => /linkedin\.com\//.test(u), 'Must be a linkedin.com search URL'), limit: z.number().int().min(1).max(1000).default(100) }), req.body);
+    requireWriter(req);
+    // Same host check as the route below: the URL is opened in the account's logged-in browser.
+    const body = parse(
+      z.object({
+        listId: z.number().int(),
+        accountId: z.number().int(),
+        url: z.string().trim().min(1).max(2000).superRefine((u, c) => {
+          const problem = sourceUrlProblem('search', u);
+          if (problem) c.addIssue({ code: 'custom', message: problem });
+        }),
+        limit: z.number().int().min(1).max(1000).default(100),
+      }),
+      req.body,
+    );
     list(req, body.listId);
-    const a = ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ? AND workspace_id = ?', [body.accountId, ws]) ?? notFound('Account');
-    const importId = ctx.db.insert('imports', { workspace_id: ws, list_id: body.listId, account_id: a.id, source: body.url, created_at: ctx.clock.now() });
-    void ctx.drivers
-      .use(a, (d) => d.search(body.url, body.limit, (found) => ctx.db.run('UPDATE imports SET found = ? WHERE id = ?', [found, importId])))
-      .then((people) => {
-        const r = importLeads(ctx, ws, body.listId, people.map(personToLead));
-        ctx.db.update('imports', importId, { status: 'done', found: people.length, added: r.added });
-      })
-      .catch((e) => ctx.db.update('imports', importId, { status: 'failed', error: (e as Error).message }));
-    return { importId };
+    const a = account(req, body.accountId);
+    return { importId: startImport(ctx, user(req).workspace_id, body.listId, a, 'search', body.url, { limit: body.limit }) };
+  });
+
+  // Collects people from a search, a post's reactions and comments, an event or a group, in the background.
+  app.post('/api/leads/import/linkedin', async (req) => {
+    requireWriter(req);
+    const body = parse(
+      z
+        .object({
+          listId: z.number().int(),
+          accountId: z.number().int(),
+          source: z.enum(IMPORT_KINDS),
+          url: z.string().trim().min(1).max(2000),
+          limit: z.number().int().min(1).max(1000).default(100),
+          likers: z.boolean().default(true),
+          commenters: z.boolean().default(true),
+        })
+        .superRefine((b, c) => {
+          const problem = sourceUrlProblem(b.source, b.url);
+          if (problem) c.addIssue({ code: 'custom', path: ['url'], message: problem });
+          if (b.source === 'post' && !b.likers && !b.commenters) c.addIssue({ code: 'custom', path: ['likers'], message: 'Choose reactions, comments or both' });
+        }),
+      req.body,
+    );
+    list(req, body.listId);
+    const a = account(req, body.accountId);
+    const options = body.source === 'post' ? { limit: body.limit, likers: body.likers, commenters: body.commenters } : { limit: body.limit };
+    return { importId: startImport(ctx, user(req).workspace_id, body.listId, a, body.source, body.url, options) };
   });
 
   app.get('/api/imports', async (req) => {
-    return ctx.db.all(
-      'SELECT i.id, i.list_id AS listId, l.name AS listName, i.source, i.status, i.found, i.added, i.error, i.created_at AS createdAt FROM imports i LEFT JOIN lead_lists l ON l.id = i.list_id WHERE i.workspace_id = ? ORDER BY i.id DESC LIMIT 20',
+    const rows = ctx.db.all<ImportRow & { list_name: string | null; account_name: string | null; job_status: string | null; job_error: string | null }>(
+      `SELECT i.*, l.name AS list_name, a.name AS account_name, j.status AS job_status, j.last_error AS job_error
+       FROM imports i LEFT JOIN lead_lists l ON l.id = i.list_id LEFT JOIN accounts a ON a.id = i.account_id LEFT JOIN jobs j ON j.id = i.job_id
+       WHERE i.workspace_id = ? ORDER BY i.id DESC LIMIT 20`,
       [user(req).workspace_id],
     );
+    return rows.map(serializeImport);
   });
 }

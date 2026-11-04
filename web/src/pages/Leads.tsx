@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, useApi, type Account, type Campaign, type Lead, type LeadList } from '../api';
-import { Button, Empty, ErrorNote, Field, Modal, Pager, Pill, Tabs, useAction, useToast } from '../components/ui';
-import { ACTION_LABELS, dateTime, fullName, timeAgo } from '../format';
+import { api, useApi, type Account, type Campaign, type ImportKind, type Lead, type LeadImport, type LeadList } from '../api';
+import { Button, Empty, ErrorNote, Field, Modal, Pager, Pill, ProgressBar, Tabs, useAction, useToast } from '../components/ui';
+import { ACTION_LABELS, dateTime, fullName, IMPORT_KIND_LABELS, timeAgo } from '../format';
 
 export default function Leads() {
   const lists = useApi<LeadList[]>('/api/lists', 15_000);
@@ -45,7 +45,7 @@ export default function Leads() {
       <div className="page-head">
         <div>
           <h1>Leads</h1>
-          <p>People to reach, organised in lists. Import from CSV or straight from a LinkedIn search.</p>
+          <p>People to reach, organised in lists. Import from CSV or straight from LinkedIn: searches, post reactions and comments, events and groups.</p>
         </div>
         <div className="row">
           <a className="btn" href={`/api/leads/export.csv?${listId ? `listId=${listId}` : ''}`}>
@@ -236,14 +236,49 @@ function NewListModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   );
 }
 
+// Where people come from on LinkedIn, with what the URL looks like and how many the source usually has.
+const SOURCES: Record<ImportKind, { label: string; url: string; placeholder: string; hint: string; max: string }> = {
+  search: {
+    label: 'People search',
+    url: 'Search URL',
+    placeholder: 'https://www.linkedin.com/search/results/people/?keywords=…',
+    hint: 'Run a people search on LinkedIn or Sales Navigator with your filters, then copy the address bar here.',
+    max: 'LinkedIn shows up to 1,000 results per search.',
+  },
+  post: {
+    label: 'Post reactions and comments',
+    url: 'Post URL',
+    placeholder: 'https://www.linkedin.com/feed/update/urn:li:activity:…',
+    hint: 'Open the post, use "Copy link to post" from its menu, and paste it here.',
+    max: 'People who engaged with a post are often the warmest leads.',
+  },
+  event: {
+    label: 'Event attendees',
+    url: 'Event URL',
+    placeholder: 'https://www.linkedin.com/events/…',
+    hint: 'LinkedIn only shows attendees to people attending the event, so the account must be attending too.',
+    max: 'Collects the people shown on the event’s attendee list.',
+  },
+  group: {
+    label: 'Group members',
+    url: 'Group URL',
+    placeholder: 'https://www.linkedin.com/groups/1234567/',
+    hint: 'The account must be a member of the group to see its member list.',
+    max: 'Large groups can have far more members than one import collects.',
+  },
+};
+
 function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadList[]; defaultListId: number | null; onClose: () => void; onDone: (listId: number) => void }) {
-  const [tab, setTab] = useState<'csv' | 'search' | 'single'>('csv');
+  const [tab, setTab] = useState<'csv' | 'linkedin' | 'single'>('csv');
   const accounts = useApi<Account[]>('/api/accounts');
-  const imports = useApi<any[]>('/api/imports', 3000);
+  const imports = useApi<LeadImport[]>('/api/imports', 3000);
   const [listId, setListId] = useState<number | 'new'>(defaultListId ?? lists[0]?.id ?? 'new');
   const [listName, setListName] = useState('');
   const [file, setFile] = useState<{ name: string; text: string; rows: number } | null>(null);
+  const [source, setSource] = useState<ImportKind>('search');
   const [url, setUrl] = useState('');
+  const [likers, setLikers] = useState(true);
+  const [commenters, setCommenters] = useState(true);
   const [limit, setLimit] = useState(100);
   const [accountId, setAccountId] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
@@ -251,6 +286,7 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
   const toast = useToast();
   const { busy, run } = useAction();
   const acc = accountId || accounts.data?.find((a) => a.status === 'active')?.id || accounts.data?.[0]?.id || '';
+  const info = SOURCES[source];
 
   const targetList = async () => {
     if (listId !== 'new') return listId;
@@ -267,8 +303,8 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
           const r = await api('/api/leads/import/csv', { body: { listId: id, csv: file!.text } });
           toast(`Imported ${r.added} of ${r.rows} rows${r.duplicates ? ` · ${r.duplicates} already in your leads` : ''}${r.invalid ? ` · ${r.invalid} without a LinkedIn URL` : ''}`);
           onDone(id);
-        } else if (tab === 'search') {
-          await api('/api/leads/import/search', { body: { listId: id, accountId: Number(acc), url, limit } });
+        } else if (tab === 'linkedin') {
+          await api('/api/leads/import/linkedin', { body: { listId: id, accountId: Number(acc), source, url, limit, ...(source === 'post' ? { likers, commenters } : {}) } });
           toast('Collecting leads in the background. Progress is shown below.');
           await imports.reload();
           setListId(id);
@@ -282,7 +318,7 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
       }
     });
 
-  const ready = tab === 'csv' ? !!file : tab === 'search' ? !!url && !!acc : !!single.profileUrl;
+  const ready = tab === 'csv' ? !!file : tab === 'linkedin' ? !!url && !!acc && (source !== 'post' || likers || commenters) : !!single.profileUrl;
 
   return (
     <Modal
@@ -293,7 +329,7 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
         <>
           <Button onClick={onClose}>Close</Button>
           <Button variant="primary" disabled={!ready} busy={busy === 'go'} onClick={submit}>
-            {tab === 'search' ? 'Start collecting' : 'Import'}
+            {tab === 'linkedin' ? 'Start collecting' : 'Import'}
           </Button>
         </>
       }
@@ -303,7 +339,7 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
         onChange={setTab}
         tabs={[
           { id: 'csv', label: 'CSV file' },
-          { id: 'search', label: 'LinkedIn search' },
+          { id: 'linkedin', label: 'From LinkedIn' },
           { id: 'single', label: 'Single profile' },
         ]}
       />
@@ -343,13 +379,38 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
         </>
       )}
 
-      {tab === 'search' && (
+      {tab === 'linkedin' && (
         <>
-          <Field label="Search URL" hint="Run a people search on LinkedIn or Sales Navigator with your filters, then copy the address bar here.">
-            <input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.linkedin.com/search/results/people/?keywords=…" />
+          <Field label="Collect">
+            <select value={source} onChange={(e) => setSource(e.target.value as ImportKind)}>
+              {(Object.keys(SOURCES) as ImportKind[]).map((k) => (
+                <option key={k} value={k}>
+                  {SOURCES[k].label}
+                </option>
+              ))}
+            </select>
           </Field>
+          <Field label={info.url} hint={info.hint}>
+            <input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={info.placeholder} />
+          </Field>
+          {source === 'post' && (
+            <fieldset className="checklist">
+              <legend className="field-label">People who</legend>
+              <div className="grid grid-2" style={{ gap: 8 }}>
+                <label className="checklist-item">
+                  <input type="checkbox" checked={likers} onChange={(e) => setLikers(e.target.checked)} />
+                  Reacted to the post
+                </label>
+                <label className="checklist-item">
+                  <input type="checkbox" checked={commenters} onChange={(e) => setCommenters(e.target.checked)} />
+                  Commented on it
+                </label>
+              </div>
+              {!likers && !commenters && <div className="field-error">Choose at least one.</div>}
+            </fieldset>
+          )}
           <div className="grid grid-2">
-            <Field label="Use account">
+            <Field label="Use account" hint="Collecting runs in this account's working hours, between its actions.">
               <select value={acc} onChange={(e) => setAccountId(Number(e.target.value))}>
                 {accounts.data?.map((a) => (
                   <option key={a.id} value={a.id}>
@@ -358,28 +419,12 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
                 ))}
               </select>
             </Field>
-            <Field label="Maximum leads" hint="LinkedIn shows up to 1,000 results per search.">
+            <Field label="Maximum leads" hint={`${info.max} Each account collects at most its daily import limit (set on the account).`}>
               <input type="number" min={1} max={1000} value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
             </Field>
           </div>
-          {!!imports.data?.length && (
-            <div>
-              <div className="field-label" style={{ marginBottom: 6 }}>
-                Recent search imports
-              </div>
-              {imports.data.slice(0, 5).map((i) => (
-                <div key={i.id} className="spread" style={{ fontSize: 13, padding: '4px 0' }}>
-                  <span className="cell-sub" style={{ maxWidth: 420 }}>
-                    {i.listName} · {i.source}
-                  </span>
-                  <span>
-                    <Pill status={i.status === 'done' ? 'done' : i.status === 'failed' ? 'failed' : 'running'}>{i.status === 'running' ? `${i.found} found…` : i.status === 'done' ? `${i.added} added` : 'Failed'}</Pill>
-                  </span>
-                </div>
-              ))}
-              {imports.data.find((i) => i.status === 'failed')?.error && <div className="field-error">{imports.data.find((i) => i.status === 'failed').error}</div>}
-            </div>
-          )}
+          <div className="note">People on your blacklist or suppression list are left out, and people already in your leads are not added twice.</div>
+          {!!imports.data?.length && <ImportList imports={imports.data.slice(0, 5)} />}
         </>
       )}
 
@@ -404,6 +449,45 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
       )}
       <ErrorNote error={error} />
     </Modal>
+  );
+}
+
+// Recent LinkedIn imports with live progress, results and why one is waiting or stopped.
+function ImportList({ imports }: { imports: LeadImport[] }) {
+  return (
+    <div className="import-list">
+      <div className="field-label">Recent LinkedIn imports</div>
+      {imports.map((i) => (
+        <div key={i.id} className="import-row">
+          <div className="spread">
+            <span className="cell-sub" title={i.source}>
+              {IMPORT_KIND_LABELS[i.kind]} · {i.listName ?? 'Deleted list'}
+              {i.accountName ? ` · ${i.accountName}` : ''}
+            </span>
+            {i.status === 'running' ? (
+              <span className="row" style={{ gap: 8 }}>
+                <span className="num cell-sub">
+                  {i.found}
+                  {i.progress.total ? ` / ${i.progress.total}` : ''}
+                </span>
+                <ProgressBar done={i.progress.done} total={i.progress.total} label={`Import ${i.id} progress`} />
+              </span>
+            ) : (
+              <Pill status={i.status === 'done' ? 'done' : 'failed'}>{i.status === 'done' ? `${i.added} added` : 'Failed'}</Pill>
+            )}
+          </div>
+          {i.status === 'done' && (i.duplicates > 0 || i.blacklisted > 0) && (
+            <div className="field-hint">
+              {i.found} found
+              {i.duplicates ? ` · ${i.duplicates} already in your leads` : ''}
+              {i.blacklisted ? ` · ${i.blacklisted} blacklisted or suppressed` : ''}
+            </div>
+          )}
+          {i.note && <div className="field-hint">{i.note}</div>}
+          {i.status === 'failed' && i.error && <div className="field-error">{i.error}</div>}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -480,7 +564,10 @@ function LeadDrawer({ id, onClose, onChanged }: { id: number; onClose: () => voi
         <a href={l.profileUrl} target="_blank" rel="noreferrer">
           {l.profileUrl}
         </a>
-        <Pill status={l.connectionStatus} />
+        <span className="row" style={{ gap: 6 }}>
+          {l.openProfile && <Pill status="open_profile">Open profile</Pill>}
+          <Pill status={l.connectionStatus} />
+        </span>
       </div>
       {edit ? (
         <div className="grid grid-2">

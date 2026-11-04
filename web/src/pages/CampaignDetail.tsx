@@ -379,7 +379,7 @@ function Results({ campaign }: { campaign: Campaign }) {
 
 // The text a variant sends, for the results table.
 function variantText(node: SeqNode | undefined, id: VariantId): string {
-  if (!node || (node.type !== 'connect' && node.type !== 'message' && node.type !== 'email')) return '';
+  if (!node || (node.type !== 'connect' && node.type !== 'message' && node.type !== 'email' && node.type !== 'inmail')) return '';
   const v = (node.variants as { id: VariantId; note?: string; text?: string; subject?: string }[] | undefined)?.find((x) => x.id === id);
   if (!v) return '';
   return (v.note ?? v.text ?? v.subject ?? '').trim() || (node.type === 'connect' ? 'No note' : '');

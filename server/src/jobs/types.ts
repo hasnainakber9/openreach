@@ -5,7 +5,9 @@
 //   'enrich.lead': { leadId: number; runId: string } g4-data
 //   'crm.sync': { integrationId: number; leadId: number; event: string; ref: string } g5-crm
 // Tests add their own types with `declare module` augmentation.
-export interface JobPayloads {}
+export interface JobPayloads {
+  'leads.import': { importId: number };
+}
 
 export type JobType = keyof JobPayloads & string;
 

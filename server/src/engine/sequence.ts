@@ -12,22 +12,24 @@ export const ACTION_TYPES = [
   'message',
   'email',
   'withdraw_invite',
+  'inmail',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
 // Nodes the engine advances on its own (they only read the database), whatever the account's hours or limits.
 export const FREE_NODE_TYPES = ['wait', 'condition'] as const;
 
-export const CONDITION_KINDS = ['is_connected', 'accepted_within', 'has_email', 'replied'] as const;
+export const CONDITION_KINDS = ['is_connected', 'accepted_within', 'has_email', 'replied', 'is_open_profile'] as const;
 export type ConditionKind = (typeof CONDITION_KINDS)[number];
 
 const ptr = z.string().min(1).nullable().default(null);
 
-// A/B testing: connect, message and email steps can hold 2–5 variants with ids A–E. The single-text
+// A/B testing: connect, message, email and InMail steps can hold 2–5 variants with ids A–E. The single-text
 // fields stay required and hold variant A, so sequences saved before variants existed keep working.
 export const VARIANT_IDS = ['A', 'B', 'C', 'D', 'E'] as const;
 export type VariantId = (typeof VARIANT_IDS)[number];
-export const VARIANT_NODE_TYPES = ['connect', 'message', 'email'] as const;
+export const VARIANT_NODE_TYPES = ['connect', 'message', 'email', 'inmail'] as const;
+export const INMAIL_VIA = ['profile', 'sales_navigator'] as const;
 export const AB_METRICS = ['accepted', 'replied'] as const;
 export type AbMetric = (typeof AB_METRICS)[number];
 
@@ -75,6 +77,17 @@ export const NodeSchema = z.discriminatedUnion('type', [
     next: ptr,
   }),
   z.object({ id: z.string(), type: z.literal('withdraw_invite'), next: ptr }),
+  // LinkedIn caps InMail subjects at 200 characters and bodies at 1,900.
+  z.object({
+    id: z.string(),
+    type: z.literal('inmail'),
+    subject: z.string().min(1).max(200),
+    body: z.string().min(1).max(1900),
+    via: z.enum(INMAIL_VIA).default('profile'),
+    variants: variantList({ subject: z.string().min(1).max(200), body: z.string().min(1).max(1900) }),
+    abtest,
+    next: ptr,
+  }),
   z.object({
     id: z.string(),
     type: z.literal('wait'),
@@ -142,6 +155,24 @@ export function withVariant<T extends VariantNode>(n: T, id: VariantId | null): 
 
 export function successors(n: SeqNode): (string | null)[] {
   return n.type === 'condition' ? [n.yes, n.no] : [n.next];
+}
+
+// Whether every lead reaching node `id` has passed a step of type `type` on the way from the start.
+export function precededBy(seq: Sequence, id: string, type: SeqNode['type']): boolean {
+  // Draft sequences may loop or share nodes; visiting each node once keeps this linear (valid ones are trees).
+  const visited = new Set<string>();
+  const find = (cur: string | null, seen: boolean): boolean | null => {
+    if (!cur || !seq.nodes[cur] || visited.has(cur)) return null;
+    if (cur === id) return seen;
+    visited.add(cur);
+    const n = seq.nodes[cur];
+    for (const s of successors(n)) {
+      const r = find(s, seen || n.type === type);
+      if (r != null) return r;
+    }
+    return null;
+  };
+  return find(seq.start, false) ?? false;
 }
 
 // Returns a list of problems; empty means the sequence can run.

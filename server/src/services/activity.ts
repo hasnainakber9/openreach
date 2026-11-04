@@ -2,7 +2,7 @@ import type { Ctx } from '../context.js';
 import { localParts } from '../engine/limits.js';
 
 // Activity types that count as reaching out to a lead (analytics 'contacted', reply rate). Channels add theirs here.
-export const CONTACT_ACTIVITY_TYPES = ['connect', 'message', 'email'] as const;
+export const CONTACT_ACTIVITY_TYPES = ['connect', 'message', 'email', 'inmail'] as const;
 export const contactTypesSql = () => CONTACT_ACTIVITY_TYPES.map((t) => `'${t}'`).join(', ');
 
 export type ActivityStatus = 'ok' | 'skipped' | 'failed';

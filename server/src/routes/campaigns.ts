@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { CampaignSettingsSchema, defaultSequence, isAbTest, isVariantNode, nodeVariants, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
+import { CampaignSettingsSchema, defaultSequence, isAbTest, isVariantNode, nodeVariants, precededBy, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
 import { leadVars, render, unknownVariables, VARIABLE_NAMES } from '../engine/template.js';
 import { setWinner, syncVariants, variantReport } from '../engine/variants.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
@@ -293,6 +293,10 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
 function sequenceWarnings(seq: Sequence): string[] {
   const out: string[] = [];
   for (const n of Object.values(seq.nodes)) {
+    // Open Profile status is only known once a profile view has seen it; before that the answer is No.
+    if (n.type === 'condition' && n.kind === 'is_open_profile' && !precededBy(seq, n.id, 'view_profile')) {
+      out.push('An "open profile" check needs a View profile step before it, or every lead goes down No.');
+    }
     if (!isVariantNode(n)) continue;
     // Every variant is checked, not just the one in the single-text fields.
     const variants = nodeVariants(n);
