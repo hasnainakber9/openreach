@@ -7,7 +7,7 @@ import { leadVars, render, unknownVariables, VARIABLE_NAMES } from '../engine/te
 import { setWinner, syncVariants, variantReport } from '../engine/variants.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
 import { contactTypesSql } from '../services/activity.js';
-import { addLeadsToCampaign, campaignSequence } from '../services/leads.js';
+import { addLeadsToCampaign, campaignSequence, campaignSettings } from '../services/leads.js';
 import { campaignAccountIds, campaignAccounts, setCampaignAccounts } from '../services/rotation.js';
 import type { CampaignRow, LeadRow } from '../types.js';
 import { serializeLead } from './leads.js';
@@ -112,6 +112,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
 
   const serialize = (c: CampaignRow, full = false) => {
     const seq = campaignSequence(c);
+    const settings = campaignSettings(c);
     const accounts = campaignAccounts(ctx, c.id);
     return {
       id: c.id,
@@ -122,12 +123,12 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
       accountId: accounts[0]?.id ?? null,
       accounts,
       accountIds: accounts.map((a) => a.id),
-      settings: CampaignSettingsSchema.parse(json(c.settings, {})),
+      settings,
       createdAt: c.created_at,
       startedAt: c.started_at,
       stats: campaignStats(ctx, c.id),
       steps: Object.keys(seq.nodes).length,
-      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: sequenceWarnings(seq) } : {}),
+      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: sequenceWarnings(seq, settings.aiVariables.map((v) => v.name)) } : {}),
     };
   };
 
@@ -278,7 +279,20 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 
   app.post('/api/templates/preview', async (req) => {
-    const body = parse(z.object({ template: z.string().max(20000), leadId: z.number().int().optional() }), req.body);
+    const body = parse(
+      z.object({
+        template: z.string().max(20000),
+        leadId: z.number().int().optional(),
+        // With a campaign, its {{ai:name}} variables are known: they show `aiValues` (from an AI preview),
+        // else the fallback, else a marker where the text will go.
+        campaignId: z.number().int().positive().optional(),
+        aiValues: z.record(z.string().max(500)).optional(),
+      }),
+      req.body,
+    );
+    const ai = body.campaignId
+      ? campaignSettings(ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ? AND workspace_id = ?', [body.campaignId, user(req).workspace_id]) ?? notFound('Campaign')).aiVariables
+      : [];
     const lead =
       (body.leadId && ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ? AND workspace_id = ?', [body.leadId, user(req).workspace_id])) ||
       ctx.db.get<LeadRow>('SELECT * FROM leads WHERE workspace_id = ? ORDER BY id DESC LIMIT 1', [user(req).workspace_id]);
@@ -286,11 +300,13 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
       ? leadVars({ ...lead, custom: json(lead.custom, {}) })
       : { firstName: 'Ava', lastName: 'Thompson', fullName: 'Ava Thompson', company: 'Northwind Labs', title: 'Head of Growth', headline: 'Head of Growth at Northwind Labs', location: 'London, UK', email: '' };
     const custom = lead ? Object.keys(json(lead.custom, {})) : [];
-    return { text: render(body.template, vars), length: render(body.template, vars).length, unknown: unknownVariables(body.template, [...VARIABLE_NAMES, ...custom]), sampleLead: vars.fullName };
+    for (const v of ai) vars[`ai:${v.name}`] = body.aiValues?.[v.name] ?? (v.fallback || `[ai:${v.name}]`);
+    const text = render(body.template, vars);
+    return { text, length: text.length, unknown: unknownVariables(body.template, [...VARIABLE_NAMES, ...custom], ai.map((v) => v.name)), sampleLead: vars.fullName };
   });
 }
 
-function sequenceWarnings(seq: Sequence): string[] {
+function sequenceWarnings(seq: Sequence, aiNames: string[]): string[] {
   const out: string[] = [];
   for (const n of Object.values(seq.nodes)) {
     // Open Profile status is only known once a profile view has seen it; before that the answer is No.
@@ -303,7 +319,10 @@ function sequenceWarnings(seq: Sequence): string[] {
     if (n.type === 'connect' && variants.some((v) => (v.note ?? '').length > 300)) out.push('An invitation note is over 300 characters and will be shortened.');
     if (n.abtest?.autoPickAfter && !isAbTest(n)) out.push('Automatic winner picking only works on a step with A/B variants.');
     for (const text of variants.flatMap((v) => [v.note, v.text, v.subject, v.body]).filter((t): t is string => t != null)) {
-      const unknown = unknownVariables(text);
+      const all = unknownVariables(text, VARIABLE_NAMES, aiNames);
+      const unknownAi = all.filter((u) => u.startsWith('ai:'));
+      const unknown = all.filter((u) => !u.startsWith('ai:'));
+      if (unknownAi.length) out.push(`${unknownAi.map((u) => `{{${u}}}`).join(', ')} ${unknownAi.length > 1 ? 'are' : 'is'} not defined under AI variables in the campaign settings, so ${unknownAi.length > 1 ? 'they stay' : 'it stays'} blank.`);
       if (unknown.length) out.push(`Unknown variable${unknown.length > 1 ? 's' : ''} ${unknown.map((u) => `{{${u}}}`).join(', ')}: they are blank unless a lead has a custom field with that name.`);
     }
   }

@@ -20,6 +20,7 @@ export interface Config {
   runWorker: boolean;
   publicUrl?: string;
   jobConcurrency: number;
+  aiWaitMaxMin: number;
 }
 
 export function loadConfig(env = process.env): Config {
@@ -45,6 +46,8 @@ export function loadConfig(env = process.env): Config {
     // External base URL for links that leave the app (unsubscribe, tracking, invites). Never taken from the Host header.
     publicUrl: env.PUBLIC_URL?.trim().replace(/\/+$/, '') || undefined,
     jobConcurrency: Math.max(1, Number(env.JOB_CONCURRENCY ?? 4) || 4),
+    // How long a step waits for its AI variables before sending with the fallbacks.
+    aiWaitMaxMin: Math.max(1, Number(env.AI_WAIT_MAX_MIN ?? 30) || 30),
   };
 }
 

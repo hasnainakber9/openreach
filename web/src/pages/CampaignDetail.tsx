@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, useApi, type AbTestReport, type Account, type Campaign, type CampaignLead, type LeadList, type SeqNode, type Sequence, type VariantId } from '../api';
 import { Funnel, LineChart } from '../components/LineChart';
+import { AiVariablesEditor } from '../components/Ai';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
 import { Button, CheckList, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
 import { ACTION_LABELS, CONDITION_LABELS, fullName, pct, senderSummary, timeAgo } from '../format';
@@ -115,7 +116,7 @@ export default function CampaignDetail() {
               ))}
             </div>
           )}
-          <SequenceBuilder value={draft} onChange={setDraft} counts={c.stats.atNode} />
+          <SequenceBuilder value={draft} onChange={setDraft} counts={c.stats.atNode} campaignId={c.id} aiVariables={c.settings.aiVariables} noteLimit={c.settings.noteLimit} />
         </div>
       )}
       {tab === 'leads' && <CampaignLeads campaign={c} onChange={campaign.reload} />}
@@ -499,69 +500,80 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
     );
 
   return (
-    <div className="grid grid-2" style={{ alignItems: 'start' }}>
-      <div className="card stack">
-        <Field label="Campaign name">
-          <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        </Field>
-        <CheckList
-          label="Send from"
-          options={(accounts.data ?? []).map((a) => ({ value: a.id, label: a.name, sub: a.driver === 'simulator' ? 'Simulated' : undefined, status: a.status }))}
-          value={form.accountIds}
-          onChange={(accountIds) => setForm({ ...form, accountIds })}
-          empty="No LinkedIn accounts yet. Add one on the LinkedIn accounts page."
-          hint="New leads go to the account with the most room left today; each account keeps to its own limits and hours. A lead stays with the account that first contacted it, even if you remove that account here."
-        />
-        <Toggle checked={form.stopOnReply} onChange={(v) => setForm({ ...form, stopOnReply: v })} label="Stop when a lead replies" hint="Recommended. Replies are picked up from the LinkedIn inbox." />
-        <Toggle checked={form.skipIfInOtherCampaign} onChange={(v) => setForm({ ...form, skipIfInOtherCampaign: v })} label="Skip leads already running in another campaign" />
-        <Toggle checked={form.skipAlreadyConnected} onChange={(v) => setForm({ ...form, skipAlreadyConnected: v })} label="Skip people you're already connected to" />
-        <Field label="Invitation note limit" hint="300 for most accounts. Use 200 for free accounts that get cut off.">
-          <select value={form.noteLimit} onChange={(e) => setForm({ ...form, noteLimit: Number(e.target.value) })}>
-            <option value={300}>300 characters</option>
-            <option value={200}>200 characters</option>
-          </select>
-        </Field>
-        <div>
-          <Button variant="primary" busy={busy === 'save'} onClick={save}>
-            Save settings
-          </Button>
+    <div className="stack">
+      <div className="grid grid-2" style={{ alignItems: 'start' }}>
+        <div className="card stack">
+          <Field label="Campaign name">
+            <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </Field>
+          <CheckList
+            label="Send from"
+            options={(accounts.data ?? []).map((a) => ({ value: a.id, label: a.name, sub: a.driver === 'simulator' ? 'Simulated' : undefined, status: a.status }))}
+            value={form.accountIds}
+            onChange={(accountIds) => setForm({ ...form, accountIds })}
+            empty="No LinkedIn accounts yet. Add one on the LinkedIn accounts page."
+            hint="New leads go to the account with the most room left today; each account keeps to its own limits and hours. A lead stays with the account that first contacted it, even if you remove that account here."
+          />
+          <Toggle checked={form.stopOnReply} onChange={(v) => setForm({ ...form, stopOnReply: v })} label="Stop when a lead replies" hint="Recommended. Replies are picked up from the LinkedIn inbox." />
+          <Toggle checked={form.skipIfInOtherCampaign} onChange={(v) => setForm({ ...form, skipIfInOtherCampaign: v })} label="Skip leads already running in another campaign" />
+          <Toggle checked={form.skipAlreadyConnected} onChange={(v) => setForm({ ...form, skipAlreadyConnected: v })} label="Skip people you're already connected to" />
+          <Field label="Invitation note limit" hint="300 for most accounts. Use 200 for free accounts that get cut off.">
+            <select value={form.noteLimit} onChange={(e) => setForm({ ...form, noteLimit: Number(e.target.value) })}>
+              <option value={300}>300 characters</option>
+              <option value={200}>200 characters</option>
+            </select>
+          </Field>
+          <div>
+            <Button variant="primary" busy={busy === 'save'} onClick={save}>
+              Save settings
+            </Button>
+          </div>
+        </div>
+        <div className="card stack">
+          <h2>Manage</h2>
+          <div className="row">
+            <Button
+              busy={busy === 'dup'}
+              onClick={() =>
+                run('dup', async () => {
+                  const r = await api(`/api/campaigns/${campaign.id}/duplicate`, { body: {} });
+                  nav(`/campaigns/${r.id}`);
+                })
+              }
+            >
+              Duplicate campaign
+            </Button>
+            <a className="btn" href={`/api/leads/export.csv?campaignId=${campaign.id}`}>
+              Export leads (CSV)
+            </a>
+          </div>
+          <hr style={{ border: 'none', borderTop: '1px solid var(--line)', width: '100%' }} />
+          <p className="muted" style={{ margin: 0 }}>
+            Deleting removes the campaign and its progress. Leads and the activity history stay.
+          </p>
+          <div>
+            <Button
+              variant="danger"
+              busy={busy === 'del'}
+              onClick={() =>
+                confirm(`Delete "${campaign.name}"?`) &&
+                run('del', async () => {
+                  await api(`/api/campaigns/${campaign.id}`, { method: 'DELETE' });
+                  onDeleted();
+                })
+              }
+            >
+              Delete campaign
+            </Button>
+          </div>
         </div>
       </div>
       <div className="card stack">
-        <h2>Manage</h2>
-        <div className="row">
-          <Button
-            busy={busy === 'dup'}
-            onClick={() =>
-              run('dup', async () => {
-                const r = await api(`/api/campaigns/${campaign.id}/duplicate`, { body: {} });
-                nav(`/campaigns/${r.id}`);
-              })
-            }
-          >
-            Duplicate campaign
-          </Button>
-          <a className="btn" href={`/api/leads/export.csv?campaignId=${campaign.id}`}>
-            Export leads (CSV)
-          </a>
-        </div>
-        <hr style={{ border: 'none', borderTop: '1px solid var(--line)', width: '100%' }} />
-        <p className="muted" style={{ margin: 0 }}>
-          Deleting removes the campaign and its progress. Leads and the activity history stay.
-        </p>
+        <h2>AI variables</h2>
+        <AiVariablesEditor campaignId={campaign.id} value={form.aiVariables} onChange={(aiVariables) => setForm({ ...form, aiVariables })} />
         <div>
-          <Button
-            variant="danger"
-            busy={busy === 'del'}
-            onClick={() =>
-              confirm(`Delete "${campaign.name}"?`) &&
-              run('del', async () => {
-                await api(`/api/campaigns/${campaign.id}`, { method: 'DELETE' });
-                onDeleted();
-              })
-            }
-          >
-            Delete campaign
+          <Button variant="primary" busy={busy === 'save'} onClick={save}>
+            Save settings
           </Button>
         </div>
       </div>

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { api, type AbMetric, type ConditionKind, type InMailVia, type SeqNode, type Sequence, type VariantId, type VariantNode } from '../api';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { api, type AbMetric, type AiDraft, type AiVariable, type ConditionKind, type InMailVia, type SeqNode, type Sequence, type VariantId, type VariantNode } from '../api';
 import { ACTION_LABELS, CONDITION_LABELS } from '../format';
+import { AiLeadPreview, AiWriterModal, type AiStepPreview } from './Ai';
 import { Icon } from './Icon';
 import { Button, Field, Toggle } from './ui';
 
@@ -27,7 +28,20 @@ const PALETTE: { type: SeqNode['type']; kind?: ConditionKind; label: string }[] 
 
 const VARIABLES = ['firstName', 'lastName', 'company', 'title', 'headline', 'location'];
 
+const usesAiVariable = (text: string) => /\{\{\s*ai:/.test(text);
+
 const newId = () => 'n' + Math.random().toString(36).slice(2, 8);
+
+// The campaign the builder edits: its id (template previews, AI writer), its {{ai:name}} variables, its
+// invitation note limit, and the lead whose AI text the previews show (shared by every step).
+interface BuilderCtx {
+  campaignId?: number;
+  aiNames: string[];
+  noteLimit: number;
+  aiPreview: AiStepPreview | null;
+  setAiPreview: (p: AiStepPreview | null) => void;
+}
+const BuilderContext = createContext<BuilderCtx>({ aiNames: [], noteLimit: 300, aiPreview: null, setAiPreview: () => {} });
 
 function makeNode(type: SeqNode['type'], kind: ConditionKind = 'accepted_within'): SeqNode {
   const id = newId();
@@ -150,8 +164,26 @@ export function summary(n: SeqNode): string {
   }
 }
 
-export function SequenceBuilder({ value, onChange, counts = {} }: { value: Sequence; onChange: (s: Sequence) => void; counts?: Record<string, number> }) {
+export function SequenceBuilder({
+  value,
+  onChange,
+  counts = {},
+  campaignId,
+  aiVariables = [],
+  noteLimit = 300,
+}: {
+  value: Sequence;
+  onChange: (s: Sequence) => void;
+  counts?: Record<string, number>;
+  campaignId?: number;
+  aiVariables?: AiVariable[];
+  noteLimit?: number;
+}) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [aiPreview, setAiPreview] = useState<AiStepPreview | null>(null);
+  // AI text written for older variable definitions would preview something the campaign no longer sends.
+  const aiKey = JSON.stringify(aiVariables);
+  useEffect(() => setAiPreview(null), [aiKey]);
   const [adding, setAdding] = useState<string | null>(null); // serialized slot
   const seq = value;
   const node = selected ? seq.nodes[selected] : null;
@@ -246,40 +278,50 @@ export function SequenceBuilder({ value, onChange, counts = {} }: { value: Seque
   };
 
   return (
-    <div className="builder">
-      <div className="canvas" onClick={(e) => e.target === e.currentTarget && (setSelected(null), setAdding(null))}>
-        <div className="flow">
-          <div className="flow-start">Lead added to campaign</div>
-          {chain({ parent: null })}
+    <BuilderContext.Provider value={{ campaignId, aiNames: aiVariables.map((v) => v.name), noteLimit, aiPreview, setAiPreview }}>
+      <div className="builder">
+        <div className="canvas" onClick={(e) => e.target === e.currentTarget && (setSelected(null), setAdding(null))}>
+          <div className="flow">
+            <div className="flow-start">Lead added to campaign</div>
+            {chain({ parent: null })}
+          </div>
         </div>
-      </div>
-      <div className="inspector">
-        <div className="card">
-          {node ? (
-            <NodeEditor key={node.id} node={node} onChange={update} onDelete={() => remove(node.id)} />
-          ) : (
-            <div className="stack">
-              <h2>Build your sequence</h2>
-              <p className="muted" style={{ margin: 0 }}>
-                Press <strong>+</strong> anywhere in the flow to add a step there. Click a step to edit it. Conditions split the flow into a <em>Yes</em> and a <em>No</em> path.
-              </p>
-              <div className="note">
-                Messages can only reach 1st-degree connections, so put them on the <strong>Yes</strong> side of an “If invite accepted” condition. Leads that reply leave the campaign automatically (change this in Settings).
-              </div>
-              <div>
-                <div className="field-label" style={{ marginBottom: 6 }}>
-                  Personalization
-                </div>
-                <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-                  Use <code>{'{{firstName}}'}</code> for lead fields, <code>{'{{company|your team}}'}</code> for a fallback, and <code>{'{Hi|Hello}'}</code> to vary wording between sends. Any CSV column you imported is available as a variable too.
+        <div className="inspector">
+          <div className="card">
+            {node ? (
+              <NodeEditor key={node.id} node={node} onChange={update} onDelete={() => remove(node.id)} />
+            ) : (
+              <div className="stack">
+                <h2>Build your sequence</h2>
+                <p className="muted" style={{ margin: 0 }}>
+                  Press <strong>+</strong> anywhere in the flow to add a step there. Click a step to edit it. Conditions split the flow into a <em>Yes</em> and a <em>No</em> path.
                 </p>
+                <div className="note">
+                  Messages can only reach 1st-degree connections, so put them on the <strong>Yes</strong> side of an “If invite accepted” condition. Leads that reply leave the campaign automatically (change this in Settings).
+                </div>
+                <div>
+                  <div className="field-label" style={{ marginBottom: 6 }}>
+                    Personalization
+                  </div>
+                  <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                    Use <code>{'{{firstName}}'}</code> for lead fields, <code>{'{{company|your team}}'}</code> for a fallback, and <code>{'{Hi|Hello}'}</code> to vary wording between sends. Any CSV column you imported is available as a variable too.
+                    AI variables such as <code>{'{{ai:icebreaker}}'}</code> are written per lead; define them in the campaign's Settings.
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </BuilderContext.Provider>
   );
+}
+
+// A draft from the AI writer as the step's text fields.
+function draftContent(type: VariantNode['type'], d: AiDraft): Content {
+  if (type === 'connect') return { note: d.note ?? d.text ?? '' };
+  if (type === 'message') return { text: d.text ?? d.note ?? d.body ?? '' };
+  return { subject: d.subject ?? '', body: d.body ?? d.text ?? '' };
 }
 
 function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n: SeqNode) => void; onDelete: () => void }) {
@@ -357,7 +399,13 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
 function VariantEditor({ node, onChange }: { node: VariantNode; onChange: (n: SeqNode) => void }) {
   const variants = variantsOf(node);
   const [active, setActive] = useState<VariantId>('A');
+  const [writing, setWriting] = useState(false);
+  const { campaignId, aiNames, aiPreview, setAiPreview } = useContext(BuilderContext);
   const current = variants?.find((v) => v.id === active) ?? variants?.[0];
+  const shown = current ?? contentOf(node);
+  const aiPreviewControl = !!campaignId && aiNames.length > 0 && [shown.note, shown.text, shown.subject, shown.body].some((t) => t != null && usesAiVariable(t)) && (
+    <AiLeadPreview campaignId={campaignId} value={aiPreview} onChange={setAiPreview} />
+  );
 
   const startTest = () => {
     const c = contentOf(node);
@@ -379,13 +427,40 @@ function VariantEditor({ node, onChange }: { node: VariantNode; onChange: (n: Se
   const editVariant = (c: Content) => {
     if (variants && current) onChange(withVariants(node, variants.map((v) => (v.id === current.id ? { ...v, ...c } : v))));
   };
+  // A draft fills the text being edited; "use all" makes the drafts the step's variants A, B, ...
+  const writer = writing && (
+    <AiWriterModal
+      nodeType={node.type}
+      campaignId={campaignId}
+      onClose={() => setWriting(false)}
+      onUse={(d) => {
+        const c = draftContent(node.type, d);
+        if (variants && current) editVariant(c);
+        else onChange(withContent(node, c));
+        setWriting(false);
+      }}
+      onUseAll={(ds) => {
+        onChange(withVariants(node, ds.slice(0, MAX_VARIANTS).map((d, i) => ({ id: VARIANT_IDS[i], ...draftContent(node.type, d) }))));
+        setActive('A');
+        setWriting(false);
+      }}
+    />
+  );
+  const writeButton = (
+    <Button size="sm" onClick={() => setWriting(true)}>
+      Write with AI
+    </Button>
+  );
 
   if (!variants || !current) {
     return (
       <>
         <ContentFields type={node.type} value={contentOf(node)} onChange={(c) => onChange(withContent(node, c))} />
+        {aiPreviewControl}
+        {writer}
         <div className="stack" style={{ gap: 4 }}>
-          <div>
+          <div className="row">
+            {writeButton}
             <Button size="sm" onClick={startTest}>
               Add A/B variant
             </Button>
@@ -422,11 +497,16 @@ function VariantEditor({ node, onChange }: { node: VariantNode; onChange: (n: Se
       </div>
       <div className="spread">
         <strong>Variant {current.id}</strong>
-        <Button size="sm" variant="ghost" aria-label={`Remove variant ${current.id}`} onClick={() => removeVariant(current.id)}>
-          Remove
-        </Button>
+        <div className="row">
+          {writeButton}
+          <Button size="sm" variant="ghost" aria-label={`Remove variant ${current.id}`} onClick={() => removeVariant(current.id)}>
+            Remove
+          </Button>
+        </div>
       </div>
+      {writer}
       <ContentFields key={current.id} type={node.type} value={current} onChange={editVariant} variantId={current.id} />
+      {aiPreviewControl}
       <span className="field-hint">Saving a changed variant starts its results over, and a winner that was changed or removed stops being the winner.</span>
       <AutoPick node={node} onChange={onChange} />
     </>
@@ -435,13 +515,14 @@ function VariantEditor({ node, onChange }: { node: VariantNode; onChange: (n: Se
 
 function ContentFields({ type, value, onChange, variantId }: { type: VariantNode['type']; value: Content; onChange: (c: Content) => void; variantId?: VariantId }) {
   const suffix = variantId ? ` (variant ${variantId})` : '';
+  const { noteLimit } = useContext(BuilderContext);
   if (type === 'connect') {
     return (
       <TemplateField
         label={`Invitation note${suffix}`}
-        hint="Optional. LinkedIn allows 300 characters (200 on some free accounts); longer notes are shortened."
+        hint={`Optional. LinkedIn allows 300 characters (200 on some free accounts); this campaign uses ${noteLimit} (see Settings). Longer notes are shortened.`}
         value={value.note ?? ''}
-        limit={300}
+        limit={noteLimit}
         onChange={(note) => onChange({ ...value, note })}
       />
     );
@@ -514,14 +595,18 @@ function AutoPick({ node, onChange }: { node: VariantNode; onChange: (n: SeqNode
 function TemplateField({ label, value, onChange, hint, limit, rows = 4 }: { label: string; value: string; onChange: (v: string) => void; hint?: string; limit?: number; rows?: number }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [preview, setPreview] = useState<{ text: string; length: number; unknown: string[]; sampleLead: string } | null>(null);
+  const { campaignId, aiNames, aiPreview } = useContext(BuilderContext);
+  const usesAi = !!campaignId && aiNames.length > 0 && usesAiVariable(value);
 
   useEffect(() => {
     if (!value.trim()) return setPreview(null);
+    // With AI text written for a lead, the preview is that lead's message as it would be sent.
+    const ai = aiPreview ? { leadId: aiPreview.leadId, aiValues: aiPreview.values } : {};
     const t = setTimeout(() => {
-      api('/api/templates/preview', { body: { template: value } }).then(setPreview).catch(() => {});
+      api('/api/templates/preview', { body: { template: value, campaignId, ...ai } }).then(setPreview).catch(() => {});
     }, 350);
     return () => clearTimeout(t);
-  }, [value]);
+  }, [value, campaignId, aiPreview]);
 
   const insertVar = (v: string) => {
     const el = ref.current;
@@ -540,7 +625,7 @@ function TemplateField({ label, value, onChange, hint, limit, rows = 4 }: { labe
         <textarea ref={ref} value={value} rows={rows} style={rows === 1 ? { minHeight: 0 } : undefined} onChange={(e) => onChange(e.target.value)} />
       </Field>
       <div className="row" style={{ gap: 4 }}>
-        {VARIABLES.map((v) => (
+        {[...VARIABLES, ...aiNames.map((n) => `ai:${n}`)].map((v) => (
           <button type="button" className="chip" key={v} onClick={() => insertVar(v)}>
             {v}
           </button>
@@ -549,7 +634,10 @@ function TemplateField({ label, value, onChange, hint, limit, rows = 4 }: { labe
       {preview && (
         <div>
           <div className="field-hint" style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
-            <span>Preview for {preview.sampleLead}</span>
+            <span>
+              Preview for {preview.sampleLead}
+              {usesAi && !aiPreview && ' (AI variables show their fallback)'}
+            </span>
             {limit && <span style={{ color: preview.length > limit ? 'var(--critical-text)' : undefined }}>{preview.length}/{limit}</span>}
           </div>
           <div className="preview">{preview.text}</div>

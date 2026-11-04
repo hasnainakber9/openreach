@@ -7,6 +7,7 @@
 // Tests add their own types with `declare module` augmentation.
 export interface JobPayloads {
   'leads.import': { importId: number };
+  'ai.personalize': { campaignLeadId: number };
 }
 
 export type JobType = keyof JobPayloads & string;

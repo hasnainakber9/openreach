@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import type { Ctx } from './context.js';
 import { HttpError } from './http.js';
 import { accountRoutes } from './routes/accounts.js';
+import { aiRoutes } from './routes/ai.js';
 import { authRoutes, SESSION_COOKIE, sessionUser } from './routes/auth.js';
 import { campaignRoutes } from './routes/campaigns.js';
 import { inboxRoutes } from './routes/inbox.js';
@@ -64,6 +65,7 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
   settingsRoutes(app, ctx);
   integrationRoutes(app, ctx);
   jobRoutes(app, ctx);
+  aiRoutes(app, ctx);
 
   // Serve the built web app, falling back to index.html for client-side routes.
   if (existsSync(ctx.config.webDist)) {

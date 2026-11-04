@@ -112,11 +112,27 @@ export const SequenceSchema = z.object({
 });
 export type Sequence = z.infer<typeof SequenceSchema>;
 
+// An AI personalization variable: templates use {{ai:name}}, generated per lead from its profile before
+// the step runs. `fallback` is sent when generation fails or isn't allowed (may be '': then the
+// template's own {{ai:name|...}} fallback applies).
+export const AiVariableSchema = z.object({
+  name: z.string().regex(/^[a-z][a-zA-Z0-9_]{0,30}$/, 'Use a letter, then letters, digits or _ (up to 31 characters)'),
+  instruction: z.string().trim().min(1).max(1000),
+  fallback: z.string().max(300).default(''),
+  maxChars: z.number().int().min(20).max(500).default(250),
+});
+export type AiVariable = z.infer<typeof AiVariableSchema>;
+
 export const CampaignSettingsSchema = z.object({
   stopOnReply: z.boolean().default(true),
   skipIfInOtherCampaign: z.boolean().default(true),
   skipAlreadyConnected: z.boolean().default(false),
   noteLimit: z.number().int().min(100).max(300).default(300),
+  aiVariables: z
+    .array(AiVariableSchema)
+    .max(10, 'A campaign can have at most 10 AI variables')
+    .refine((vs) => new Set(vs.map((v) => v.name)).size === vs.length, 'Each AI variable needs its own name')
+    .default([]),
 });
 export type CampaignSettings = z.infer<typeof CampaignSettingsSchema>;
 

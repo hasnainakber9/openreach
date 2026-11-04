@@ -41,6 +41,7 @@ export function testConfig(): Config {
     runWorker: false,
     publicUrl: 'http://localhost:8787',
     jobConcurrency: 4,
+    aiWaitMaxMin: 30,
   };
 }
 
@@ -165,7 +166,9 @@ export function fakeFetch(routes: FakeRoute[]) {
   const fn = (async (input: any, init: any = {}) => {
     const url = String(input instanceof URL ? input.href : typeof input === 'string' ? input : input.url);
     const method = (init.method ?? 'GET').toUpperCase();
-    const headers = Object.fromEntries(Object.entries((init.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), String(v)]));
+    // SDKs (Anthropic's) pass a Headers instance; httpJson passes a plain object.
+    const raw: [string, string][] = init.headers instanceof Headers ? [...init.headers.entries()] : Object.entries((init.headers ?? {}) as Record<string, string>);
+    const headers = Object.fromEntries(raw.map(([k, v]) => [k.toLowerCase(), String(v)]));
     const req = { url, method, headers, body: init.body == null ? null : String(init.body) };
     calls.push(req);
     const route = routes.find((r) => (!r.method || r.method.toUpperCase() === method) && r.url.test(url));

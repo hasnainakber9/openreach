@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.5.0",
     "@fastify/cookie": "^11.1.5",
     "@fastify/static": "^10.1.8",
     "csv-parse": "^7.0.3",

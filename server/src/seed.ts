@@ -53,6 +53,10 @@ if (invite.type === 'connect') {
     { id: 'B', note: 'Hi {{firstName}}, I work with growth teams like yours at {{company|your company}}. Happy to connect?' },
   ];
 }
+// The thank-you message opens with an AI line per lead (the built-in simulator writes it in the demo).
+const thanks = sequence.nodes.n5;
+if (thanks.type === 'message') thanks.text = 'Thanks for connecting, {{firstName}}! {{ai:icebreaker}} How is your team handling outreach today?';
+const settings = { aiVariables: [{ name: 'icebreaker', instruction: 'One friendly sentence about something specific in their role or company.', fallback: 'Great to be connected.', maxChars: 160 }] };
 
 const campaignId = db.insert('campaigns', {
   workspace_id: ws,
@@ -60,7 +64,7 @@ const campaignId = db.insert('campaigns', {
   name: 'Growth leaders – intro',
   status: 'active',
   sequence: JSON.stringify(sequence),
-  settings: '{}',
+  settings: JSON.stringify(settings),
   created_at: now,
   started_at: now,
 });

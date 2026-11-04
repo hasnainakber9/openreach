@@ -1,3 +1,4 @@
+import { AI_RECHECK, aiNamesIn, nodeTexts, prefetchAi, resolveAiVars } from '../ai/personalize.js';
 import { DAY, HOUR, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -24,6 +25,8 @@ const FREE_STEPS_PER_TICK = 2000;
 const ACTION_CANDIDATES = 20;
 // How long a lead is held for the account acting on it.
 const ACTION_LEASE = 10 * MINUTE;
+// What LinkedIn accepts once variables are filled in (InMail subject/body, message); longer text is shortened.
+const RENDERED_MAX = { message: 8000, inmailSubject: 200, inmailBody: 1900, emailSubject: 300 };
 
 type DueJob = CampaignLeadRow & { c_seq: string; c_settings: string; c_name: string };
 
@@ -82,11 +85,17 @@ export class Engine {
     }
 
     if (!working || a.next_action_at > now) return;
-    const job = this.nextActionJob(a);
-    if (!job) return;
-    const acted = await this.guarded(a, () => this.runAction(a, job));
-    if (acted) {
-      ctx.db.run('UPDATE accounts SET next_action_at = ? WHERE id = ?', [now + randomDelay(a.delay_min_sec, a.delay_max_sec, ctx.random), a.id]);
+    // A lead still waiting for its AI text is parked for a moment and the next candidate gets the
+    // turn, so a slow AI provider never idles the sender.
+    for (let tries = 0; tries < ACTION_CANDIDATES; tries++) {
+      const job = this.nextActionJob(a);
+      if (!job) return;
+      const acted = await this.guarded(a, () => this.runAction(a, job));
+      if (acted === 'ai_wait') continue;
+      if (acted) {
+        ctx.db.run('UPDATE accounts SET next_action_at = ? WHERE id = ?', [now + randomDelay(a.delay_min_sec, a.delay_max_sec, ctx.random), a.id]);
+      }
+      return;
     }
   }
 
@@ -225,6 +234,8 @@ export class Engine {
     }
     const patch = { node_id: next.id, node_type: next.type, node_entered_at: now, next_run_at: now, attempts: 0, last_error: null };
     this.ctx.db.update('campaign_leads', job.id, patch);
+    // Start writing the step's AI variables now, so they are usually ready when it runs.
+    prefetchAi(this.ctx, campaign, job, next);
     return { ...job, ...patch };
   }
 
@@ -242,8 +253,9 @@ export class Engine {
   }
 
   // Performs the LinkedIn/email action at the job's node. Returns true if anything was sent
-  // to LinkedIn (so the account should pause before its next action).
-  private async runAction(a: AccountRow, job: CampaignLeadRow): Promise<boolean> {
+  // to LinkedIn (so the account should pause before its next action), 'ai_wait' when the lead was
+  // parked to wait for its AI variables (the account may act on another lead right away).
+  private async runAction(a: AccountRow, job: CampaignLeadRow): Promise<boolean | 'ai_wait'> {
     const { ctx } = this;
     const campaign = this.campaign(job.campaign_id);
     const seq = campaignSequence(campaign);
@@ -279,8 +291,25 @@ export class Engine {
     if (variant) base.variant = variant;
 
     const vars = leadVars({ ...lead, custom: json(lead.custom, {}) });
+    const aiNames = aiNamesIn(nodeTexts(node));
+    let aiSkipNotes: string[] = [];
+    // (An email step for a lead without an address is skipped below, so it doesn't wait for AI text.)
+    if (aiNames.length && !(node.type === 'email' && !lead.email)) {
+      // Real people only ever get real AI text: a browser account or real SMTP falls back from simulated text.
+      const realChannel = node.type === 'email' ? !!ctx.sealer.open(a.smtp_enc) : a.driver !== 'simulator';
+      const ai = resolveAiVars(ctx, campaign, job, aiNames, realChannel);
+      if ('wait' in ai) {
+        ctx.db.update('campaign_leads', job.id, { next_run_at: Math.min(ai.wait, ctx.clock.now() + AI_RECHECK) });
+        return 'ai_wait';
+      }
+      for (const n of ai.notes) if (n.status === 'failed') logActivity(ctx, { ...base, type: 'ai_personalize', status: n.status, detail: n.detail });
+      aiSkipNotes = ai.notes.filter((n) => n.status === 'skipped').map((n) => n.detail);
+      Object.assign(vars, ai.values);
+    }
     const advance = (status: 'ok' | 'skipped', detail?: string) => {
       ctx.db.tx(() => {
+        // Logged once, with the step's outcome: a retried or held step would repeat them otherwise.
+        for (const d of aiSkipNotes) logActivity(ctx, { ...base, type: 'ai_personalize', status: 'skipped', detail: d });
         logActivity(ctx, { ...base, status, detail });
         // From the first real contact on, the lead stays with this sender. The pin is written again
         // because a pause or sender change may have released the lead while the action ran.
@@ -306,9 +335,9 @@ export class Engine {
       if (node.type === 'email') {
         if (!lead.email) return advance('skipped', 'no email address'), false;
         const smtp = ctx.sealer.open(a.smtp_enc);
-        const subject = render(node.subject, vars, ctx.random);
-        const how = await ctx.mailer.send(smtp ? (JSON.parse(smtp) as SmtpConfig) : null, lead.email, subject, render(node.body, vars, ctx.random));
-        advance('ok', how === 'simulated' ? `${subject} (not delivered: no SMTP configured)` : subject);
+        const subject = fitRendered(render(node.subject, vars, ctx.random), RENDERED_MAX.emailSubject);
+        const how = await ctx.mailer.send(smtp ? (JSON.parse(smtp) as SmtpConfig) : null, lead.email, subject.text, render(node.body, vars, ctx.random));
+        advance('ok', (how === 'simulated' ? `${subject.text} (not delivered: no SMTP configured)` : subject.text) + subject.note);
         return false;
       }
 
@@ -412,9 +441,9 @@ export class Engine {
         return { status: 'ok', detail: note || undefined, connection: 'pending' };
       }
       case 'message': {
-        const text = render(node.text, vars, this.ctx.random);
+        const { text, note } = fitRendered(render(node.text, vars, this.ctx.random), RENDERED_MAX.message);
         await d.sendMessage(url, text);
-        return { status: 'ok', detail: text, message: text, connection: 'connected' };
+        return { status: 'ok', detail: text + note, message: text, connection: 'connected' };
       }
       case 'withdraw_invite': {
         if (conn === 'connected') return { status: 'skipped', detail: 'already connected' };
@@ -422,18 +451,26 @@ export class Engine {
         return done ? { status: 'ok', connection: 'none' } : { status: 'skipped', detail: 'no pending invitation' };
       }
       case 'inmail': {
-        const subject = render(node.subject, vars, this.ctx.random);
-        const body = render(node.body, vars, this.ctx.random);
+        const s = fitRendered(render(node.subject, vars, this.ctx.random), RENDERED_MAX.inmailSubject);
+        const b = fitRendered(render(node.body, vars, this.ctx.random), RENDERED_MAX.inmailBody);
+        const [subject, body, note] = [s.text, b.text, s.note || b.note];
         // A connection can be messaged for free; spending an InMail credit on them would be a waste.
         if (conn === 'connected') {
           await d.sendMessage(url, body);
-          return { status: 'ok', detail: `${subject} (sent as a message: already connected)`, message: body };
+          return { status: 'ok', detail: `${subject} (sent as a message: already connected)${note}`, message: body };
         }
         await d.sendInMail(url, { subject, body, via: node.via });
-        return { status: 'ok', detail: subject, message: body };
+        return { status: 'ok', detail: subject + note, message: body };
       }
     }
   }
+}
+
+// Text over a network's limit once variables (AI ones especially) are filled in is shortened, and the
+// activity says so.
+function fitRendered(text: string, limit: number): { text: string; note: string } {
+  if (text.length <= limit) return { text, note: '' };
+  return { text: clampNote(text, limit), note: ` (shortened from ${text.length} to ${limit} characters)` };
 }
 
 export function isSessionError(e: unknown): e is DriverError {

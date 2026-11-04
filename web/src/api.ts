@@ -147,11 +147,47 @@ export interface SenderStats {
   replyRate: number;
 }
 
+// An {{ai:name}} variable: written per lead by the AI provider before the step that uses it runs.
+export interface AiVariable {
+  name: string;
+  instruction: string;
+  fallback: string;
+  maxChars: number;
+}
+
 export interface CampaignSettings {
   stopOnReply: boolean;
   skipIfInOtherCampaign: boolean;
   skipAlreadyConnected: boolean;
   noteLimit: number;
+  aiVariables: AiVariable[];
+}
+
+export type AiTone = 'friendly' | 'professional' | 'direct' | 'casual';
+export type AiLength = 'short' | 'medium' | 'long';
+export interface AiBrief {
+  offer: string;
+  audience?: string;
+  tone: AiTone;
+  length: AiLength;
+  language: string;
+  cta?: string;
+}
+export interface AiDraft {
+  note?: string;
+  text?: string;
+  subject?: string;
+  body?: string;
+}
+export interface AiWriteResult {
+  drafts: AiDraft[];
+  simulated: boolean;
+  warnings: string[];
+}
+export interface AiPreview {
+  values: Record<string, string>;
+  errors: Record<string, string>;
+  simulated: boolean;
 }
 
 export interface Campaign {
