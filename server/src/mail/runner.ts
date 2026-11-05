@@ -170,6 +170,7 @@ export class MailRunner {
     if (!lead.email) return advance('skipped', 'no email address'), 'next';
     if (lead.email_status === 'invalid') return advance('skipped', `email address is invalid${lead.email_status_reason ? ` (${lead.email_status_reason})` : ''}`), 'next';
     if (!isSimulated(mb) && isReservedAddress(lead.email)) return advance('skipped', 'reserved test address (.example, .test, ...): never sent from a real mailbox'), 'next';
+    if (!isSimulated(mb) && lead.email_source === 'simulated') return advance('skipped', 'address made up by the simulated email finder: never sent from a real mailbox'), 'next';
 
     // Lease the lead while it sends, so no other tick or mailbox sees it as due meanwhile.
     if (ctx.db.run("UPDATE campaign_leads SET next_run_at = ? WHERE id = ? AND mailbox_id = ? AND state = 'active'", [ctx.clock.now() + LEASE, job.id, mb.id]).changes === 0) return 'next';

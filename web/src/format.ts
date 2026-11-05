@@ -1,7 +1,7 @@
-import { serverNow, type ActionType, type CallOutcome, type ConditionKind, type ImportKind, type ProviderKind, type ReplyCategory, type TaskKind } from './api';
+import { serverNow, type ActionType, type CallOutcome, type ConditionKind, type EmailStatus, type EnrichmentStatus, type ImportKind, type ProviderKind, type ReplyCategory, type TaskKind } from './api';
 
 export const ACTION_LABELS: Record<
-  ActionType | 'wait' | 'condition' | 'task' | 'sms' | 'whatsapp' | 'accepted' | 'replied' | 'ab_winner' | 'ai_personalize' | 'classified' | 'email_open' | 'email_click' | 'email_bounce' | 'task_created' | 'task_done' | 'task_skipped',
+  ActionType | 'wait' | 'condition' | 'task' | 'find_email' | 'enrich' | 'sms' | 'whatsapp' | 'accepted' | 'replied' | 'ab_winner' | 'ai_personalize' | 'classified' | 'email_open' | 'email_click' | 'email_bounce' | 'task_created' | 'task_done' | 'task_skipped',
   string
 > = {
   view_profile: 'View profile',
@@ -16,6 +16,8 @@ export const ACTION_LABELS: Record<
   wait: 'Wait',
   condition: 'Condition',
   task: 'Manual task',
+  find_email: 'Find email',
+  enrich: 'Email lookup / enrichment',
   sms: 'Send SMS',
   whatsapp: 'Send WhatsApp',
   accepted: 'Accepted invite',
@@ -57,6 +59,30 @@ export const CONDITION_LABELS: Record<ConditionKind, string> = {
   replied: 'Has replied',
   is_open_profile: 'Has an open profile',
   reply_sentiment: 'Reply category matches',
+  email_verified: 'Email is verified',
+};
+
+export const EMAIL_STATUS_LABELS: Record<EmailStatus, string> = { valid: 'Valid', risky: 'Risky', invalid: 'Invalid', unknown: 'Unverified' };
+
+export const ENRICHMENT_STATUS_LABELS: Record<EnrichmentStatus, string> = { queued: 'Looking up…', done: 'Enriched', not_found: 'Nothing found', failed: 'Lookup failed' };
+
+// Where a lead's email came from.
+export function emailSourceLabel(source: string | null): string {
+  if (!source) return '';
+  const known: Record<string, string> = { user: 'Entered by hand', csv: 'From the CSV import', linkedin: 'From LinkedIn contact info', hunter: 'Found by Hunter', apollo: 'Found by Apollo', simulated: 'Made up by the simulator (never emailed from a real mailbox)' };
+  return known[source] ?? `Found by ${source}`;
+}
+
+export const USAGE_OPERATION_LABELS: Record<string, string> = {
+  'finder.find': 'Email lookups',
+  'verifier.verify': 'Verifications',
+  'enrich.person': 'Enrichments',
+  'ai.write': 'AI drafts',
+  'ai.personalize': 'AI personalization',
+  'ai.classify': 'Reply classification',
+  'ai.reply': 'Suggested replies',
+  'sms.send': 'SMS sent',
+  'whatsapp.send': 'WhatsApp sent',
 };
 
 export const CATEGORY_LABELS: Record<ReplyCategory, string> = {

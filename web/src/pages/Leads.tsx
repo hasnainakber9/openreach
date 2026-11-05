@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, useApi, type Account, type Campaign, type ImportKind, type Lead, type LeadImport, type LeadList } from '../api';
-import { Button, Empty, ErrorNote, Field, Modal, Pager, Pill, ProgressBar, Tabs, useAction, useToast } from '../components/ui';
-import { ACTION_LABELS, dateTime, fullName, IMPORT_KIND_LABELS, timeAgo } from '../format';
+import { api, useApi, type Account, type Campaign, type EnrichmentRun, type EnrichmentSettings, type EnrichOptions, type ImportKind, type KindStatus, type Lead, type LeadImport, type LeadList, type ProviderKind } from '../api';
+import { Button, Empty, ErrorNote, Field, Modal, Pager, Pill, ProgressBar, Tabs, Toggle, useAction, useToast } from '../components/ui';
+import { ACTION_LABELS, dateTime, EMAIL_STATUS_LABELS, emailSourceLabel, ENRICHMENT_STATUS_LABELS, fullName, IMPORT_KIND_LABELS, timeAgo } from '../format';
 
 export default function Leads() {
   const lists = useApi<LeadList[]>('/api/lists', 15_000);
@@ -10,11 +10,14 @@ export default function Leads() {
   const [q, setQ] = useState('');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
+  const [emailStatus, setEmailStatus] = useState('');
+  const [enrichment, setEnrichment] = useState('');
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [importing, setImporting] = useState(false);
   const [newList, setNewList] = useState(false);
   const [toCampaign, setToCampaign] = useState(false);
+  const [enriching, setEnriching] = useState<EnrichTarget | null>(null);
   const [openLead, setOpenLead] = useState<number | null>(null);
   const { busy, run } = useAction();
 
@@ -27,6 +30,9 @@ export default function Leads() {
   if (listId) params.set('listId', String(listId));
   if (query) params.set('q', query);
   if (status) params.set('status', status);
+  if (emailStatus) params.set('emailStatus', emailStatus);
+  if (enrichment) params.set('enrichment', enrichment);
+  const filtered = !!(query || status || emailStatus || enrichment);
   const leads = useApi<{ total: number; items: Lead[] }>(`/api/leads?${params}`, 20_000);
   const current = lists.data?.find((l) => l.id === listId);
 
@@ -88,6 +94,22 @@ export default function Leads() {
                   <option value="pending">Invite pending</option>
                   <option value="none">Not connected</option>
                 </select>
+                <select value={emailStatus} onChange={(e) => (setEmailStatus(e.target.value), setPage(1))} style={{ width: 150 }} aria-label="Email status">
+                  <option value="">Any email</option>
+                  <option value="valid">Valid email</option>
+                  <option value="risky">Risky email</option>
+                  <option value="unknown">Unverified email</option>
+                  <option value="invalid">Invalid email</option>
+                  <option value="missing">No email</option>
+                </select>
+                <select value={enrichment} onChange={(e) => (setEnrichment(e.target.value), setPage(1))} style={{ width: 160 }} aria-label="Email lookup">
+                  <option value="">Any lookup</option>
+                  <option value="none">Not looked up</option>
+                  <option value="queued">Looking up</option>
+                  <option value="done">Enriched</option>
+                  <option value="not_found">Nothing found</option>
+                  <option value="failed">Lookup failed</option>
+                </select>
               </div>
               <div className="row">
                 {!!selected.size && (
@@ -96,10 +118,18 @@ export default function Leads() {
                     <Button size="sm" onClick={() => setToCampaign(true)}>
                       Add to campaign
                     </Button>
+                    <Button size="sm" onClick={() => setEnriching({ leadIds: [...selected] })}>
+                      Find & verify emails
+                    </Button>
                     <Button size="sm" variant="danger" busy={busy === 'del'} onClick={remove}>
                       Delete
                     </Button>
                   </>
+                )}
+                {current && !selected.size && !!current.leads && (
+                  <Button size="sm" onClick={() => setEnriching({ listId: current.id, name: current.name, count: current.leads })}>
+                    Find & verify list emails
+                  </Button>
                 )}
                 {current && (
                   <Button
@@ -123,8 +153,8 @@ export default function Leads() {
 
           <div className="card card-flush">
             {leads.data && !leads.data.total ? (
-              <Empty title={query || status ? 'No matching leads' : 'No leads yet'} action={!query && !status && <Button variant="primary" onClick={() => setImporting(true)}>Import leads</Button>}>
-                {!query && !status && 'Upload a CSV with LinkedIn profile URLs, or paste a LinkedIn / Sales Navigator search to collect people automatically.'}
+              <Empty title={filtered ? 'No matching leads' : 'No leads yet'} action={!filtered && <Button variant="primary" onClick={() => setImporting(true)}>Import leads</Button>}>
+                {!filtered && 'Upload a CSV with LinkedIn profile URLs, or paste a LinkedIn / Sales Navigator search to collect people automatically.'}
               </Empty>
             ) : (
               <div className="table-wrap">
@@ -145,6 +175,7 @@ export default function Leads() {
                       </th>
                       <th>Name</th>
                       <th>Company</th>
+                      <th>Email</th>
                       <th>Connection</th>
                       <th>Campaign</th>
                       <th>Added</th>
@@ -171,7 +202,10 @@ export default function Leads() {
                         </td>
                         <td>
                           {l.company || <span className="muted">—</span>}
-                          {l.email && <div className="cell-sub">{l.email}</div>}
+                          {l.companyDomain && <div className="cell-sub">{l.companyDomain}</div>}
+                        </td>
+                        <td>
+                          <EmailCell lead={l} />
                         </td>
                         <td>
                           <Pill status={l.connectionStatus} />
@@ -218,9 +252,135 @@ export default function Leads() {
           }}
         />
       )}
+      {enriching && (
+        <EnrichModal
+          target={enriching}
+          onClose={() => setEnriching(null)}
+          onFinished={() => {
+            setSelected(new Set());
+            void leads.reload();
+          }}
+        />
+      )}
       {toCampaign && <AddToCampaign leadIds={[...selected]} onClose={() => setToCampaign(false)} onDone={() => (setToCampaign(false), setSelected(new Set()), leads.reload())} />}
       {openLead && <LeadDrawer id={openLead} onClose={() => setOpenLead(null)} onChanged={() => leads.reload()} />}
     </>
+  );
+}
+
+// The lead's email with its verification status; where it came from and the verifier's reason show on hover.
+function EmailCell({ lead: l }: { lead: Lead }) {
+  const queued = l.enrichmentStatus === 'queued' && <Pill status="queued">{ENRICHMENT_STATUS_LABELS.queued}</Pill>;
+  if (!l.email) return queued || <span className="muted">{l.enrichmentStatus === 'not_found' ? 'Not found' : '—'}</span>;
+  const tip = [emailSourceLabel(l.emailSource), l.emailStatusReason].filter(Boolean).join(' · ');
+  return (
+    <div title={tip}>
+      <div style={{ fontSize: 13 }}>{l.email}</div>
+      {queued || <Pill status={l.emailStatus ?? 'unknown'}>{EMAIL_STATUS_LABELS[l.emailStatus ?? 'unknown']}</Pill>}
+    </div>
+  );
+}
+
+// Company facts an enrichment provider may add, in display order.
+const COMPANY_FACTS: Record<string, string> = { industry: 'Industry', companySize: 'Employees', website: 'Website', companyLinkedin: 'Company LinkedIn', foundedYear: 'Founded', seniority: 'Seniority' };
+
+type EnrichTarget ={ leadIds: number[] } | { listId: number; name: string; count: number };
+
+// Kinds whose built-in simulator is in use, so the modal can say what that means.
+function useSimulatedData() {
+  const status = useApi<Record<ProviderKind, KindStatus>>('/api/integrations/status');
+  return (['email_finder', 'email_verifier'] as const).filter((k) => status.data?.[k]?.simulated);
+}
+
+// Bulk "Find & verify emails": options first, then the background run's live progress.
+function EnrichModal({ target, onClose, onFinished }: { target: EnrichTarget; onClose: () => void; onFinished: () => void }) {
+  const [opts, setOpts] = useState<EnrichOptions>({ find: true, verify: true, company: false, overwrite: false });
+  const [runId, setRunId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const simulated = useSimulatedData();
+  const progress = useApi<EnrichmentRun>(runId ? `/api/enrichment/runs/${runId}` : null, 2000);
+  const { busy, run } = useAction();
+  const r = progress.data;
+  const finished = r?.status === 'done';
+  useEffect(() => {
+    if (finished) onFinished();
+    // Only when the run finishes; onFinished is a new function on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finished]);
+  const count = 'leadIds' in target ? target.leadIds.length : target.count;
+  const what = 'leadIds' in target ? `${count} selected lead${count === 1 ? '' : 's'}` : `the ${count} leads in “${target.name}”`;
+  const set = (k: keyof EnrichOptions) => (v: boolean) => setOpts({ ...opts, [k]: v });
+  const start = () =>
+    run('go', async () => {
+      setError(null);
+      try {
+        const body = 'leadIds' in target ? { leadIds: target.leadIds, ...opts } : { listId: target.listId, ...opts };
+        setRunId((await api<{ runId: number; total: number }>('/api/leads/enrich', { body })).runId);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
+
+  return (
+    <Modal
+      title="Find & verify emails"
+      onClose={onClose}
+      footer={
+        runId ? (
+          <Button variant="primary" onClick={onClose}>
+            {finished ? 'Done' : 'Close (keeps running)'}
+          </Button>
+        ) : (
+          <>
+            <Button variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" busy={busy === 'go'} disabled={!opts.find && !opts.verify && !opts.company} onClick={start}>
+              Start
+            </Button>
+          </>
+        )
+      }
+    >
+      {!runId ? (
+        <>
+          <p style={{ margin: 0 }}>Looks up {what} in the background, with the providers under Settings → Integrations in their order.</p>
+          <Toggle checked={opts.find} onChange={set('find')} label="Find missing emails" hint="Tries each email finder in turn until one returns an address that passes verification." />
+          <Toggle checked={opts.verify} onChange={set('verify')} label="Verify emails" hint="Checks found addresses, and existing ones that haven't been checked yet." />
+          <Toggle checked={opts.company} onChange={set('company')} label="Add company data" hint="Company domain, size, industry and website from your enrichment provider. Only blank fields are filled." />
+          <Toggle
+            checked={opts.overwrite}
+            onChange={set('overwrite')}
+            label="Replace addresses people entered"
+            hint="Off: emails from CSV files, LinkedIn or typed in by hand are kept and only verified. On: a verified address from a finder replaces them."
+          />
+          {!!simulated.length && (
+            <div className="note note-warning">
+              {simulated.length === 2 ? 'Finding and verifying use' : simulated[0] === 'email_finder' ? 'Finding uses' : 'Verifying uses'} the built-in simulator: found addresses are made up (.example) and never emailed
+              from a real mailbox, and real addresses stay unverified. Add providers under Settings → Integrations.
+            </div>
+          )}
+          <span className="field-hint">Lookups use credits from your own provider accounts; Settings → Integrations shows usage per month.</span>
+        </>
+      ) : (
+        <div className="run-progress" aria-live="polite">
+          <div className="spread">
+            <strong>{finished ? 'Finished' : 'Looking up…'}</strong>
+            <span className="num muted">
+              {r?.done ?? 0} / {r?.total ?? count}
+            </span>
+          </div>
+          <ProgressBar done={r?.done ?? 0} total={r?.total ?? count} label="Email lookup progress" />
+          {r && (
+            <div className="muted" style={{ fontSize: 13 }}>
+              {r.found} with an email · {r.verified} verified valid{r.failed ? ` · ${r.failed} failed` : ''}
+            </div>
+          )}
+          {!finished && <span className="field-hint">You can close this window: the lookup carries on, and the table updates as leads are done.</span>}
+        </div>
+      )}
+      <ErrorNote error={error ?? progress.error} />
+    </Modal>
   );
 }
 
@@ -284,6 +444,10 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
   const [accountId, setAccountId] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
   const [single, setSingle] = useState({ profileUrl: '', firstName: '', lastName: '', company: '', email: '' });
+  // Starts from the workspace's "auto-enrich imports" setting; choosing here applies to this import only.
+  const enrichDefaults = useApi<EnrichmentSettings>('/api/settings/enrichment');
+  const [autoEnrich, setAutoEnrich] = useState<boolean | null>(null);
+  const enrichAfter = autoEnrich ?? enrichDefaults.data?.autoEnrichOnImport ?? false;
   const toast = useToast();
   const { busy, run } = useAction();
   const acc = accountId || accounts.data?.find((a) => a.status === 'active')?.id || accounts.data?.[0]?.id || '';
@@ -301,11 +465,13 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
       try {
         const id = await targetList();
         if (tab === 'csv') {
-          const r = await api('/api/leads/import/csv', { body: { listId: id, csv: file!.text } });
-          toast(`Imported ${r.added} of ${r.rows} rows${r.duplicates ? ` · ${r.duplicates} already in your leads` : ''}${r.invalid ? ` · ${r.invalid} without a LinkedIn URL` : ''}`);
+          const r = await api('/api/leads/import/csv', { body: { listId: id, csv: file!.text, autoEnrich: enrichAfter } });
+          toast(
+            `Imported ${r.added} of ${r.rows} rows${r.duplicates ? ` · ${r.duplicates} already in your leads` : ''}${r.invalid ? ` · ${r.invalid} without a LinkedIn URL` : ''}${r.enrichRunId ? ' · finding emails in the background' : ''}`,
+          );
           onDone(id);
         } else if (tab === 'linkedin') {
-          await api('/api/leads/import/linkedin', { body: { listId: id, accountId: Number(acc), source, url, limit, ...(source === 'post' ? { likers, commenters } : {}) } });
+          await api('/api/leads/import/linkedin', { body: { listId: id, accountId: Number(acc), source, url, limit, autoEnrich: enrichAfter, ...(source === 'post' ? { likers, commenters } : {}) } });
           toast('Collecting leads in the background. Progress is shown below.');
           await imports.reload();
           setListId(id);
@@ -377,6 +543,7 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
             />
           </Field>
           {file && <div className="note">{file.name}: about {file.rows} rows</div>}
+          <Toggle checked={enrichAfter} onChange={setAutoEnrich} label="Find and verify emails after importing" hint="Looks up emails for the new leads in the background. Addresses in the file are kept and only verified." />
         </>
       )}
 
@@ -424,6 +591,7 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
               <input type="number" min={1} max={1000} value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
             </Field>
           </div>
+          <Toggle checked={enrichAfter} onChange={setAutoEnrich} label="Find and verify emails after collecting" hint="Looks up emails for the new leads in the background once the import is done." />
           <div className="note">People on your blacklist or suppression list are left out, and people already in your leads are not added twice.</div>
           {!!imports.data?.length && <ImportList imports={imports.data.slice(0, 5)} />}
         </>
@@ -526,11 +694,28 @@ function AddToCampaign({ leadIds, onClose, onDone }: { leadIds: number[]; onClos
 }
 
 function LeadDrawer({ id, onClose, onChanged }: { id: number; onClose: () => void; onChanged: () => void }) {
-  const lead = useApi<Lead & { activity: any[]; campaigns: any[] }>(`/api/leads/${id}`);
+  // Polls while a lookup started here is running.
+  const [watching, setWatching] = useState(false);
+  const lead = useApi<Lead & { activity: any[]; campaigns: any[] }>(`/api/leads/${id}`, watching ? 2000 : undefined);
   const [edit, setEdit] = useState<Partial<Lead> | null>(null);
   const { busy, run } = useAction();
   const l = lead.data;
+  const looking = l?.enrichmentStatus === 'queued';
+  useEffect(() => {
+    if (watching && l && !looking) {
+      setWatching(false);
+      onChanged();
+    }
+    // onChanged is a new function on every render of the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watching, looking, l]);
   if (!l) return null;
+  const enrich = (key: string, o: Partial<EnrichOptions>) =>
+    run(key, async () => {
+      await api(`/api/leads/${id}/enrich`, { body: { find: false, verify: false, company: false, ...o } });
+      await lead.reload();
+      setWatching(true);
+    });
   const save = () =>
     run(
       'save',
@@ -605,6 +790,69 @@ function LeadDrawer({ id, onClose, onChanged }: { id: number; onClose: () => voi
             </div>
           ))}
         </div>
+      )}
+      {!edit && (
+        <section aria-labelledby="lead-enrichment">
+          <div className="spread" style={{ marginBottom: 6 }}>
+            <h3 id="lead-enrichment" style={{ margin: 0 }}>
+              Email and company data
+            </h3>
+            {looking ? (
+              <Pill status="queued">{ENRICHMENT_STATUS_LABELS.queued}</Pill>
+            ) : (
+              l.enrichmentStatus && (
+                <span className="muted" style={{ fontSize: 12.5 }}>
+                  {ENRICHMENT_STATUS_LABELS[l.enrichmentStatus]} {timeAgo(l.enrichedAt)}
+                </span>
+              )
+            )}
+          </div>
+          <dl className="facts">
+            <div>
+              <dt>Email status</dt>
+              <dd>{l.email ? <Pill status={l.emailStatus ?? 'unknown'}>{EMAIL_STATUS_LABELS[l.emailStatus ?? 'unknown']}</Pill> : '—'}</dd>
+            </div>
+            <div>
+              <dt>Source</dt>
+              <dd>{l.email ? emailSourceLabel(l.emailSource) : '—'}</dd>
+            </div>
+            <div>
+              <dt>Checked</dt>
+              <dd>{l.emailStatusAt ? dateTime(l.emailStatusAt) : 'Not yet'}</dd>
+            </div>
+            <div>
+              <dt>Company domain</dt>
+              <dd>{l.companyDomain ?? '—'}</dd>
+            </div>
+            {Object.entries(COMPANY_FACTS).map(([k, label]) =>
+              l.enrichment[k] != null && l.enrichment[k] !== '' ? (
+                <div key={k}>
+                  <dt>{label}</dt>
+                  <dd>{String(l.enrichment[k])}</dd>
+                </div>
+              ) : null,
+            )}
+          </dl>
+          {l.emailStatusReason && (
+            <p className="field-hint" style={{ margin: '6px 0 0' }}>
+              {l.emailStatusReason}
+            </p>
+          )}
+          {!!l.enrichment.simulated && <div className="note note-warning" style={{ marginTop: 6 }}>These company facts were made up by the built-in simulator. They are only shown here and never used in messages.</div>}
+          <div className="row" style={{ marginTop: 8 }}>
+            <Button size="sm" busy={busy === 'find'} disabled={looking} onClick={() => enrich('find', { find: true, verify: true })}>
+              {l.email ? 'Verify email' : 'Find email'}
+            </Button>
+            {!!l.email && (
+              <Button size="sm" busy={busy === 'replace'} disabled={looking} onClick={() => confirm('Look for a verified work email and replace the current address if one is found?') && enrich('replace', { find: true, verify: true, overwrite: true })}>
+                Find a better email
+              </Button>
+            )}
+            <Button size="sm" busy={busy === 'company'} disabled={looking} onClick={() => enrich('company', { company: true })}>
+              Add company data
+            </Button>
+          </div>
+        </section>
       )}
       {!!l.campaigns.length && (
         <div>

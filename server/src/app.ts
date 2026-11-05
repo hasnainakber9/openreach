@@ -8,6 +8,7 @@ import { accountRoutes } from './routes/accounts.js';
 import { aiRoutes } from './routes/ai.js';
 import { authRoutes, SESSION_COOKIE, sessionUser } from './routes/auth.js';
 import { campaignRoutes } from './routes/campaigns.js';
+import { enrichmentRoutes } from './routes/enrichment.js';
 import { inboxRoutes } from './routes/inbox.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { jobRoutes } from './routes/jobs.js';
@@ -64,6 +65,7 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
   authRoutes(app, ctx);
   accountRoutes(app, ctx);
   leadRoutes(app, ctx);
+  enrichmentRoutes(app, ctx);
   campaignRoutes(app, ctx);
   inboxRoutes(app, ctx);
   settingsRoutes(app, ctx);

@@ -591,4 +591,36 @@ export const MIGRATIONS: string[] = [
   -- SMS/WhatsApp daily limits count a workspace's sends per day.
   CREATE INDEX activity_workspace_day ON activity(workspace_id, day, type);
   `,
+  // [M9] g4-data: email finding, verification and enrichment. The leads_email_status index uses
+  // leads.email_status from M7.
+  `
+  -- user | csv | linkedin | hunter | apollo | simulated (NULL = entered before this step: treated as user)
+  ALTER TABLE leads ADD COLUMN email_source TEXT;
+  ALTER TABLE leads ADD COLUMN email_found_at INTEGER;
+  ALTER TABLE leads ADD COLUMN company_domain TEXT;
+  -- JSON: companySize, industry, website, ...
+  ALTER TABLE leads ADD COLUMN enrichment TEXT NOT NULL DEFAULT '{}';
+  -- queued | done | not_found | failed
+  ALTER TABLE leads ADD COLUMN enrichment_status TEXT;
+  ALTER TABLE leads ADD COLUMN enriched_at INTEGER;
+  -- What the last finished attempt did ("find,verify,company"), so a repeat within minutes reuses it.
+  ALTER TABLE leads ADD COLUMN enrichment_options TEXT;
+  CREATE INDEX leads_email_status ON leads(workspace_id, email_status);
+  CREATE TABLE enrichment_runs (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    options TEXT NOT NULL DEFAULT '{}',
+    total INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    found INTEGER NOT NULL DEFAULT 0,
+    verified INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    -- running | done
+    status TEXT NOT NULL DEFAULT 'running',
+    created_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+  CREATE INDEX enrichment_runs_workspace ON enrichment_runs(workspace_id, id);
+  `,
 ];

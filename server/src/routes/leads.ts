@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { csv, HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
+import { autoEnrichImported } from '../services/enrichment.js';
 import { IMPORT_KINDS, serializeImport, sourceUrlProblem, startImport } from '../services/imports.js';
 import { importLeads, type LeadInput } from '../services/leads.js';
 import type { AccountRow, ImportRow, LeadRow } from '../types.js';
@@ -65,6 +66,14 @@ export function serializeLead(l: LeadRow) {
     replyCategory: l.reply_category ?? null,
     emailStatus: l.email_status ?? null,
     emailStatusReason: l.email_status_reason ?? null,
+    emailStatusAt: l.email_status_at ?? null,
+    // NULL is an address saved before sources were recorded: it counts as the user's own.
+    emailSource: l.email ? (l.email_source ?? 'user') : null,
+    emailFoundAt: l.email_found_at ?? null,
+    companyDomain: l.company_domain ?? null,
+    enrichment: json<Record<string, unknown>>(l.enrichment, {}),
+    enrichmentStatus: l.enrichment_status ?? null,
+    enrichedAt: l.enriched_at ?? null,
     openProfile: l.open_profile == null ? null : l.open_profile === 1,
     createdAt: l.created_at,
   };
@@ -126,6 +135,9 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     campaignId: z.coerce.number().int().optional(),
     q: z.string().optional(),
     status: z.enum(['none', 'pending', 'connected']).optional(),
+    // unknown: an address nobody could confirm yet (never checked, or checked without a clear answer).
+    emailStatus: z.enum(['valid', 'risky', 'invalid', 'unknown', 'missing']).optional(),
+    enrichment: z.enum(['queued', 'done', 'not_found', 'failed', 'none']).optional(),
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(500).default(50),
   });
@@ -136,6 +148,11 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     if (q.listId) (where.push('l.list_id = $list'), (p.list = q.listId));
     if (q.campaignId) (where.push('l.id IN (SELECT lead_id FROM campaign_leads WHERE campaign_id = $camp)'), (p.camp = q.campaignId));
     if (q.status) (where.push('l.connection_status = $status'), (p.status = q.status));
+    if (q.emailStatus === 'missing') where.push('l.email IS NULL');
+    else if (q.emailStatus === 'unknown') where.push("l.email IS NOT NULL AND (l.email_status IS NULL OR l.email_status = 'unknown')");
+    else if (q.emailStatus) (where.push('l.email IS NOT NULL AND l.email_status = $es'), (p.es = q.emailStatus));
+    if (q.enrichment === 'none') where.push('l.enrichment_status IS NULL');
+    else if (q.enrichment) (where.push('l.enrichment_status = $enr'), (p.enr = q.enrichment));
     if (q.q) {
       where.push("(l.first_name || ' ' || l.last_name || ' ' || l.company || ' ' || l.headline || ' ' || COALESCE(l.email, '')) LIKE $q");
       p.q = `%${q.q}%`;
@@ -174,7 +191,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
       const custom = s.custom as Record<string, string>;
       return {
         profile_url: s.profileUrl, first_name: s.firstName, last_name: s.lastName, headline: s.headline, title: s.title, company: s.company,
-        location: s.location, email: s.email, phone: s.phone, connection_status: s.connectionStatus,
+        location: s.location, email: s.email, email_status: s.emailStatus ?? '', email_source: s.emailSource ?? '', company_domain: s.companyDomain ?? '', phone: s.phone, connection_status: s.connectionStatus,
         connected_at: s.connectedAt ? new Date(s.connectedAt).toISOString() : '', replied_at: s.repliedAt ? new Date(s.repliedAt).toISOString() : '',
         tags: s.tags.join(';'), ...Object.fromEntries(customKeys.map((k) => [k, custom[k] ?? ''])),
       };
@@ -196,10 +213,10 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
   app.post('/api/leads', async (req) => {
     const body = parse(z.object({ listId: z.number().int(), profileUrl: z.string().min(3) }).and(leadPatch), req.body);
     list(req, body.listId);
-    const r = importLeads(ctx, user(req).workspace_id, body.listId, [{ ...body, email: body.email || null }]);
+    const { addedIds, ...r } = importLeads(ctx, user(req).workspace_id, body.listId, [{ ...body, email: body.email || null }], { emailSource: 'user' });
     if (r.invalid) throw new HttpError(400, 'That is not a LinkedIn profile URL');
     if (r.duplicates) throw new HttpError(409, 'This person is already in your leads');
-    return r;
+    return { ...r, id: addedIds[0] };
   });
 
   app.patch('/api/leads/:id', async (req) => {
@@ -214,7 +231,10 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     if (b.custom) cols.custom = JSON.stringify(b.custom);
     // A new address hasn't bounced: its status starts over.
     const before = ctx.db.get<{ email: string | null }>('SELECT email FROM leads WHERE id = ?', [id])!;
-    if ('email' in cols && (cols.email ?? '').toLowerCase() !== (before.email ?? '').toLowerCase()) Object.assign(cols, { email_status: null, email_status_reason: null, email_status_at: null });
+    // A typed address is the user's own from now on: finders never replace it unless asked to.
+    if ('email' in cols && (cols.email ?? '').toLowerCase() !== (before.email ?? '').toLowerCase()) {
+      Object.assign(cols, { email_status: null, email_status_reason: null, email_status_at: null, email_source: cols.email ? 'user' : null, email_found_at: null });
+    }
     ctx.db.update('leads', id, cols);
     return { ok: true };
   });
@@ -226,7 +246,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 
   app.post('/api/leads/import/csv', async (req) => {
-    const body = parse(z.object({ listId: z.number().int(), csv: z.string().min(1).max(20_000_000) }), req.body);
+    const body = parse(z.object({ listId: z.number().int(), csv: z.string().min(1).max(20_000_000), autoEnrich: z.boolean().optional() }), req.body);
     list(req, body.listId);
     let leads: LeadInput[];
     try {
@@ -235,7 +255,11 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
       throw new HttpError(400, `Could not read the CSV: ${(e as Error).message}`);
     }
     if (leads.length && !leads.some((l) => l.profileUrl)) throw new HttpError(400, 'No LinkedIn profile URL column found (expected a header like "Profile URL" or "LinkedIn URL")');
-    return { rows: leads.length, ...importLeads(ctx, user(req).workspace_id, body.listId, leads) };
+    const me = user(req);
+    const { addedIds, ...r } = importLeads(ctx, me.workspace_id, body.listId, leads, { emailSource: 'csv' });
+    // Members may import, so they may also start the lookup for what they imported.
+    const enrich = autoEnrichImported(ctx, me.workspace_id, addedIds, me.id, body.autoEnrich);
+    return { rows: leads.length, ...r, enrichRunId: enrich?.runId ?? null };
   });
 
   const account = (req: any, id: number) =>
@@ -275,6 +299,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
           limit: z.number().int().min(1).max(1000).default(100),
           likers: z.boolean().default(true),
           commenters: z.boolean().default(true),
+          autoEnrich: z.boolean().optional(),
         })
         .superRefine((b, c) => {
           const problem = sourceUrlProblem(b.source, b.url);
@@ -285,7 +310,8 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     );
     list(req, body.listId);
     const a = account(req, body.accountId);
-    const options = body.source === 'post' ? { limit: body.limit, likers: body.likers, commenters: body.commenters } : { limit: body.limit };
+    const base = { limit: body.limit, ...(body.autoEnrich !== undefined ? { autoEnrich: body.autoEnrich } : {}) };
+    const options = body.source === 'post' ? { ...base, likers: body.likers, commenters: body.commenters } : base;
     return { importId: startImport(ctx, user(req).workspace_id, body.listId, a, body.source, body.url, options) };
   });
 

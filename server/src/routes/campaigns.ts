@@ -176,7 +176,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
       startedAt: c.started_at,
       stats: campaignStats(ctx, c.id),
       steps: Object.keys(seq.nodes).length,
-      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: [...sequenceWarnings(seq, settings), ...senderWarnings(ctx, seq, settings, mailboxes.length), ...channelWarnings(ctx, c.workspace_id, seq)] } : {}),
+      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: [...sequenceWarnings(seq, settings), ...senderWarnings(ctx, seq, settings, mailboxes.length), ...channelWarnings(ctx, c.workspace_id, seq), ...dataWarnings(ctx, c.workspace_id, seq)] } : {}),
     };
   };
 
@@ -402,6 +402,19 @@ function channelWarnings(ctx: Ctx, workspaceId: number, seq: Sequence): string[]
   else if (sms) {
     if (nodes.some((n) => n.type === 'sms') && !sms.policy.sms) out.push('The SMS integration has no SMS from number or Messaging Service, so SMS steps are skipped.');
     if (nodes.some((n) => n.type === 'whatsapp') && !sms.policy.whatsapp) out.push('The SMS integration has no WhatsApp sender, so WhatsApp steps are skipped.');
+  }
+  return out;
+}
+
+// Find email steps use the workspace's finders; say when that is only the simulator.
+function dataWarnings(ctx: Ctx, workspaceId: number, seq: Sequence): string[] {
+  const nodes = Object.values(seq.nodes);
+  const out: string[] = [];
+  if (nodes.some((n) => n.type === 'find_email') && ctx.providers.get(workspaceId, 'email_finder')?.simulated) {
+    out.push('Find email steps use the built-in simulator: its addresses are made up (.example) and real mailboxes never send to them. Add an email finder under Settings → Integrations.');
+  }
+  if (nodes.some((n) => n.type === 'condition' && n.kind === 'email_verified') && !nodes.some((n) => n.type === 'find_email')) {
+    out.push('An "email verified" check without a Find email step only says yes for leads whose address was already verified (for example with Find & verify on the Leads page).');
   }
   return out;
 }

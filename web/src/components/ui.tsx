@@ -40,6 +40,13 @@ const STATUS_TONE: Record<string, string> = {
   // Tasks
   open: 'info',
   overdue: 'critical',
+  // Email status and enrichment
+  valid: 'good',
+  risky: 'warning',
+  invalid: 'critical',
+  unknown: 'neutral',
+  queued: 'info',
+  not_found: 'neutral',
   // Reply categories
   interested: 'good',
   meeting_booked: 'good',

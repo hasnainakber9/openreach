@@ -10,6 +10,7 @@ import { newMessageId } from '../mail/compose.js';
 import type { SmtpConfig } from '../services/email.js';
 import { replyDecision, replyHoldDeadline, replySince } from '../services/replies.js';
 import { suppressionReason } from '../services/suppression.js';
+import { emailVerified, enrichmentSettings, findEmailGate } from '../services/enrichment.js';
 import { skipOpenTasks, taskGate } from '../services/tasks.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
 import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLegacy, pinLead, releaseUnstartedLeads, setConnection, type CapacityCache } from '../services/rotation.js';
@@ -231,6 +232,7 @@ export class Engine {
         else if (node.kind === 'has_email') branch = !!lead.email;
         else if (node.kind === 'replied') branch = lead.replied_at != null;
         else if (node.kind === 'is_open_profile') branch = lead.open_profile === 1;
+        else if (node.kind === 'email_verified') branch = emailVerified(lead, enrichmentSettings(this.ctx, campaign.workspace_id));
         else if (node.kind === 'reply_sentiment') {
           const reply = replySince(this.ctx, lead, cur.added_at);
           // Classification wakes this job; the recheck is a fallback.
@@ -250,6 +252,11 @@ export class Engine {
       }
       if (node.type === 'task') {
         if (taskGate(this.ctx, campaign, cur, node) === 'hold') return;
+        cur = this.moveTo(campaign, { ...cur, hold_reason: null }, node.next);
+        continue;
+      }
+      if (node.type === 'find_email') {
+        if (findEmailGate(this.ctx, campaign, cur, node) === 'hold') return;
         cur = this.moveTo(campaign, { ...cur, hold_reason: null }, node.next);
         continue;
       }
@@ -311,7 +318,7 @@ export class Engine {
     const campaign = this.campaign(job.campaign_id);
     const seq = campaignSequence(campaign);
     const settings = campaignSettings(campaign);
-    const step = seq.nodes[job.node_id!] as Exclude<SeqNode, { type: 'wait' | 'condition' | 'task' | 'sms' | 'whatsapp' }>;
+    const step = seq.nodes[job.node_id!] as Exclude<SeqNode, { type: 'wait' | 'condition' | 'task' | 'find_email' | 'sms' | 'whatsapp' }>;
     let lead = this.lead(job.lead_id);
     const base: Parameters<typeof logActivity>[1] = { workspaceId: a.workspace_id, accountId: a.id, campaignId: campaign.id, leadId: lead.id, type: step.type, timezone: a.timezone, nodeId: step.id };
 
@@ -385,6 +392,8 @@ export class Engine {
         // Legacy path (campaigns without mailboxes): the account's own SMTP settings, if any.
         const raw = ctx.sealer.open(a.smtp_enc);
         const smtp = raw ? (JSON.parse(raw) as SmtpConfig) : null;
+        // Addresses made up by the simulated finder never go out through a real server.
+        if (smtp && lead.email_source === 'simulated') return advance('skipped', 'address made up by the simulated email finder: never sent from a real mailbox'), false;
         const subject = fitRendered(render(node.subject, vars, ctx.random), RENDERED_MAX.emailSubject);
         const from = smtp ? smtp.from || smtp.user : '';
         const how = await ctx.mailer.send(smtp && { host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user, pass: smtp.pass }, {
@@ -466,7 +475,7 @@ export class Engine {
   // `conn` is the lead's connection with the acting account (not with any account).
   private async perform(
     d: LinkedInDriver,
-    node: Exclude<SeqNode, { type: 'wait' | 'condition' | 'email' | 'task' | 'sms' | 'whatsapp' }>,
+    node: Exclude<SeqNode, { type: 'wait' | 'condition' | 'email' | 'task' | 'find_email' | 'sms' | 'whatsapp' }>,
     lead: LeadRow,
     conn: ConnectionStatus,
     vars: Record<string, string>,

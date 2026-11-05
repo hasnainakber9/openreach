@@ -55,6 +55,30 @@ export interface LeadRow {
   email_status: string | null;
   email_status_reason: string | null;
   email_status_at: number | null;
+  // Where the email came from: user | csv | linkedin | <finder provider id>; NULL (older rows) counts as user.
+  email_source: string | null;
+  email_found_at: number | null;
+  company_domain: string | null;
+  enrichment: string; // JSON
+  // queued | done | not_found | failed
+  enrichment_status: string | null;
+  enriched_at: number | null;
+  enrichment_options: string | null;
+}
+
+export interface EnrichmentRunRow {
+  id: number;
+  workspace_id: number;
+  created_by: number | null;
+  options: string;
+  total: number;
+  done: number;
+  found: number;
+  verified: number;
+  failed: number;
+  status: 'running' | 'done';
+  created_at: number;
+  finished_at: number | null;
 }
 
 export interface CampaignRow {

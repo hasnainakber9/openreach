@@ -22,12 +22,14 @@ const PALETTE: { type: SeqNode['type']; kind?: ConditionKind; label: string }[] 
   { type: 'task', label: ACTION_LABELS.task },
   { type: 'sms', label: ACTION_LABELS.sms },
   { type: 'whatsapp', label: ACTION_LABELS.whatsapp },
+  { type: 'find_email', label: ACTION_LABELS.find_email },
   { type: 'condition', kind: 'accepted_within', label: 'If invite accepted' },
   { type: 'condition', kind: 'is_connected', label: 'If already connected' },
   { type: 'condition', kind: 'has_email', label: 'If email known' },
   { type: 'condition', kind: 'replied', label: 'If replied' },
   { type: 'condition', kind: 'is_open_profile', label: 'If open profile' },
   { type: 'condition', kind: 'reply_sentiment', label: 'If reply is…' },
+  { type: 'condition', kind: 'email_verified', label: 'If email verified' },
 ];
 
 // A new "reply is" condition starts with the most common branch.
@@ -68,6 +70,8 @@ function makeNode(type: SeqNode['type'], kind: ConditionKind = 'accepted_within'
       return { id, type, text: 'Hi {{firstName}}, ', next: null };
     case 'wait':
       return { id, type, days: 1, hours: 0, next: null };
+    case 'find_email':
+      return { id, type, verify: true, maxWaitHours: 6, next: null };
     case 'endorse':
       return { id, type, count: 3, next: null };
     case 'condition':
@@ -176,6 +180,8 @@ export function summary(n: SeqNode): string {
       return 'Withdraws a pending invitation';
     case 'task':
       return `${TASK_KIND_LABELS[n.kind]}: ${n.title}`;
+    case 'find_email':
+      return `${n.verify ? 'Find and verify' : 'Find'} · waits up to ${n.maxWaitHours} h`;
     case 'whatsapp':
       return n.contentSid ? `Template ${n.contentSid.slice(0, 8)}…` : n.text;
   }
@@ -387,6 +393,17 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
       )}
       {node.type === 'whatsapp' && <WhatsAppEditor node={node} onChange={onChange} />}
       {node.type === 'task' && <TaskEditor node={node} onChange={onChange} />}
+      {node.type === 'find_email' && (
+        <>
+          <Toggle checked={node.verify} onChange={(verify) => onChange({ ...node, verify })} label="Verify the address" hint="Checks found and existing addresses with your email verifier before going on." />
+          <Field label="Wait at most (hours)" hint="The lead goes on as soon as the lookup is done, or after this long either way.">
+            <input type="number" min={1} max={48} value={node.maxWaitHours} onChange={(e) => onChange({ ...node, maxWaitHours: Math.max(1, Math.min(48, Number(e.target.value) || 1)) })} />
+          </Field>
+          <div className="note">
+            Looks up the lead's work email with the finders under Settings → Integrations, in their order, until one returns an address that passes verification. Leads that already have a verified address go straight on, and addresses people entered are never replaced. Follow it with <em>If email verified</em> to send email only to good addresses.
+          </div>
+        </>
+      )}
       {node.type === 'wait' && (
         <div className="grid grid-2">
           <Field label="Days">
@@ -427,6 +444,9 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
               onChange={(categories) => onChange({ ...node, categories })}
               hint="Uses the latest reply since the lead joined this campaign, as classified by AI (or set by hand in the inbox). No reply goes down No. A reply that isn't classified yet waits for it, up to the reply hold time. While the campaign stops on replies, only categories under Settings → Keep going after these replies ever get here."
             />
+          )}
+          {node.kind === 'email_verified' && (
+            <span className="field-hint">Yes when the lead's address was verified as valid (or risky, if Settings → Integrations accepts risky addresses). Put a Find email step before this.</span>
           )}
           {node.kind === 'is_open_profile' && (
             <span className="field-hint">Known once a View profile step has visited the lead. Leads not viewed yet go down No, so put a View profile step before this.</span>

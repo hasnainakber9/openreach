@@ -18,8 +18,9 @@ export const ACTION_TYPES = [
 export type ActionType = (typeof ACTION_TYPES)[number];
 
 // Nodes the engine advances on its own (they only read the database), whatever the account's hours or limits.
-// A task holds the lead until someone completes or skips it (or it is skipped automatically).
-export const FREE_NODE_TYPES = ['wait', 'condition', 'task'] as const;
+// A task holds the lead until someone completes or skips it (or it is skipped automatically); find_email
+// holds it while the email waterfall runs in the background (at most maxWaitHours).
+export const FREE_NODE_TYPES = ['wait', 'condition', 'task', 'find_email'] as const;
 
 // Steps sent by the messaging runner through the workspace's SMS provider, not by a LinkedIn account.
 export const CHANNEL_NODE_TYPES = ['sms', 'whatsapp'] as const;
@@ -31,7 +32,8 @@ export type TaskKind = (typeof TASK_KINDS)[number];
 export const SMS_MAX = 1600;
 
 // reply_sentiment branches on the category of the lead's latest reply in this campaign (see engine walk()).
-export const CONDITION_KINDS = ['is_connected', 'accepted_within', 'has_email', 'replied', 'is_open_profile', 'reply_sentiment'] as const;
+// email_verified: the lead has an email whose status is valid (or risky, when the workspace accepts risky ones).
+export const CONDITION_KINDS = ['is_connected', 'accepted_within', 'has_email', 'replied', 'is_open_profile', 'reply_sentiment', 'email_verified'] as const;
 export type ConditionKind = (typeof CONDITION_KINDS)[number];
 
 const ptr = z.string().min(1).nullable().default(null);
@@ -132,6 +134,15 @@ export const NodeSchema = z.discriminatedUnion('type', [
     text: z.string().min(1).max(SMS_MAX),
     contentSid: z.string().trim().regex(/^HX[0-9a-fA-F]{32}$/, 'A Twilio content template id starts with HX').optional(),
     contentVariables: z.record(z.string().regex(/^\w{1,30}$/), z.string().max(500)).optional(),
+    next: ptr,
+  }),
+  // Looks up (and verifies) the lead's work email with the workspace's finders before going on. Leads that
+  // already have a usable address pass straight through; the lead goes on after `maxWaitHours` either way.
+  z.object({
+    id: z.string(),
+    type: z.literal('find_email'),
+    verify: z.boolean().default(true),
+    maxWaitHours: z.number().min(1).max(48).default(6),
     next: ptr,
   }),
   z.object({

@@ -67,7 +67,7 @@ export function useApi<T = any>(path: string | null, poll?: number) {
 // ---- Shared types (mirror the server's JSON) -------------------------------------
 
 export type ActionType = 'view_profile' | 'follow' | 'endorse' | 'like_post' | 'connect' | 'message' | 'email' | 'withdraw_invite' | 'inmail';
-export type ConditionKind = 'is_connected' | 'accepted_within' | 'has_email' | 'replied' | 'is_open_profile' | 'reply_sentiment';
+export type ConditionKind = 'is_connected' | 'accepted_within' | 'has_email' | 'replied' | 'is_open_profile' | 'reply_sentiment' | 'email_verified';
 // What a reply means, as classified by the AI (or set by hand in the inbox). Order is the display order.
 export const REPLY_CATEGORIES = ['interested', 'meeting_booked', 'question', 'not_now', 'not_interested', 'out_of_office', 'wrong_person', 'unsubscribe', 'other'] as const;
 export type ReplyCategory = (typeof REPLY_CATEGORIES)[number];
@@ -106,6 +106,8 @@ export type SeqNode =
   | ({ id: string; type: 'sms'; text: string; next: string | null } & AbFields<{ text: string }>)
   // contentSid: an approved WhatsApp template (needed outside 24 hours after the person last wrote).
   | { id: string; type: 'whatsapp'; text: string; contentSid?: string; contentVariables?: Record<string, string>; next: string | null }
+  // Looks up (and verifies) the lead's work email; the lead goes on when it's done or after maxWaitHours.
+  | { id: string; type: 'find_email'; verify: boolean; maxWaitHours: number; next: string | null }
   | { id: string; type: 'wait'; days: number; hours: number; next: string | null }
   // `categories`: reply_sentiment only, the reply categories that go down Yes.
   | { id: string; type: 'condition'; kind: ConditionKind; withinDays: number; categories?: ReplyCategory[]; yes: string | null; no: string | null };
@@ -348,12 +350,64 @@ export interface Lead {
   repliedAt: number | null;
   replyCategory: ReplyCategory | null;
   // 'invalid' after a bounce: email steps skip the lead.
-  emailStatus: 'valid' | 'risky' | 'invalid' | 'unknown' | null;
+  emailStatus: EmailStatus | null;
   emailStatusReason: string | null;
+  // When the status was last set (verification, bounce).
+  emailStatusAt: number | null;
+  // user | csv | linkedin | a finder's provider id (hunter, apollo, simulated).
+  emailSource: string | null;
+  emailFoundAt: number | null;
+  companyDomain: string | null;
+  // Company facts from enrichment: companySize, industry, website, ... (`simulated: true` when made up).
+  enrichment: Record<string, unknown>;
+  enrichmentStatus: EnrichmentStatus | null;
+  enrichedAt: number | null;
   // Open Profile members take InMail without a credit; null until a profile view tells.
   openProfile: boolean | null;
   createdAt: number;
   campaigns?: { id: number; name: string; state: string }[];
+}
+
+export type EmailStatus = 'valid' | 'risky' | 'invalid' | 'unknown';
+export type EnrichmentStatus = 'queued' | 'done' | 'not_found' | 'failed';
+
+export interface EnrichOptions {
+  find: boolean;
+  verify: boolean;
+  company: boolean;
+  overwrite: boolean;
+}
+
+// A bulk "Find & verify emails" run (GET /api/enrichment/runs/:id). `found`: leads with an address afterwards.
+export interface EnrichmentRun {
+  id: number;
+  status: 'running' | 'done';
+  options: EnrichOptions;
+  total: number;
+  done: number;
+  found: number;
+  verified: number;
+  failed: number;
+  createdAt: number;
+  finishedAt: number | null;
+}
+
+export interface EnrichmentSettings {
+  verifyFound: boolean;
+  acceptRisky: boolean;
+  trustFinderStatus: boolean;
+  autoEnrichOnImport: boolean;
+  enrichCompany: boolean;
+}
+
+export interface UsageRow {
+  kind: ProviderKind;
+  provider: string;
+  operation: string;
+  calls: number;
+  credits: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export interface LeadList {

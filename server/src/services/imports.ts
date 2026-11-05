@@ -7,6 +7,7 @@ import { accountLimits, accountNeedsLogin, isSessionError, schedule, usage } fro
 import { isWorkingTime, localParts, nextWorkingTime, randomDelay } from '../engine/limits.js';
 import { PermanentError, RetryLater, type JobHelpers, type JobInfo } from '../jobs/queue.js';
 import type { AccountRow, ImportKind, ImportRow } from '../types.js';
+import { autoEnrichImported } from './enrichment.js';
 import { importLeads, personToLead } from './leads.js';
 
 // Collecting leads from LinkedIn (a search, a post's reactions and comments, an event's attendees or
@@ -20,6 +21,8 @@ export interface ImportOptions {
   limit: number;
   likers?: boolean;
   commenters?: boolean;
+  // Find and verify emails for the added leads (unset: the workspace's enrichment setting decides).
+  autoEnrich?: boolean;
 }
 
 const URL_RULES: Record<ImportKind, { path: RegExp; message: string }> = {
@@ -164,8 +167,9 @@ export async function importJob(job: JobInfo<{ importId: number }>, h: JobHelper
   }
   if (!scraped) return { status: ctx.db.get<{ status: string }>('SELECT status FROM imports WHERE id = ?', [imp.id])?.status ?? 'gone' };
 
-  const r = importLeads(ctx, imp.workspace_id, imp.list_id, scraped.people.map(personToLead), { skipBlacklisted: true });
+  const r = importLeads(ctx, imp.workspace_id, imp.list_id, scraped.people.map(personToLead), { skipBlacklisted: true, emailSource: 'linkedin' });
   const result = { found: scraped.people.length, added: r.added, duplicates: r.duplicates, blacklisted: r.blacklisted ?? 0 };
+  autoEnrichImported(ctx, imp.workspace_id, r.addedIds, null, opts.autoEnrich);
   ctx.db.update('imports', imp.id, {
     status: 'done',
     ...result,

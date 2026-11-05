@@ -39,7 +39,9 @@ export function personToLead(p: Person): LeadInput {
 // Adds leads to a list, skipping any already in the workspace (matched on the profile slug).
 // With `skipBlacklisted` (LinkedIn imports), people on the blacklist or suppression list are left out
 // and counted, so scraped lists never bring back someone who asked not to be contacted.
-export function importLeads(ctx: Ctx, workspaceId: number, listId: number, inputs: LeadInput[], opts: { skipBlacklisted?: boolean } = {}) {
+// `emailSource` records where the addresses came from (csv, linkedin, user): finders never replace them.
+export function importLeads(ctx: Ctx, workspaceId: number, listId: number, inputs: LeadInput[], opts: { skipBlacklisted?: boolean; emailSource?: 'user' | 'csv' | 'linkedin' } = {}) {
+  const addedIds: number[] = [];
   let added = 0;
   let duplicates = 0;
   let invalid = 0;
@@ -60,9 +62,11 @@ export function importLeads(ctx: Ctx, workspaceId: number, listId: number, input
           continue;
         }
       }
-      const r = ctx.db.run(
-        `INSERT OR IGNORE INTO leads (workspace_id, list_id, public_id, profile_url, first_name, last_name, headline, title, company, location, email, phone, tags, custom, created_at)
-         VALUES ($ws, $list, $pid, $url, $fn, $ln, $hl, $title, $co, $loc, $email, $phone, $tags, $custom, $now)`,
+      const email = l.email?.trim() || null;
+      const r = ctx.db.get<{ id: number }>(
+        `INSERT INTO leads (workspace_id, list_id, public_id, profile_url, first_name, last_name, headline, title, company, location, email, email_source, phone, tags, custom, created_at)
+         VALUES ($ws, $list, $pid, $url, $fn, $ln, $hl, $title, $co, $loc, $email, $src, $phone, $tags, $custom, $now)
+         ON CONFLICT (workspace_id, public_id) DO NOTHING RETURNING id`,
         {
           ws: workspaceId,
           list: listId,
@@ -74,18 +78,21 @@ export function importLeads(ctx: Ctx, workspaceId: number, listId: number, input
           title: (l.title ?? '').trim(),
           co: (l.company ?? '').trim(),
           loc: (l.location ?? '').trim(),
-          email: l.email?.trim() || null,
+          email,
+          src: email ? (opts.emailSource ?? 'user') : null,
           phone: l.phone?.trim() || null,
           tags: JSON.stringify(l.tags ?? []),
           custom: JSON.stringify(l.custom ?? {}),
           now,
         },
       );
-      if (r.changes) added++;
-      else duplicates++;
+      if (r) {
+        added++;
+        addedIds.push(r.id);
+      } else duplicates++;
     }
   });
-  return { added, duplicates, invalid, ...(banned ? { blacklisted } : {}) };
+  return { added, duplicates, invalid, ...(banned ? { blacklisted } : {}), addedIds };
 }
 
 // Fills in blanks on a lead from freshly scraped profile data; never overwrites what the user entered.
@@ -102,6 +109,8 @@ export function enrichLead(ctx: Ctx, lead: LeadRow, p: Person, accountId?: numbe
   fill('company', p.company);
   fill('location', p.location);
   fill('email', p.email);
+  // An address from the person's contact info counts as theirs: finders never replace it.
+  if (patch.email) patch.email_source = 'linkedin';
   fill('phone', p.phone);
   // Unlike the fields above this is live state, so the latest view wins.
   if (p.openProfile !== undefined) patch.open_profile = p.openProfile ? 1 : 0;
