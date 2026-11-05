@@ -537,6 +537,19 @@ describe('deliverability check', () => {
     expect(noInclude.checks.find((c) => c.id === 'spf')).toMatchObject({ status: 'warn', fix: 'Add include:spf.protection.outlook.com to the record.' });
   });
 
+  it('answers for reserved example domains without a DNS lookup', async () => {
+    const noDns: DnsResolver = {
+      resolveMx: async () => expect.unreachable('no MX lookup'),
+      resolveTxt: async () => expect.unreachable('no TXT lookup'),
+      lookup: async () => expect.unreachable('no lookup'),
+    };
+    for (const d of ['openreach.example', 'mail.acme.test', 'x.invalid']) {
+      const r = await checkDomain(noDns, d);
+      expect(status(r)).toEqual({ mx: 'warn', spf: 'warn', dkim: 'warn', dmarc: 'warn' });
+      expect(r.checks[0].message).toMatch(/reserved example domain/);
+    }
+  });
+
   it('reports lookup errors as warnings, not as missing records', async () => {
     const broken: DnsResolver = {
       resolveMx: async () => {

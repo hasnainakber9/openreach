@@ -48,10 +48,18 @@ async function lookup<T>(fn: () => Promise<T[]>): Promise<{ records: T[]; error?
   }
 }
 
+const RESERVED_TLD = /(^|\.)(example|test|invalid|localhost)$/;
+
 const txt = (records: string[][]) => records.map((parts) => parts.join(''));
 
 export async function checkDomain(resolver: DnsResolver, rawDomain: string, opts: { dkimSelector?: string | null; preset?: string | null } = {}): Promise<DomainReport> {
   const domain = rawDomain.trim().toLowerCase().replace(/\.$/, '');
+  // Reserved names (RFC 2606/6761, used by the demo and simulated mailboxes) have no DNS: answer without a lookup.
+  if (RESERVED_TLD.test(domain)) {
+    const message = `${domain} is a reserved example domain with no DNS records, so there is nothing to check.`;
+    const fix = 'Run the check on the domain you really send from.';
+    return { domain, checks: (['mx', 'spf', 'dkim', 'dmarc'] as const).map((id) => ({ id, status: 'warn' as const, message, fix })) };
+  }
   const [mx, spf, dkim, dmarc] = await Promise.all([checkMx(resolver, domain), checkSpf(resolver, domain, opts.preset), checkDkim(resolver, domain, opts.dkimSelector), checkDmarc(resolver, domain)]);
   return { domain, checks: [mx, spf, dkim, dmarc] };
 }

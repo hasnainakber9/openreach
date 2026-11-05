@@ -99,7 +99,7 @@ function drafts(req: AiRequest) {
   const max = Number(field(req.prompt, 'max_chars', '600')) || 600;
   const offer = field(req.prompt, 'offer', 'what we do').replace(/[.!\s]+$/, '');
   const out = Array.from({ length: n }, (_, i) => {
-    const parts = [pick(DRAFT_OPENERS, req.prompt, i, 'o'), pick(DRAFT_HOOKS, req.prompt, i, 'h'), `We help with ${offer}.`, pick(DRAFT_ASKS, req.prompt, i, 'a')];
+    const parts = [pick(DRAFT_OPENERS, req.prompt, i, 'o'), pick(DRAFT_HOOKS, req.prompt, i, 'h'), `What we do: ${offer}.`, pick(DRAFT_ASKS, req.prompt, i, 'a')];
     const text = cut(parts.join(' '), max);
     if (channel === 'email' || channel === 'inmail') return { subject: cut(`Idea for {{company|your team}}: ${offer}`, 120), body: cut(parts.join('\n\n'), max) };
     return { text };

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { loadPlans, type Plan } from './billing/plans.js';
 
 export interface Config {
@@ -60,7 +61,8 @@ export function loadConfig(env = process.env): Config {
     simLatencyMs: Number(env.SIM_LATENCY_MS ?? 150),
     headless: env.PLAYWRIGHT_HEADLESS !== 'false',
     executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined,
-    webDist: resolve(env.WEB_DIST ?? new URL('../../web/dist', import.meta.url).pathname),
+    // fileURLToPath, not URL.pathname: on Windows the pathname is /C:/..., which resolve() mangles, and the app wasn't served.
+    webDist: resolve(env.WEB_DIST ?? fileURLToPath(new URL('../../web/dist', import.meta.url))),
     runWorker: env.RUN_WORKER !== 'false',
     // External base URL for links that leave the app (unsubscribe, tracking, invites). Never taken from the Host header.
     publicUrl: env.PUBLIC_URL?.trim().replace(/\/+$/, '') || undefined,

@@ -94,14 +94,15 @@ function KindCard({
 
   return (
     <section className="card stack" aria-labelledby={`kind-${kind}`}>
-      <div className="spread" style={{ alignItems: 'flex-start' }}>
-        <div>
+      {/* Wraps on phones, so the "In use" line doesn't squeeze the description into a sliver. */}
+      <div className="spread" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <h2 id={`kind-${kind}`}>{KIND_LABELS[kind]}</h2>
           <p className="muted" style={{ margin: '4px 0 0' }}>
             {KIND_HELP[kind]}
           </p>
         </div>
-        <div className="row" style={{ flexWrap: 'nowrap' }}>
+        <div className="row">
           <span className="muted" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>
             {status?.provider ? <>In use: {status.label}</> : 'Not connected'}
           </span>
