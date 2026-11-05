@@ -20,6 +20,7 @@ export default function Tasks({ me }: { me: Me }) {
   const [page, setPage] = useState(1);
   const [closing, setClosing] = useState<{ task: Task; action: 'complete' | 'skip' } | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Task | null>(null);
   const writer = me.role !== 'client';
 
   const params = new URLSearchParams({ status, assignee, page: String(page), pageSize: String(PAGE_SIZE) });
@@ -110,7 +111,7 @@ export default function Tasks({ me }: { me: Me }) {
               </thead>
               <tbody>
                 {list.data?.items.map((t) => (
-                  <TaskRowView key={t.id} t={t} writer={writer} onClose={(action) => setClosing({ task: t, action })} />
+                  <TaskRowView key={t.id} t={t} writer={writer} onClose={(action) => setClosing({ task: t, action })} onEdit={() => setEditing(t)} />
                 ))}
               </tbody>
             </table>
@@ -121,6 +122,7 @@ export default function Tasks({ me }: { me: Me }) {
 
       {closing && <CloseTaskModal task={closing.task} action={closing.action} onClose={() => setClosing(null)} onDone={reload} />}
       {creating && <NewTaskModal team={assignable(team.data)} onClose={() => setCreating(false)} onDone={reload} />}
+      {editing && <EditTaskModal task={editing} team={assignable(team.data)} onClose={() => setEditing(null)} onDone={reload} />}
     </>
   );
 }
@@ -135,7 +137,7 @@ function contactLink(t: Task) {
   return null;
 }
 
-function TaskRowView({ t, writer, onClose }: { t: Task; writer: boolean; onClose: (action: 'complete' | 'skip') => void }) {
+function TaskRowView({ t, writer, onClose, onEdit }: { t: Task; writer: boolean; onClose: (action: 'complete' | 'skip') => void; onEdit: () => void }) {
   const link = contactLink(t);
   return (
     <tr>
@@ -196,6 +198,9 @@ function TaskRowView({ t, writer, onClose }: { t: Task; writer: boolean; onClose
             </Button>
             <Button size="sm" variant="ghost" onClick={() => onClose('skip')} aria-label={`Skip: ${t.title}`}>
               Skip
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onEdit} aria-label={`Edit: ${t.title}`}>
+              Edit
             </Button>
           </div>
         )}
@@ -336,6 +341,75 @@ function NewTaskModal({ team, onClose, onDone }: { team: TeamMember[]; onClose: 
             ))}
           </select>
         </Field>
+      </div>
+    </Modal>
+  );
+}
+
+// Title, instructions, due date and assignee of an open task. Moving the due date also moves its auto-skip.
+function EditTaskModal({ task, team, onClose, onDone }: { task: Task; team: TeamMember[]; onClose: () => void; onDone: () => Promise<void> }) {
+  const [form, setForm] = useState({ title: task.title, instructions: task.instructions, due: toLocalInput(task.dueAt), assigneeId: task.assignee ? String(task.assignee.id) : '' });
+  const { busy, run } = useAction();
+  const dueAt = new Date(form.due).getTime();
+  // Keep the current assignee selectable even when they can no longer take new work.
+  const people = task.assignee && !team.some((u) => u.id === task.assignee!.id) ? [...team, { id: task.assignee.id, name: task.assignee.name }] : team;
+  const submit = () =>
+    run(
+      'save',
+      async () => {
+        await api(`/api/tasks/${task.id}`, {
+          method: 'PATCH',
+          // The input has minute precision, so an untouched due date is left alone (not rounded).
+          body: { title: form.title, instructions: form.instructions, assigneeId: form.assigneeId ? Number(form.assigneeId) : null, ...(form.due !== toLocalInput(task.dueAt) ? { dueAt } : {}) },
+        });
+        await onDone();
+        onClose();
+      },
+      'Task saved',
+    );
+  return (
+    <Modal
+      title={`Edit: ${task.title}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" busy={busy === 'save'} disabled={!form.title.trim() || !Number.isFinite(dueAt)} onClick={submit}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        {task.lead && (
+          <p className="muted" style={{ margin: 0 }}>
+            For {task.lead.name}
+            {task.campaign ? ` in ${task.campaign.name}` : ''}.
+          </p>
+        )}
+        <Field label="Title">
+          <input type="text" value={form.title} maxLength={200} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+        </Field>
+        <Field label="Instructions">
+          <textarea value={form.instructions} rows={3} maxLength={4000} onChange={(e) => setForm({ ...form, instructions: e.target.value })} />
+        </Field>
+        <div className="grid grid-2">
+          <Field label="Due" hint={task.autoSkipAt ? 'The automatic skip moves with the due date.' : undefined}>
+            <input type="datetime-local" value={form.due} onChange={(e) => setForm({ ...form, due: e.target.value })} />
+          </Field>
+          <Field label="Assign to">
+            <select value={form.assigneeId} onChange={(e) => setForm({ ...form, assigneeId: e.target.value })}>
+              <option value="">Nobody</option>
+              {people.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
       </div>
     </Modal>
   );

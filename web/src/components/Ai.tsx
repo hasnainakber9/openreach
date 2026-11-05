@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { api, useApi, type AiBrief, type AiDraft, type AiLength, type AiPreview, type AiTone, type AiVariable, type AiWriteResult, type CampaignLead, type Lead } from '../api';
+import { api, useApi, type AiBrief, type AiDraft, type AiLength, type AiPreview, type AiTone, type AiValueCount, type AiVariable, type AiWriteResult, type CampaignLead, type Lead } from '../api';
 import { fullName } from '../format';
-import { Button, ErrorNote, Field, Modal, ProviderBadge } from './ui';
+import { Button, ErrorNote, Field, Modal, ProviderBadge, useAction } from './ui';
 
 export type WriterNodeType = 'connect' | 'message' | 'inmail' | 'email' | 'sms';
 
@@ -235,6 +235,60 @@ export function AiLeadPreview({ campaignId, value, onChange }: { campaignId: num
 }
 
 // The campaign's {{ai:name}} variables, with a preview on one of its leads. Saved with the campaign settings.
+// Saved variables' results across the campaign's leads. Failed values send the fallback and stay failed
+// (so a broken key isn't retried forever) until the user asks for them again here.
+export function AiValueStatus({ campaignId }: { campaignId: number }) {
+  const status = useApi<AiValueCount[]>(`/api/campaigns/${campaignId}/ai/status`, 30_000);
+  const { busy, run } = useAction();
+  const rows = status.data ?? [];
+  const failed = rows.reduce((n, r) => n + r.failed, 0);
+  if (!rows.some((r) => r.ready || r.pending || r.failed)) return null;
+  const retry = () =>
+    run('retry', async () => {
+      const r = await api<{ leads: number }>(`/api/campaigns/${campaignId}/ai/retry`, { body: {} });
+      await status.reload();
+      return r;
+    }, 'Writing the failed values again for leads still in the campaign');
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <div className="field-label">Generated so far</div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Variable</th>
+              <th className="num">Ready</th>
+              <th className="num">Waiting</th>
+              <th className="num">Failed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.name}>
+                <td>
+                  <code>{`{{ai:${r.name}}}`}</code>
+                  {r.failed > 0 && r.lastError && <div className="cell-sub">{r.lastError}</div>}
+                </td>
+                <td className="num">{r.ready}</td>
+                <td className="num">{r.pending}</td>
+                <td className="num">{r.failed}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {failed > 0 && (
+        <div className="row" style={{ gap: 8 }}>
+          <Button size="sm" busy={busy === 'retry'} onClick={retry}>
+            Retry failed values
+          </Button>
+          <span className="field-hint">Fix the cause first (for example the AI key under Settings → Integrations). Leads that already got the fallback keep it.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AiVariablesEditor({ campaignId, value, onChange }: { campaignId: number; value: AiVariable[]; onChange: (v: AiVariable[]) => void }) {
   const leads = useSampleLeads(campaignId);
   const [leadId, setLeadId] = useState<number | ''>('');

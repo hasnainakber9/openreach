@@ -166,6 +166,9 @@ export async function importJob(job: JobInfo<{ importId: number }>, h: JobHelper
     throw e;
   }
   if (!scraped) return { status: ctx.db.get<{ status: string }>('SELECT status FROM imports WHERE id = ?', [imp.id])?.status ?? 'gone' };
+  // Cancelled while the browser was collecting: keep the "Cancelled" result and add nobody.
+  const after = ctx.db.get<{ status: string }>('SELECT status FROM imports WHERE id = ?', [imp.id]);
+  if (after?.status !== 'running') return { status: after?.status ?? 'gone' };
 
   const r = importLeads(ctx, imp.workspace_id, imp.list_id, scraped.people.map(personToLead), { skipBlacklisted: true, emailSource: 'linkedin' });
   const result = { found: scraped.people.length, added: r.added, duplicates: r.duplicates, blacklisted: r.blacklisted ?? 0 };
@@ -181,6 +184,16 @@ export async function importJob(job: JobInfo<{ importId: number }>, h: JobHelper
 }
 
 export const IMPORT_JOB_OPTIONS = { timeoutMs: 60 * MINUTE, maxAttempts: MAX_ATTEMPTS };
+
+// Stops a running import. A queued job is cancelled; one that is scraping right now finishes its page
+// and then adds nobody (importJob re-reads the status), since a browser mid-scroll can't be interrupted.
+export function cancelImport(ctx: Ctx, imp: ImportRow): 'ok' | 'not_running' {
+  const now = ctx.clock.now();
+  const changed = ctx.db.run("UPDATE imports SET status = 'failed', error = 'Cancelled', note = NULL, finished_at = ? WHERE id = ? AND status = 'running'", [now, imp.id]);
+  if (!changed.changes) return 'not_running';
+  if (imp.job_id != null) ctx.jobs.cancel(imp.job_id, imp.workspace_id);
+  return 'ok';
+}
 
 export function serializeImport(i: ImportRow & { list_name: string | null; account_name: string | null; job_status: string | null; job_error: string | null }) {
   const opts = json<ImportOptions>(i.options, { limit: 0 });

@@ -424,6 +424,43 @@ describe('LinkedIn import routes', () => {
     }
   });
 
+  it('cancels a queued import, and one cancelled mid-scrape adds nobody', async () => {
+    const { w, call, accountId, listId, addUser, as, register, owner } = await setup();
+    const queued = (await call('POST', '/api/leads/import/linkedin', { listId, accountId, source: 'group', url: GROUP, limit: 10 })).body.importId;
+    expect((await call('POST', `/api/imports/${queued}/cancel`)).status).toBe(200);
+    const job = w.ctx.db.get<{ status: string }>('SELECT status FROM jobs WHERE id = ?', [imp(w, queued).job_id])!;
+    expect(job.status).toBe('cancelled');
+    expect((await call('GET', '/api/imports')).body[0]).toMatchObject({ id: queued, status: 'failed', error: 'Cancelled' });
+    expect((await call('POST', `/api/imports/${queued}/cancel`)).status).toBe(409);
+
+    // Cancelled while the browser is collecting: the job finishes its page, then adds nobody.
+    const running = (await call('POST', '/api/leads/import/linkedin', { listId, accountId, source: 'group', url: GROUP, limit: 10 })).body.importId;
+    const real = SimulatorDriver.prototype.groupMembers;
+    let scraped = 0;
+    const spy = vi.spyOn(SimulatorDriver.prototype, 'groupMembers').mockImplementationOnce(async function (this: SimulatorDriver, url, limit, onPage) {
+      scraped++;
+      expect((await call('POST', `/api/imports/${running}/cancel`)).status).toBe(200);
+      return real.call(this, url, limit, onPage);
+    });
+    try {
+      await finishImports(w);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(scraped).toBe(1);
+    expect(imp(w, running)).toMatchObject({ status: 'failed', error: 'Cancelled', added: 0 });
+    expect(listLeads(w, listId)).toEqual([]);
+
+    // Read-only clients can't cancel, and other workspaces can't see the import.
+    const later = (await call('POST', '/api/leads/import/linkedin', { listId, accountId, source: 'group', url: GROUP, limit: 5 })).body.importId;
+    as(await addUser('client'));
+    expect((await call('POST', `/api/imports/${later}/cancel`)).status).toBe(403);
+    await register('Other');
+    expect((await call('POST', `/api/imports/${later}/cancel`)).status).toBe(404);
+    as(owner);
+    expect(imp(w, later).status).toBe('running');
+  });
+
   it('lets members import and keeps other workspaces out', async () => {
     const { call, accountId, listId, addUser, as, register, owner } = await setup();
     const member = await addUser('member');

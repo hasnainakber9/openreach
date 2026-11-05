@@ -659,7 +659,7 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
           </div>
           <Toggle checked={enrichAfter} onChange={setAutoEnrich} label="Find and verify emails after collecting" hint="Looks up emails for the new leads in the background once the import is done." />
           <div className="note">People on your blacklist or suppression list are left out, and people already in your leads are not added twice.</div>
-          {!!imports.data?.length && <ImportList imports={imports.data.slice(0, 5)} />}
+          {!!imports.data?.length && <ImportList imports={imports.data.slice(0, 5)} onChanged={imports.reload} />}
         </>
       )}
 
@@ -688,7 +688,17 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
 }
 
 // Recent LinkedIn imports with live progress, results and why one is waiting or stopped.
-function ImportList({ imports }: { imports: LeadImport[] }) {
+function ImportList({ imports, onChanged }: { imports: LeadImport[]; onChanged: () => void }) {
+  const { busy, run } = useAction();
+  const cancel = (i: LeadImport) =>
+    run(
+      `cancel-${i.id}`,
+      async () => {
+        await api(`/api/imports/${i.id}/cancel`, { body: {} });
+        onChanged();
+      },
+      'Import cancelled',
+    );
   return (
     <div className="import-list">
       <div className="field-label">Recent LinkedIn imports</div>
@@ -706,9 +716,12 @@ function ImportList({ imports }: { imports: LeadImport[] }) {
                   {i.progress.total ? ` / ${i.progress.total}` : ''}
                 </span>
                 <ProgressBar done={i.progress.done} total={i.progress.total} label={`Import ${i.id} progress`} />
+                <Button size="sm" variant="ghost" busy={busy === `cancel-${i.id}`} onClick={() => cancel(i)} aria-label={`Cancel import ${i.id}`}>
+                  Cancel
+                </Button>
               </span>
             ) : (
-              <Pill status={i.status === 'done' ? 'done' : 'failed'}>{i.status === 'done' ? `${i.added} added` : 'Failed'}</Pill>
+              <Pill status={i.status === 'done' ? 'done' : 'failed'}>{i.status === 'done' ? `${i.added} added` : i.error === 'Cancelled' ? 'Cancelled' : 'Failed'}</Pill>
             )}
           </div>
           {i.status === 'done' && (i.duplicates > 0 || i.blacklisted > 0) && (
@@ -719,7 +732,7 @@ function ImportList({ imports }: { imports: LeadImport[] }) {
             </div>
           )}
           {i.note && <div className="field-hint">{i.note}</div>}
-          {i.status === 'failed' && i.error && <div className="field-error">{i.error}</div>}
+          {i.status === 'failed' && i.error && i.error !== 'Cancelled' && <div className="field-error">{i.error}</div>}
         </div>
       ))}
     </div>

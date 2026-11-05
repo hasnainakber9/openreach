@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, REPLY_CATEGORIES, useApi, type AbTestReport, type Account, type Mailbox, type Campaign, type CampaignLead, type LeadList, type ReplyCategory, type SeqNode, type Sequence, type VariantId } from '../api';
 import { Funnel, LineChart } from '../components/LineChart';
-import { AiVariablesEditor } from '../components/Ai';
+import { AiValueStatus, AiVariablesEditor } from '../components/Ai';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
 import { Button, CheckList, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
 import { ACTION_LABELS, CATEGORY_LABELS, CONDITION_LABELS, fullName, pct, senderSummary, timeAgo } from '../format';
@@ -662,6 +662,7 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
       <div className="card stack">
         <h2>AI variables</h2>
         <AiVariablesEditor campaignId={campaign.id} value={form.aiVariables} onChange={(aiVariables) => setForm({ ...form, aiVariables })} />
+        <AiValueStatus campaignId={campaign.id} />
         <div>
           <Button variant="primary" busy={busy === 'save'} onClick={save}>
             Save settings

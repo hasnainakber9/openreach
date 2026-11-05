@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { previewAiVars } from '../ai/personalize.js';
+import { aiValueCounts, previewAiVars, retryFailedAi } from '../ai/personalize.js';
 import { LENGTHS, TONES, WRITER_CHANNELS } from '../ai/prompts.js';
 import { writeDrafts } from '../ai/writer.js';
 import { PlanLimitError } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { AiVariableSchema } from '../engine/sequence.js';
-import { HttpError, idParam, notFound, parse, requireWriter } from '../http.js';
+import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
 import { ProviderError } from '../providers/http.js';
 import { campaignSettings } from '../services/leads.js';
 import type { CampaignRow, LeadRow } from '../types.js';
@@ -100,5 +100,18 @@ export function aiRoutes(app: FastifyInstance, ctx: Ctx) {
     if (!defs.length) throw new HttpError(400, 'Add an AI variable first');
     throttle(u.workspace_id);
     return external(() => previewAiVars(ctx, u.workspace_id, lead, defs));
+  });
+
+  // Generated, waiting and failed values per AI variable across the campaign's leads.
+  app.get('/api/campaigns/:id/ai/status', async (req) => {
+    const { id } = parse(idParam, req.params);
+    return aiValueCounts(ctx, campaignOf(user(req).workspace_id, id));
+  });
+
+  // Generates failed values again (after fixing the AI key, say) for leads still in the campaign.
+  app.post('/api/campaigns/:id/ai/retry', async (req) => {
+    const u = requireWriter(req);
+    const { id } = parse(idParam, req.params);
+    return { leads: retryFailedAi(ctx, campaignOf(u.workspace_id, id)) };
   });
 }

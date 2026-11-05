@@ -6,6 +6,7 @@ import { json } from '../db/db.js';
 import { accountLimits, schedule, usage } from '../engine/engine.js';
 import { isValidTimezone, isWorkingTime, nextWorkingTime } from '../engine/limits.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
+import { ensureLegacyMailboxes } from '../mail/mailboxes.js';
 import { callLinkedIn } from '../services/linkedin-calls.js';
 import { releaseUnstartedLeads, retireAccount } from '../services/rotation.js';
 import type { AccountRow } from '../types.js';
@@ -109,6 +110,16 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     return out;
   };
 
+  // Email goes through mailboxes now: SMTP set on an account (older API clients) becomes, or updates, the
+  // account's legacy mailbox right away instead of waiting for the next restart's migration.
+  const syncLegacyMailbox = (accountId: number) => {
+    const a = ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [accountId])!;
+    const smtp = a.smtp_enc ? JSON.parse(ctx.sealer.open(a.smtp_enc) ?? 'null') : null;
+    if (!smtp?.host) return;
+    const sealed = ctx.sealer.seal(JSON.stringify({ host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user, pass: smtp.pass }));
+    if (!ctx.db.run('UPDATE mailboxes SET smtp_enc = ? WHERE legacy_account_id = ?', [sealed, a.id]).changes) ensureLegacyMailboxes(ctx);
+  };
+
   app.get('/api/accounts', async (req) => {
     return ctx.db.all<AccountRow>('SELECT * FROM accounts WHERE workspace_id = ? ORDER BY id', [user(req).workspace_id]).map((a) => serializeAccount(ctx, a));
   });
@@ -124,6 +135,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
       assertWithinPlan(ctx, ws, 'linkedinAccounts');
       return ctx.db.insert('accounts', { workspace_id: ws, created_at: ctx.clock.now(), ...columns(body) });
     });
+    if (body.smtp) syncLegacyMailbox(id);
     return serializeAccount(ctx, ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [id])!);
   });
 
@@ -132,6 +144,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     const a = load(req);
     const body = parse(accountBody.partial(), req.body);
     ctx.db.update('accounts', a.id, columns(body, a));
+    if (body.smtp) syncLegacyMailbox(a.id);
     return serializeAccount(ctx, ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [a.id])!);
   });
 

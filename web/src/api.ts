@@ -284,6 +284,14 @@ export interface AiPreview {
   errors: Record<string, string>;
   simulated: boolean;
 }
+// Per AI variable, across a campaign's leads.
+export interface AiValueCount {
+  name: string;
+  ready: number;
+  pending: number;
+  failed: number;
+  lastError: string | null;
+}
 
 export interface Campaign {
   id: number;

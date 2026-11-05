@@ -5,7 +5,7 @@ import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { csv, HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
 import { autoEnrichImported } from '../services/enrichment.js';
-import { IMPORT_KINDS, serializeImport, sourceUrlProblem, startImport } from '../services/imports.js';
+import { cancelImport, IMPORT_KINDS, serializeImport, sourceUrlProblem, startImport } from '../services/imports.js';
 import { importLeads, type LeadInput } from '../services/leads.js';
 import { effectiveStage, listStages, stageWhere } from '../services/pipeline.js';
 import { canonicalTags, tagLike } from '../services/tags.js';
@@ -349,5 +349,13 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
       [user(req).workspace_id],
     );
     return rows.map(serializeImport);
+  });
+
+  app.post('/api/imports/:id/cancel', async (req) => {
+    const u = requireWriter(req);
+    const { id } = parse(idParam, req.params);
+    const imp = ctx.db.get<ImportRow>('SELECT * FROM imports WHERE id = ? AND workspace_id = ?', [id, u.workspace_id]) ?? notFound('Import');
+    if (cancelImport(ctx, imp) === 'not_running') throw new HttpError(409, 'This import has already finished');
+    return { ok: true };
   });
 }

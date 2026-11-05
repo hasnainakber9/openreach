@@ -484,6 +484,25 @@ describe('legacy SMTP settings', () => {
   });
 });
 
+describe('legacy SMTP settings through the accounts API', () => {
+  it('creates the account’s mailbox at once and updates it when the SMTP settings change', async () => {
+    const api = await makeApi();
+    await api.register('Acme');
+    const smtp = { host: 'smtp.old.dev', port: 587, user: 'sam@old.dev', pass: 'pw-1', from: 'Sam <sam@old.dev>' };
+    const acc = (await api.call('POST', '/api/accounts', { name: 'Seat', driver: 'simulator', smtp })).body.id;
+    const open = () => JSON.parse(api.w.ctx.sealer.open(api.w.ctx.db.get<MailboxRow>('SELECT * FROM mailboxes WHERE legacy_account_id = ?', [acc])!.smtp_enc)!);
+    expect(api.w.ctx.db.all('SELECT 1 FROM mailboxes WHERE legacy_account_id = ?', [acc])).toHaveLength(1);
+    expect(open()).toMatchObject({ host: 'smtp.old.dev', user: 'sam@old.dev', pass: 'pw-1' });
+    // A blank password keeps the saved one, as on the account.
+    expect((await api.call('PATCH', `/api/accounts/${acc}`, { smtp: { ...smtp, host: 'smtp.new.dev', pass: '' } })).status).toBe(200);
+    expect(open()).toMatchObject({ host: 'smtp.new.dev', pass: 'pw-1' });
+    expect(api.w.ctx.db.all('SELECT 1 FROM mailboxes')).toHaveLength(1);
+    // Other edits leave the mailbox alone.
+    expect((await api.call('PATCH', `/api/accounts/${acc}`, { name: 'Seat 2' })).status).toBe(200);
+    expect(open().host).toBe('smtp.new.dev');
+  });
+});
+
 describe('deliverability check', () => {
   const resolver = (txt: Record<string, string[][]>, mx: Record<string, { exchange: string; priority: number }[]> = {}): DnsResolver => ({
     async resolveMx(d) {

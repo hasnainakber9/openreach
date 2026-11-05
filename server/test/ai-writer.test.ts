@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { definitionHash, tidyAiValue } from '../src/ai/personalize.js';
+import { aiValueCounts, definitionHash, retryFailedAi, tidyAiValue } from '../src/ai/personalize.js';
 import { leadBlock } from '../src/ai/prompts.js';
 import { cleanTemplate } from '../src/ai/writer.js';
 import { MINUTE, DAY } from '../src/clock.js';
@@ -10,7 +10,7 @@ import { aiNamesIn, render, unknownVariables } from '../src/engine/template.js';
 import type { AiRequest } from '../src/providers/ai/types.js';
 import { ProviderError, type ProviderErrorCode } from '../src/providers/http.js';
 import { registerProvider, unregisterProvider } from '../src/providers/registry.js';
-import { createIntegration } from '../src/providers/store.js';
+import { createIntegration, updateIntegration } from '../src/providers/store.js';
 import { importLeads } from '../src/services/leads.js';
 import { fakeFetch, makeApi, makeCampaign, makeWorld, runFor, type World } from './helpers.js';
 
@@ -131,6 +131,29 @@ describe('AI personalization variables in the engine', () => {
     await runUntil(w, () => activities(w, id, 'connect').length === 2);
     expect(activities(w, id, 'connect').map((a) => a.detail)).toEqual(['Hi Ann0, FALLBACK-LINE', 'Hi Ann1, FALLBACK-LINE']);
     expect(w.ctx.db.all("SELECT 1 FROM campaign_leads WHERE campaign_id = ? AND state = 'done'", [id])).toHaveLength(2);
+  });
+
+  it('retries failed values on request once the provider works again, for leads still in the campaign', async () => {
+    const w = makeWorld();
+    const integration = useTestAi(w, { fail: 'AUTH' });
+    const leads = addPeople(w, 1);
+    const { id } = makeCampaign(w, inviteThenEmail, { aiVariables: [ICE] }, leads);
+    await runUntil(w, () => activities(w, id, 'connect').length === 1);
+    expect(activities(w, id, 'connect')[0].detail).toBe('Hi Ann0, FALLBACK-LINE');
+    const campaign = w.ctx.db.get<any>('SELECT * FROM campaigns WHERE id = ?', [id]);
+    expect(aiValueCounts(w.ctx, campaign)).toEqual([{ name: 'icebreaker', ready: 0, pending: 0, failed: 1, lastError: 'test ai says AUTH' }]);
+
+    // Without a retry the failure sticks (the email would get the fallback too); after one the value is written again.
+    updateIntegration(w.ctx, integration, { settings: { fail: '', text: 'Loved your talk on platform teams' } });
+    expect(retryFailedAi(w.ctx, campaign)).toBe(1);
+    expect(aiRows(w)).toEqual([]);
+    await runUntil(w, () => activities(w, id, 'email').length === 1, 3 * DAY);
+    expect(activities(w, id, 'email')[0].detail).toContain('Loved your talk on platform teams');
+    expect(aiValueCounts(w.ctx, campaign)[0]).toMatchObject({ ready: 1, failed: 0 });
+    // Finished leads are left alone.
+    w.ctx.db.run("UPDATE campaign_lead_ai SET status = 'failed', error = 'x'");
+    expect(retryFailedAi(w.ctx, campaign)).toBe(0);
+    expect(aiRows(w)[0].status).toBe('failed');
   });
 
   it('retries a flaky provider three times, then sends the fallback well within the wait limit', async () => {
@@ -306,8 +329,22 @@ describe('AI routes', () => {
     expect(tpl.body).toMatchObject({ text: 'Hi Great post.', unknown: ['ai:missing'] });
     expect((await api.call('POST', '/api/templates/preview', { template: '{{ai:icebreaker}}', campaignId: c.body.id })).body.text).toBe('FALLBACK-LINE');
 
+    // Value counts and the retry button's route: writers only, and only for leads still in the campaign.
+    await api.call('POST', `/api/campaigns/${c.body.id}/leads`, { leadIds: [leadId] });
+    const clId = w.ctx.db.get<{ id: number }>('SELECT id FROM campaign_leads WHERE campaign_id = ?', [c.body.id])!.id;
+    w.ctx.db.insert('campaign_lead_ai', { campaign_lead_id: clId, name: 'icebreaker', instruction_hash: definitionHash(ICE), status: 'failed', error: 'Key rejected', requested_at: w.ctx.clock.now() });
+    expect((await api.call('GET', `/api/campaigns/${c.body.id}/ai/status`)).body).toEqual([{ name: 'icebreaker', ready: 0, pending: 0, failed: 1, lastError: 'Key rejected' }]);
+    const client = await api.addUser('client');
+    api.as(client);
+    expect((await api.call('POST', `/api/campaigns/${c.body.id}/ai/retry`)).status).toBe(403);
+    api.as(owner);
+    expect((await api.call('POST', `/api/campaigns/${c.body.id}/ai/retry`)).body).toEqual({ leads: 1 });
+    expect(w.ctx.db.all("SELECT 1 FROM campaign_lead_ai WHERE status = 'failed'")).toHaveLength(0);
+
     // Another workspace sees none of it.
     await api.register('Other');
+    expect((await api.call('GET', `/api/campaigns/${c.body.id}/ai/status`)).status).toBe(404);
+    expect((await api.call('POST', `/api/campaigns/${c.body.id}/ai/retry`)).status).toBe(404);
     expect((await api.call('POST', `/api/campaigns/${c.body.id}/ai/preview`, { leadId })).status).toBe(404);
     expect((await api.call('POST', '/api/ai/write', { nodeType: 'message', brief: { offer: 'a tool' }, leadId })).status).toBe(404);
     expect((await api.call('POST', '/api/ai/write', { nodeType: 'message', brief: { offer: 'a tool' }, campaignId: c.body.id })).status).toBe(404);

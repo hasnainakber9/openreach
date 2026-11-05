@@ -6,7 +6,7 @@ import { aiNamesIn } from '../engine/template.js';
 import { PermanentError, RetryLater, type JobHelpers, type JobInfo } from '../jobs/queue.js';
 import { ProviderError } from '../providers/http.js';
 import { logActivity } from '../services/activity.js';
-import { campaignSettings } from '../services/leads.js';
+import { campaignSequence, campaignSettings } from '../services/leads.js';
 import type { CampaignLeadRow, CampaignRow, LeadRow } from '../types.js';
 import { aiProvider, completeAi } from './complete.js';
 import { personalizeRequest } from './prompts.js';
@@ -113,6 +113,40 @@ export function prefetchAi(ctx: Ctx, campaign: CampaignRow, cl: Pick<CampaignLea
     : all;
   const names = aiNamesIn(texts);
   if (names.length) requestAiVars(ctx, campaign, cl, names);
+}
+
+// How each AI variable is doing across the campaign's leads, for the settings page.
+export function aiValueCounts(ctx: Ctx, campaign: CampaignRow) {
+  const rows = ctx.db.all<{ name: string; status: AiRow['status']; n: number; last_error: string | null }>(
+    `SELECT a.name, a.status, COUNT(*) AS n, MAX(a.error) AS last_error FROM campaign_lead_ai a JOIN campaign_leads cl ON cl.id = a.campaign_lead_id
+     WHERE cl.campaign_id = ? GROUP BY a.name, a.status`,
+    [campaign.id],
+  );
+  return campaignSettings(campaign).aiVariables.map((v) => {
+    const mine = rows.filter((r) => r.name === v.name);
+    const count = (s: AiRow['status']) => mine.find((r) => r.status === s)?.n ?? 0;
+    return { name: v.name, ready: count('ready'), pending: count('pending'), failed: count('failed'), lastError: mine.find((r) => r.status === 'failed')?.last_error ?? null };
+  });
+}
+
+// Failed values stay failed (the fallback is sent) so a broken key doesn't retry forever. Once the
+// user has fixed the cause, this clears them for leads still in the campaign and asks again for those
+// standing on a step that uses them; the rest are generated when they reach such a step.
+export function retryFailedAi(ctx: Ctx, campaign: CampaignRow): number {
+  const seq = campaignSequence(campaign);
+  return ctx.db.tx(() => {
+    const failed = ctx.db.all<{ id: number; node_id: string | null }>(
+      `SELECT DISTINCT cl.id, cl.node_id FROM campaign_leads cl JOIN campaign_lead_ai a ON a.campaign_lead_id = cl.id
+       WHERE cl.campaign_id = ? AND cl.state = 'active' AND a.status = 'failed'`,
+      [campaign.id],
+    );
+    for (const cl of failed) {
+      ctx.db.run("DELETE FROM campaign_lead_ai WHERE campaign_lead_id = ? AND status = 'failed'", [cl.id]);
+      const node = cl.node_id ? seq.nodes[cl.node_id] : undefined;
+      if (node) prefetchAi(ctx, campaign, cl, node);
+    }
+    return failed.length;
+  });
 }
 
 // 'failed' notes record a one-time change (the row fails), so they are logged right away; 'skipped'
