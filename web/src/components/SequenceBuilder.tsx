@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { api, type AbMetric, type AiDraft, type AiVariable, type ConditionKind, type InMailVia, type SeqNode, type Sequence, type VariantId, type VariantNode } from '../api';
-import { ACTION_LABELS, CONDITION_LABELS } from '../format';
+import { api, REPLY_CATEGORIES, type AbMetric, type AiDraft, type AiVariable, type ConditionKind, type InMailVia, type ReplyCategory, type SeqNode, type Sequence, type VariantId, type VariantNode } from '../api';
+import { ACTION_LABELS, CATEGORY_LABELS, CONDITION_LABELS } from '../format';
 import { AiLeadPreview, AiWriterModal, type AiStepPreview } from './Ai';
 import { Icon } from './Icon';
-import { Button, Field, Toggle } from './ui';
+import { Button, CheckList, Field, Toggle } from './ui';
 
 // Where a new step can go: the sequence start, or one of a node's outgoing pointers.
 type Slot = { parent: null } | { parent: string; key: 'next' | 'yes' | 'no' };
@@ -24,7 +24,11 @@ const PALETTE: { type: SeqNode['type']; kind?: ConditionKind; label: string }[] 
   { type: 'condition', kind: 'has_email', label: 'If email known' },
   { type: 'condition', kind: 'replied', label: 'If replied' },
   { type: 'condition', kind: 'is_open_profile', label: 'If open profile' },
+  { type: 'condition', kind: 'reply_sentiment', label: 'If reply is…' },
 ];
+
+// A new "reply is" condition starts with the most common branch.
+const DEFAULT_REPLY_CATEGORIES: ReplyCategory[] = ['interested'];
 
 const VARIABLES = ['firstName', 'lastName', 'company', 'title', 'headline', 'location'];
 
@@ -59,7 +63,7 @@ function makeNode(type: SeqNode['type'], kind: ConditionKind = 'accepted_within'
     case 'endorse':
       return { id, type, count: 3, next: null };
     case 'condition':
-      return { id, type, kind, withinDays: 7, yes: null, no: null };
+      return { id, type, kind, withinDays: 7, ...(kind === 'reply_sentiment' ? { categories: DEFAULT_REPLY_CATEGORIES } : {}), yes: null, no: null };
     default:
       return { id, type, next: null } as SeqNode;
   }
@@ -152,6 +156,7 @@ export function summary(n: SeqNode): string {
     case 'endorse':
       return `Up to ${n.count} skills`;
     case 'condition':
+      if (n.kind === 'reply_sentiment') return n.categories?.length ? `Yes: ${n.categories.map((c) => CATEGORY_LABELS[c]).join(', ')}` : 'Pick at least one reply category';
       return n.kind === 'accepted_within' ? `Waits up to ${n.withinDays} days` : 'Checked instantly';
     case 'view_profile':
       return 'Visits their profile so they see you';
@@ -372,7 +377,13 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
       {node.type === 'condition' && (
         <>
           <Field label="Check">
-            <select value={node.kind} onChange={(e) => onChange({ ...node, kind: e.target.value as ConditionKind })}>
+            <select
+              value={node.kind}
+              onChange={(e) => {
+                const kind = e.target.value as ConditionKind;
+                onChange({ ...node, kind, ...(kind === 'reply_sentiment' && !node.categories?.length ? { categories: DEFAULT_REPLY_CATEGORIES } : {}) });
+              }}
+            >
               {Object.entries(CONDITION_LABELS).map(([k, v]) => (
                 <option key={k} value={k}>
                   {v}
@@ -380,6 +391,15 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
               ))}
             </select>
           </Field>
+          {node.kind === 'reply_sentiment' && (
+            <CheckList<ReplyCategory>
+              label="Go down Yes when the latest reply is"
+              options={REPLY_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABELS[c] }))}
+              value={node.categories ?? []}
+              onChange={(categories) => onChange({ ...node, categories })}
+              hint="Uses the latest reply since the lead joined this campaign, as classified by AI (or set by hand in the inbox). No reply goes down No. A reply that isn't classified yet waits for it, up to the reply hold time. While the campaign stops on replies, only categories under Settings → Keep going after these replies ever get here."
+            />
+          )}
           {node.kind === 'is_open_profile' && (
             <span className="field-hint">Known once a View profile step has visited the lead. Leads not viewed yet go down No, so put a View profile step before this.</span>
           )}

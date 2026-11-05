@@ -5,9 +5,11 @@ import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { publicIdFromUrl } from '../drivers/types.js';
 import { localParts } from '../engine/limits.js';
-import { idParam, isAdmin, notFound, parse, requireAdmin, user } from '../http.js';
+import { HttpError, idParam, isAdmin, notFound, parse, requireAdmin, requireWriter, user } from '../http.js';
 import { contactTypesSql } from '../services/activity.js';
 import { token } from '../services/crypto.js';
+import { stopLeadEverywhere } from '../services/replies.js';
+import { normalizePhone, suppressIdentity, type SuppressionKind } from '../services/suppression.js';
 import { WEBHOOK_EVENTS } from '../services/webhooks.js';
 
 export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
@@ -80,6 +82,55 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
   app.delete('/api/blacklist/:id', async (req) => {
     const { id } = parse(idParam, req.params);
     ctx.db.run('DELETE FROM blacklist WHERE id = ? AND workspace_id = ?', [id, user(req).workspace_id]);
+    return { ok: true };
+  });
+
+  // ---- Do not contact (suppressions) -------------------------------------------
+  // Opt-outs from replies, unsubscribe links and STOP texts land here automatically; a classifier can be
+  // wrong, so people can be looked up and taken off the list again.
+  const SUPPRESSION_KINDS = ['linkedin', 'email', 'phone'] as const;
+  const PAGE_SIZE = 50;
+
+  app.get('/api/suppressions', async (req) => {
+    const q = parse(z.object({ q: z.string().trim().max(200).optional(), kind: z.enum(SUPPRESSION_KINDS).optional(), page: z.coerce.number().int().min(1).default(1) }), req.query);
+    const where = ['s.workspace_id = $ws'];
+    const p: Record<string, any> = { ws: user(req).workspace_id };
+    if (q.kind) (where.push('s.kind = $kind'), (p.kind = q.kind));
+    if (q.q) (where.push("(s.value LIKE $q OR (l.first_name || ' ' || l.last_name) LIKE $q)"), (p.q = `%${q.q}%`));
+    const from = `FROM suppressions s LEFT JOIN leads l ON l.id = s.lead_id AND l.workspace_id = s.workspace_id WHERE ${where.join(' AND ')}`;
+    const total = ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n ${from}`, p)!.n;
+    const items = ctx.db.all(
+      `SELECT s.id, s.kind, s.value, s.reason, s.source, s.lead_id AS "leadId", l.first_name || ' ' || l.last_name AS "leadName", s.created_at AS "createdAt"
+       ${from} ORDER BY s.id DESC LIMIT ${PAGE_SIZE} OFFSET ${(q.page - 1) * PAGE_SIZE}`,
+      p,
+    );
+    return { total, page: q.page, pageSize: PAGE_SIZE, items };
+  });
+
+  app.post('/api/suppressions', async (req) => {
+    const u = requireWriter(req);
+    const body = parse(z.object({ kind: z.enum(SUPPRESSION_KINDS), value: z.string().trim().min(1).max(300) }), req.body);
+    const value = body.kind === 'linkedin' ? (publicIdFromUrl(body.value) ?? body.value) : body.value;
+    if (body.kind === 'phone' && !normalizePhone(value)) throw new HttpError(400, 'value: Write the number in international form, like +44 20 7946 0958');
+    if (body.kind === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) throw new HttpError(400, 'value: Not an email address');
+    const added = suppressIdentity(ctx, u.workspace_id, body.kind as SuppressionKind, value, 'manual', `added by ${u.name}`);
+    // Leads with this identity stop now, not only before their next action.
+    const column = { linkedin: 'public_id', email: 'lower(email)', phone: 'phone' }[body.kind];
+    const match = body.kind === 'email' ? value.toLowerCase() : value;
+    const leads = ctx.db.all<{ id: number; phone: string | null }>(`SELECT id, phone FROM leads WHERE workspace_id = ? AND ${column} ${body.kind === 'phone' ? 'IS NOT NULL' : '= ?'}`, body.kind === 'phone' ? [u.workspace_id] : [u.workspace_id, match]);
+    let stopped = 0;
+    for (const l of leads) {
+      if (body.kind === 'phone' && normalizePhone(l.phone) !== normalizePhone(value)) continue;
+      stopped += stopLeadEverywhere(ctx, l.id, 'skipped', 'Suppressed: manual');
+    }
+    return { added, stopped };
+  });
+
+  // Taking someone off the list does not restart campaigns they were stopped in; add them again to contact them.
+  app.delete('/api/suppressions/:id', async (req) => {
+    const admin = requireAdmin(req);
+    const { id } = parse(idParam, req.params);
+    if (!ctx.db.run('DELETE FROM suppressions WHERE id = ? AND workspace_id = ?', [id, admin.workspace_id]).changes) notFound('Suppression');
     return { ok: true };
   });
 

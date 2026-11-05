@@ -174,10 +174,11 @@ export async function previewAiVars(ctx: Ctx, workspaceId: number, lead: LeadRow
 
 const PERMANENT_CODES = ['AUTH', 'QUOTA', 'BAD_REQUEST'];
 
-function isFinal(e: unknown, attempts: number) {
+// Whether this failure ends the job (no retry follows), so its effects (failed rows, activity) apply now.
+export function isFinalAiError(e: unknown, attempts: number, maxAttempts = AI_JOB_OPTIONS.maxAttempts) {
   if (e instanceof RetryLater || (e instanceof ProviderError && e.code === 'RATE_LIMIT')) return false;
   if (e instanceof PermanentError || (e instanceof ProviderError && PERMANENT_CODES.includes(e.code))) return true;
-  return attempts >= AI_JOB_OPTIONS.maxAttempts;
+  return attempts >= maxAttempts;
 }
 
 // Ends the AI wait of a lead parked by the engine (only that wait: retry back-offs and limit waits stay).
@@ -224,7 +225,7 @@ export async function personalizeJob(job: JobInfo<{ campaignLeadId: number }>, h
         generated++;
         h.progress(generated);
       } catch (e) {
-        if (isFinal(e, job.attempts)) failRows(ctx, campaign, cl, pending.slice(i).map((r) => r.name), e);
+        if (isFinalAiError(e, job.attempts)) failRows(ctx, campaign, cl, pending.slice(i).map((r) => r.name), e);
         if (generated) wake(ctx, cl.id);
         throw e;
       }

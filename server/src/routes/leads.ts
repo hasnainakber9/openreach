@@ -62,6 +62,7 @@ export function serializeLead(l: LeadRow) {
     connectionStatus: l.connection_status,
     connectedAt: l.connected_at,
     repliedAt: l.replied_at,
+    replyCategory: l.reply_category ?? null,
     openProfile: l.open_profile == null ? null : l.open_profile === 1,
     createdAt: l.created_at,
   };

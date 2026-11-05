@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { REPLY_CATEGORIES, SUPPRESS_CATEGORIES } from '../ai/categories.js';
 
 // A campaign sequence is a tree of nodes. Action and wait nodes have one `next`;
 // condition nodes branch to `yes` / `no`. A null pointer ends the sequence for that lead.
@@ -19,7 +20,8 @@ export type ActionType = (typeof ACTION_TYPES)[number];
 // Nodes the engine advances on its own (they only read the database), whatever the account's hours or limits.
 export const FREE_NODE_TYPES = ['wait', 'condition'] as const;
 
-export const CONDITION_KINDS = ['is_connected', 'accepted_within', 'has_email', 'replied', 'is_open_profile'] as const;
+// reply_sentiment branches on the category of the lead's latest reply in this campaign (see engine walk()).
+export const CONDITION_KINDS = ['is_connected', 'accepted_within', 'has_email', 'replied', 'is_open_profile', 'reply_sentiment'] as const;
 export type ConditionKind = (typeof CONDITION_KINDS)[number];
 
 const ptr = z.string().min(1).nullable().default(null);
@@ -100,6 +102,8 @@ export const NodeSchema = z.discriminatedUnion('type', [
     type: z.literal('condition'),
     kind: z.enum(CONDITION_KINDS),
     withinDays: z.number().min(0.1).max(90).default(7),
+    // reply_sentiment only: the reply categories that go down Yes.
+    categories: z.array(z.enum(REPLY_CATEGORIES)).max(REPLY_CATEGORIES.length).optional(),
     yes: ptr,
     no: ptr,
   }),
@@ -132,6 +136,13 @@ export const CampaignSettingsSchema = z.object({
     .array(AiVariableSchema)
     .max(10, 'A campaign can have at most 10 AI variables')
     .refine((vs) => new Set(vs.map((v) => v.name)).size === vs.length, 'Each AI variable needs its own name')
+    .default([]),
+  // With stopOnReply: replies in these categories hold the lead until classified, then let the sequence go on
+  // (other replies stop it). Empty keeps the plain stop-on-any-reply behaviour. Opt-outs always stop.
+  continueOnCategories: z
+    .array(z.enum(REPLY_CATEGORIES))
+    .max(REPLY_CATEGORIES.length)
+    .refine((cs) => !cs.some((c) => SUPPRESS_CATEGORIES.includes(c)), 'Not interested and unsubscribe replies always stop the lead')
     .default([]),
 });
 export type CampaignSettings = z.infer<typeof CampaignSettingsSchema>;
@@ -226,6 +237,9 @@ export function validateSequence(seq: Sequence): string[] {
     const n = seq.nodes[id];
     if (n.type === 'condition' && n.kind === 'accepted_within' && !reachable('connect')) {
       errors.push('An "accepted invite" condition needs a Connect step before it');
+    }
+    if (n.type === 'condition' && n.kind === 'reply_sentiment' && !n.categories?.length) {
+      errors.push('A "reply is" condition needs at least one reply category');
     }
   }
   return errors;

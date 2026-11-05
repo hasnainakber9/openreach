@@ -10,6 +10,7 @@ export const WEBHOOK_EVENTS = [
   'action.performed',
   'account.needs_login',
   'lead.suppressed',
+  'lead.classified',
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 export type EventSubscriber = (workspaceId: number, event: WebhookEvent, data: Record<string, unknown>) => void;

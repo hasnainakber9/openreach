@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { CampaignSettingsSchema, defaultSequence, isAbTest, isVariantNode, nodeVariants, precededBy, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
+import { CampaignSettingsSchema, defaultSequence, type CampaignSettings, isAbTest, isVariantNode, nodeVariants, precededBy, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
 import { leadVars, render, unknownVariables, VARIABLE_NAMES } from '../engine/template.js';
 import { setWinner, syncVariants, variantReport } from '../engine/variants.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
@@ -128,7 +128,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
       startedAt: c.started_at,
       stats: campaignStats(ctx, c.id),
       steps: Object.keys(seq.nodes).length,
-      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: sequenceWarnings(seq, settings.aiVariables.map((v) => v.name)) } : {}),
+      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: sequenceWarnings(seq, settings) } : {}),
     };
   };
 
@@ -170,7 +170,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     if (senders && !senders.length && c.status === 'active') throw new HttpError(409, 'A running campaign needs at least one LinkedIn account. Pause it first.');
     const cols: Record<string, any> = {};
     if (body.name) cols.name = body.name;
-    if (body.settings) cols.settings = JSON.stringify(CampaignSettingsSchema.parse({ ...json(c.settings, {}), ...body.settings }));
+    if (body.settings) cols.settings = JSON.stringify(CampaignSettingsSchema.parse({ ...campaignSettings(c), ...body.settings }));
     if (body.sequence) {
       const problems = validateSequence(body.sequence);
       if (problems.length && c.status === 'active') throw new HttpError(400, problems[0], problems);
@@ -306,9 +306,16 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 }
 
-function sequenceWarnings(seq: Sequence, aiNames: string[]): string[] {
+function sequenceWarnings(seq: Sequence, settings: CampaignSettings): string[] {
+  const aiNames = settings.aiVariables.map((v) => v.name);
   const out: string[] = [];
   for (const n of Object.values(seq.nodes)) {
+    // With stop-on-reply, only replies in "Keep going after these replies" ever reach a later step.
+    if (n.type === 'condition' && n.kind === 'reply_sentiment' && settings.stopOnReply) {
+      const keep = settings.continueOnCategories;
+      if (!keep.length) out.push('A "reply is" condition never sees a reply while the campaign stops on replies: choose categories under "Keep going after these replies" in the settings, or turn off stop on reply.');
+      else if ((n.categories ?? []).some((c) => !keep.includes(c))) out.push('A "reply is" condition checks categories that stop the campaign (they are not under "Keep going after these replies"), so those leads never reach it.');
+    }
     // Open Profile status is only known once a profile view has seen it; before that the answer is No.
     if (n.type === 'condition' && n.kind === 'is_open_profile' && !precededBy(seq, n.id, 'view_profile')) {
       out.push('An "open profile" check needs a View profile step before it, or every lead goes down No.');

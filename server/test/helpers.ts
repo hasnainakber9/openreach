@@ -42,6 +42,7 @@ export function testConfig(): Config {
     publicUrl: 'http://localhost:8787',
     jobConcurrency: 4,
     aiWaitMaxMin: 30,
+    replyHoldMin: 30,
   };
 }
 

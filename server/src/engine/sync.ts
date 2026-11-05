@@ -2,12 +2,13 @@ import { HOUR } from '../clock.js';
 import type { Ctx } from '../context.js';
 import type { InboxThread } from '../drivers/types.js';
 import { logActivity } from '../services/activity.js';
-import { campaignSettings, publicLead } from '../services/leads.js';
+import { publicLead } from '../services/leads.js';
+import { classifyJobKey, handleInboundReply } from '../services/replies.js';
 import { connectionWith, setConnection } from '../services/rotation.js';
-import type { AccountRow, CampaignRow, LeadRow } from '../types.js';
+import type { AccountRow, LeadRow } from '../types.js';
 
 // Pulls what happened on LinkedIn since the last sync: accepted invitations and new messages.
-// Acceptances wake leads waiting on an "accepted invite" condition; replies stop campaigns.
+// Acceptances wake leads waiting on an "accepted invite" condition; replies go through handleInboundReply.
 export async function syncAccount(ctx: Ctx, a: AccountRow) {
   const since = Math.max(0, a.last_sync_at - 2 * HOUR);
   const { connections, threads } = await ctx.drivers.use(a, async (d) => ({
@@ -56,7 +57,6 @@ export function markConnected(ctx: Ctx, a: AccountRow, lead: LeadRow) {
 
 // Returns the number of new inbound messages.
 export function storeThread(ctx: Ctx, a: AccountRow, t: InboxThread): number {
-  const now = ctx.clock.now();
   const lead = t.participant.publicId
     ? ctx.db.get<LeadRow>('SELECT * FROM leads WHERE workspace_id = ? AND public_id = ?', [a.workspace_id, t.participant.publicId])
     : undefined;
@@ -82,6 +82,8 @@ export function storeThread(ctx: Ctx, a: AccountRow, t: InboxThread): number {
 
   let inbound = 0;
   let latest = 0;
+  // The newest new reply: it is the one classified.
+  let newest: { id: number; body: string; sentAt: number } | null = null;
   for (const m of t.messages) {
     if (ctx.db.get('SELECT 1 FROM messages WHERE conversation_id = ? AND external_id = ?', [conv.id, m.externalId])) continue;
     if (m.direction === 'out') {
@@ -92,25 +94,23 @@ export function storeThread(ctx: Ctx, a: AccountRow, t: InboxThread): number {
         continue;
       }
     }
-    ctx.db.insert('messages', { conversation_id: conv.id, external_id: m.externalId, direction: m.direction, body: m.body, sent_at: m.sentAt });
+    const id = ctx.db.insert('messages', { conversation_id: conv.id, external_id: m.externalId, direction: m.direction, body: m.body, sent_at: m.sentAt });
     latest = Math.max(latest, m.sentAt);
-    if (m.direction === 'in') inbound++;
+    if (m.direction === 'in') {
+      inbound++;
+      if (!newest || m.sentAt >= newest.sentAt) newest = { id, body: m.body, sentAt: m.sentAt };
+    }
   }
   if (latest) ctx.db.run('UPDATE conversations SET last_message_at = MAX(last_message_at, ?) WHERE id = ?', [latest, conv.id]);
   if (inbound) ctx.db.run('UPDATE conversations SET unread = 1 WHERE id = ?', [conv.id]);
 
   if (inbound && lead) {
-    ctx.db.update('leads', lead.id, { replied_at: now });
     if (connectionWith(ctx, lead, a.id) !== 'connected') markConnected(ctx, a, lead);
-    const active = ctx.db.all<{ id: number; campaign_id: number }>("SELECT id, campaign_id FROM campaign_leads WHERE lead_id = ? AND state = 'active'", [lead.id]);
-    for (const cl of active) {
-      const c = ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [cl.campaign_id])!;
-      if (campaignSettings(c).stopOnReply) ctx.db.update('campaign_leads', cl.id, { state: 'replied', finished_at: now });
-      else ctx.db.run("UPDATE campaign_leads SET next_run_at = ? WHERE id = ? AND node_type = 'condition'", [now, cl.id]);
-    }
     const last = [...t.messages].reverse().find((m) => m.direction === 'in');
-    logActivity(ctx, { workspaceId: a.workspace_id, accountId: a.id, campaignId: active[0]?.campaign_id, leadId: lead.id, type: 'replied', detail: last?.body.slice(0, 500), timezone: a.timezone });
-    ctx.webhooks.emit(a.workspace_id, 'lead.replied', { lead: publicLead(lead), message: last?.body, account: { id: a.id, name: a.name } });
+    handleInboundReply(ctx, { lead, channel: 'linkedin', conversationId: conv.id, messageId: newest?.id ?? null, body: last?.body ?? newest?.body ?? '', account: a });
+  } else if (newest) {
+    // Someone who isn't a lead: the category still helps sort the inbox.
+    ctx.jobs.enqueue('ai.classify', { messageId: newest.id }, { workspaceId: a.workspace_id, dedupeKey: classifyJobKey(newest.id) });
   }
   return inbound;
 }

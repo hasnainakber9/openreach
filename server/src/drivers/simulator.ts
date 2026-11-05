@@ -28,6 +28,8 @@ export interface SimulatorOptions {
   random: () => number;
   // InMail credits per 30 days (0 = no Premium/Sales Navigator). InMail to open profiles is free.
   inmailCredits: number;
+  // What people reply; each person always sends the same one (picked by a hash of their profile slug).
+  replies: string[];
 }
 
 export const DEFAULT_SIM: SimulatorOptions = {
@@ -38,6 +40,7 @@ export const DEFAULT_SIM: SimulatorOptions = {
   latencyMs: 0,
   random: Math.random,
   inmailCredits: 50,
+  replies: [],
 };
 
 const FIRST = ['Ava', 'Liam', 'Sofia', 'Noah', 'Amara', 'Mateo', 'Hana', 'Omar', 'Chloe', 'Ravi', 'Lena', 'Kwame', 'Mei', 'Diego', 'Zara', 'Ethan', 'Aisha', 'Lucas', 'Ingrid', 'Tariq', 'Maya', 'Jonas', 'Priya', 'Felix'];
@@ -259,7 +262,8 @@ export class SimulatorDriver implements LinkedInDriver {
     const rows = this.db.all<SimRow>('SELECT * FROM sim_people WHERE account_id = ? AND replied = 1 AND reply_at >= ?', [this.accountId, since]);
     return rows.map((r) => {
       const p = simPerson(r.public_id);
-      const body = REPLIES[seeded(r.public_id + ':reply')(REPLIES.length)];
+      const replies = this.o.replies.length ? this.o.replies : REPLIES;
+      const body = replies[seeded(r.public_id + ':reply')(replies.length)];
       return {
         threadId: `sim-${r.public_id}`,
         participant: { name: `${p.firstName} ${p.lastName}`, publicId: r.public_id, profileUrl: p.profileUrl },

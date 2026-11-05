@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, useApi, type AbTestReport, type Account, type Campaign, type CampaignLead, type LeadList, type SeqNode, type Sequence, type VariantId } from '../api';
+import { api, REPLY_CATEGORIES, useApi, type AbTestReport, type Account, type Campaign, type CampaignLead, type LeadList, type ReplyCategory, type SeqNode, type Sequence, type VariantId } from '../api';
 import { Funnel, LineChart } from '../components/LineChart';
 import { AiVariablesEditor } from '../components/Ai';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
 import { Button, CheckList, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
-import { ACTION_LABELS, CONDITION_LABELS, fullName, pct, senderSummary, timeAgo } from '../format';
+import { ACTION_LABELS, CATEGORY_LABELS, CONDITION_LABELS, fullName, pct, senderSummary, timeAgo } from '../format';
 
 type Tab = 'sequence' | 'leads' | 'results' | 'settings';
 
@@ -515,6 +515,15 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
             hint="New leads go to the account with the most room left today; each account keeps to its own limits and hours. A lead stays with the account that first contacted it, even if you remove that account here."
           />
           <Toggle checked={form.stopOnReply} onChange={(v) => setForm({ ...form, stopOnReply: v })} label="Stop when a lead replies" hint="Recommended. Replies are picked up from the LinkedIn inbox." />
+          {form.stopOnReply && (
+            <CheckList<ReplyCategory>
+              label="Keep going after these replies"
+              options={REPLY_CATEGORIES.filter((c) => c !== 'unsubscribe' && c !== 'not_interested').map((c) => ({ value: c, label: CATEGORY_LABELS[c] }))}
+              value={form.continueOnCategories ?? []}
+              onChange={(continueOnCategories) => setForm({ ...form, continueOnCategories })}
+              hint="Leave empty to stop on any reply. With categories chosen, a lead who replies waits until the reply is classified: these categories carry on (branch on them with an “If reply is…” step, for example wait out an out-of-office), anything else stops. A reply still unclassified after the reply hold time stops it too. “Not interested” and unsubscribe replies always stop the lead, and sure ones stop it everywhere."
+            />
+          )}
           <Toggle checked={form.skipIfInOtherCampaign} onChange={(v) => setForm({ ...form, skipIfInOtherCampaign: v })} label="Skip leads already running in another campaign" />
           <Toggle checked={form.skipAlreadyConnected} onChange={(v) => setForm({ ...form, skipAlreadyConnected: v })} label="Skip people you're already connected to" />
           <Field label="Invitation note limit" hint="300 for most accounts. Use 200 for free accounts that get cut off.">

@@ -1,3 +1,4 @@
+import { SUPPRESS_CATEGORIES } from '../ai/categories.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import type { Person } from '../drivers/types.js';
@@ -141,7 +142,10 @@ export function campaignSequence(c: CampaignRow): Sequence {
 }
 
 export function campaignSettings(c: CampaignRow) {
-  return CampaignSettingsSchema.parse(json(c.settings, {}));
+  const raw = json<Record<string, unknown>>(c.settings, {});
+  // Settings saved before opt-outs were refused under continueOnCategories still load (they stop anyway).
+  if (Array.isArray(raw.continueOnCategories)) raw.continueOnCategories = raw.continueOnCategories.filter((cat) => !(SUPPRESS_CATEGORIES as readonly unknown[]).includes(cat));
+  return CampaignSettingsSchema.parse(raw);
 }
 
 export function addLeadsToCampaign(ctx: Ctx, campaign: CampaignRow, leadIds: number[]) {
@@ -203,5 +207,6 @@ export function publicLead(l: LeadRow) {
     location: l.location,
     email: l.email,
     connectionStatus: l.connection_status,
+    replyCategory: l.reply_category ?? null,
   };
 }

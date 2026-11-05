@@ -38,16 +38,24 @@ const previewSchema = z.object({
   variables: z.array(AiVariableSchema).max(10).optional(),
 });
 
-export function aiRoutes(app: FastifyInstance, ctx: Ctx) {
-  const calls = new Map<number, number[]>();
+// One budget per context, shared by every route that calls the AI (writer, previews, reply suggestions).
+const budgets = new WeakMap<Ctx, Map<number, number[]>>();
+
+export function aiThrottle(ctx: Ctx) {
+  if (!budgets.has(ctx)) budgets.set(ctx, new Map());
+  const calls = budgets.get(ctx)!;
   // Wall-clock window: the demo clock may run faster than real time.
-  const throttle = (workspaceId: number) => {
+  return (workspaceId: number) => {
     const now = Date.now();
     const recent = (calls.get(workspaceId) ?? []).filter((t) => now - t < 60_000);
     if (recent.length >= CALLS_PER_MINUTE) throw new HttpError(429, 'Too many AI requests. Wait a minute and try again.');
     recent.push(now);
     calls.set(workspaceId, recent);
   };
+}
+
+export function aiRoutes(app: FastifyInstance, ctx: Ctx) {
+  const throttle = aiThrottle(ctx);
   const leadOf = (workspaceId: number, id: number) => ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ? AND workspace_id = ?', [id, workspaceId]) ?? notFound('Lead');
   const campaignOf = (workspaceId: number, id: number) => ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ? AND workspace_id = ?', [id, workspaceId]) ?? notFound('Campaign');
   // External service failures are a 422 with the provider's (already scrubbed) message.

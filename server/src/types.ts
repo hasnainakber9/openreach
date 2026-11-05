@@ -48,6 +48,9 @@ export interface LeadRow {
   created_at: number;
   // 1 when the member accepts free InMail from anyone, 0 when not, null until a profile view tells.
   open_profile: number | null;
+  // Category of the latest classified reply (ai/categories.ts), and when it was set.
+  reply_category: string | null;
+  reply_category_at: number | null;
 }
 
 export interface CampaignRow {
@@ -80,6 +83,8 @@ export interface CampaignLeadRow {
   // Sender this lead is pinned to (null until its first LinkedIn action is scheduled).
   account_id: number | null;
   contacted_at: number | null;
+  // What the lead is waiting on ('reply': its reply to be classified); next_run_at is the deadline.
+  hold_reason: string | null;
 }
 
 export type ConnectionStatus = LeadRow['connection_status'];

@@ -443,4 +443,19 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (campaign_lead_id, name)
   );
   `,
+  // [M6] g2-ai-replies: reply categories on messages, conversations and leads; campaign lead holds
+  `
+  ALTER TABLE messages ADD COLUMN category TEXT;
+  ALTER TABLE messages ADD COLUMN confidence REAL;
+  ALTER TABLE conversations ADD COLUMN category TEXT;
+  ALTER TABLE conversations ADD COLUMN category_confidence REAL;
+  -- ai | manual
+  ALTER TABLE conversations ADD COLUMN category_source TEXT;
+  ALTER TABLE conversations ADD COLUMN classified_at INTEGER;
+  CREATE INDEX conversations_category ON conversations(workspace_id, category);
+  ALTER TABLE leads ADD COLUMN reply_category TEXT;
+  ALTER TABLE leads ADD COLUMN reply_category_at INTEGER;
+  -- What an active lead is waiting on (reply | task | enrich); next_run_at is then the hold's deadline.
+  ALTER TABLE campaign_leads ADD COLUMN hold_reason TEXT;
+  `,
 ];

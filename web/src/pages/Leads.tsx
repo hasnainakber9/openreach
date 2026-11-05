@@ -177,7 +177,8 @@ export default function Leads() {
                           <Pill status={l.connectionStatus} />
                           {l.repliedAt && (
                             <span style={{ marginLeft: 6 }}>
-                              <Pill status="replied" />
+                              {/* What the latest reply meant, once classified. */}
+                              <Pill status={l.replyCategory && l.replyCategory !== 'other' ? l.replyCategory : 'replied'} />
                             </span>
                           )}
                         </td>

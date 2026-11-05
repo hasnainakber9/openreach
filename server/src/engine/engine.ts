@@ -5,6 +5,7 @@ import { json } from '../db/db.js';
 import { DriverError, type LinkedInDriver } from '../drivers/types.js';
 import { CONTACT_ACTIVITY_TYPES, logActivity } from '../services/activity.js';
 import type { SmtpConfig } from '../services/email.js';
+import { replyDecision, replyHoldDeadline, replySince } from '../services/replies.js';
 import { suppressionReason } from '../services/suppression.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
 import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLegacy, pinLead, releaseUnstartedLeads, setConnection, type CapacityCache } from '../services/rotation.js';
@@ -192,6 +193,8 @@ export class Engine {
     const seq = campaignSequence(campaign);
     const now = this.ctx.clock.now();
     let cur = job;
+    // A lead held for its reply's category goes no further until the reply is classified (or the hold ends).
+    if (cur.hold_reason === 'reply' && !this.replyGate(campaign, cur, this.lead(cur.lead_id))) return;
     for (let guard = 0; guard < 100; guard++) {
       const node = cur.node_id ? seq.nodes[cur.node_id] : undefined;
       if (!node) return this.finish(campaign, cur, 'done');
@@ -208,7 +211,12 @@ export class Engine {
         else if (node.kind === 'has_email') branch = !!lead.email;
         else if (node.kind === 'replied') branch = lead.replied_at != null;
         else if (node.kind === 'is_open_profile') branch = lead.open_profile === 1;
-        else {
+        else if (node.kind === 'reply_sentiment') {
+          const reply = replySince(this.ctx, lead, cur.added_at);
+          // Classification wakes this job; the recheck is a fallback.
+          if (reply && typeof reply === 'object') return this.ctx.db.update('campaign_leads', cur.id, { next_run_at: Math.min(reply.until, now + AI_RECHECK) });
+          branch = reply != null && (node.categories ?? []).includes(reply);
+        } else {
           const deadline = cur.node_entered_at + node.withinDays * DAY;
           const c = this.connected(campaign, cur, lead);
           cur = c.job;
@@ -239,9 +247,26 @@ export class Engine {
     return { ...job, ...patch };
   }
 
+  // Whether a lead that replied may go on in this campaign (see replyDecision). Stops it, or (re)holds it
+  // until its reply is classified; the hold's deadline comes from replied_at, so spurious wake-ups
+  // (sequence edits, syncs) re-hold it without moving the deadline.
+  private replyGate(campaign: CampaignRow, job: CampaignLeadRow, lead: LeadRow): boolean {
+    const decision = replyDecision(campaignSettings(campaign), lead);
+    if (decision === 'stop') return this.finish(campaign, job, 'replied'), false;
+    if (decision === 'pending') {
+      const deadline = replyHoldDeadline(this.ctx, lead);
+      // Not classified in time: it counts as a reply like any other.
+      if (this.ctx.clock.now() >= deadline) return this.finish(campaign, job, 'replied'), false;
+      this.ctx.db.update('campaign_leads', job.id, { hold_reason: 'reply', next_run_at: deadline });
+      return false;
+    }
+    if (job.hold_reason === 'reply') this.ctx.db.update('campaign_leads', job.id, { hold_reason: null });
+    return true;
+  }
+
   private finish(campaign: CampaignRow, job: CampaignLeadRow, state: CampaignLeadState, error?: string) {
     const now = this.ctx.clock.now();
-    this.ctx.db.update('campaign_leads', job.id, { state, finished_at: now, next_run_at: now, ...(error ? { last_error: error } : {}) });
+    this.ctx.db.update('campaign_leads', job.id, { state, finished_at: now, next_run_at: now, hold_reason: null, ...(error ? { last_error: error } : {}) });
     if (state === 'done' || state === 'failed') {
       const lead = this.lead(job.lead_id);
       this.ctx.webhooks.emit(campaign.workspace_id, state === 'done' ? 'lead.finished' : 'lead.failed', {
@@ -264,10 +289,7 @@ export class Engine {
     let lead = this.lead(job.lead_id);
     const base: Parameters<typeof logActivity>[1] = { workspaceId: a.workspace_id, accountId: a.id, campaignId: campaign.id, leadId: lead.id, type: step.type, timezone: a.timezone, nodeId: step.id };
 
-    if (settings.stopOnReply && lead.replied_at) {
-      this.finish(campaign, job, 'replied');
-      return false;
-    }
+    if (settings.stopOnReply && lead.replied_at && !this.replyGate(campaign, job, lead)) return false;
     const banned = blacklistReason(ctx, lead);
     if (banned) {
       logActivity(ctx, { ...base, status: 'skipped', detail: banned });

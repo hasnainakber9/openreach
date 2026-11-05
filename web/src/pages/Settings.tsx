@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { api, useApi } from '../api';
+import { api, useApi, type Suppression, type SuppressionKind } from '../api';
 import type { Me } from '../App';
-import { Button, Field, Modal, Tabs, useAction, useToast } from '../components/ui';
+import { Button, ConfirmButton, Field, Modal, Pager, Tabs, useAction, useToast } from '../components/ui';
 import { timeAgo } from '../format';
 import Integrations from './Integrations';
 
@@ -28,7 +28,12 @@ export default function Settings({ me }: { me: Me }) {
         ]}
       />
       {tab === 'team' && <Team me={me} />}
-      {tab === 'blacklist' && <Blacklist />}
+      {tab === 'blacklist' && (
+        <div className="stack">
+          <Blacklist />
+          <DoNotContact me={me} />
+        </div>
+      )}
       {tab === 'integrations' && (
         <div className="stack">
           <Integrations me={me} />
@@ -203,6 +208,123 @@ function Blacklist() {
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+const SUPPRESSION_KINDS: Record<SuppressionKind, string> = { linkedin: 'LinkedIn profile', email: 'Email', phone: 'Phone' };
+const REASONS: Record<string, string> = {
+  unsubscribe: 'Unsubscribed',
+  not_interested: 'Not interested',
+  sms_stop: 'Texted STOP',
+  bounce: 'Bounced',
+  manual: 'Added by hand',
+};
+
+// People who asked not to be contacted. Replies classified as unsubscribe or (confidently) not interested
+// land here on their own; the AI can be wrong, so admins can take people off again.
+function DoNotContact({ me }: { me: Me }) {
+  const [q, setQ] = useState('');
+  const [kind, setKind] = useState('');
+  const [page, setPage] = useState(1);
+  const params = new URLSearchParams({ page: String(page) });
+  if (q.trim()) params.set('q', q.trim());
+  if (kind) params.set('kind', kind);
+  const list = useApi<{ total: number; page: number; pageSize: number; items: Suppression[] }>(`/api/suppressions?${params}`);
+  const [form, setForm] = useState<{ kind: SuppressionKind; value: string }>({ kind: 'email', value: '' });
+  const admin = me.role === 'owner' || me.role === 'admin';
+  const toast = useToast();
+  const { busy, run } = useAction();
+  const add = () =>
+    run('add', async () => {
+      const r = await api<{ added: boolean; stopped: number }>('/api/suppressions', { body: form });
+      toast(r.added ? `Added${r.stopped ? `, and stopped ${r.stopped} running campaign lead${r.stopped === 1 ? '' : 's'}` : ''}` : 'Already on the list');
+      setForm({ ...form, value: '' });
+      await list.reload();
+    });
+  return (
+    <div className="grid grid-2" style={{ alignItems: 'start' }}>
+      <div className="card stack">
+        <h2>Do not contact</h2>
+        <p className="muted" style={{ margin: 0 }}>
+          People who opted out. Unsubscribe replies, and replies the AI is sure mean “not interested”, are added automatically, and the person stops in every campaign. Removing someone does not restart their campaigns.
+        </p>
+        <Field label="Type">
+          <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as SuppressionKind })}>
+            {Object.entries(SUPPRESSION_KINDS).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Value" hint={form.kind === 'phone' ? 'International form, like +44 20 7946 0958' : form.kind === 'linkedin' ? 'Profile URL or slug' : undefined}>
+          <input value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} maxLength={300} />
+        </Field>
+        <div>
+          <Button variant="primary" disabled={!form.value.trim()} busy={busy === 'add'} onClick={add}>
+            Add to do-not-contact
+          </Button>
+        </div>
+      </div>
+      <div className="card card-flush">
+        <div className="row" style={{ padding: 12, flexWrap: 'nowrap' }}>
+          <input type="search" placeholder="Search" value={q} onChange={(e) => (setQ(e.target.value), setPage(1))} aria-label="Search do-not-contact list" />
+          <select value={kind} onChange={(e) => (setKind(e.target.value), setPage(1))} aria-label="Type">
+            <option value="">All types</option>
+            {Object.entries(SUPPRESSION_KINDS).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Who</th>
+                <th>Why</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {list.data && !list.data.items.length && (
+                <tr>
+                  <td colSpan={3} className="muted">
+                    {q || kind ? 'Nobody matches.' : 'Nobody has opted out yet.'}
+                  </td>
+                </tr>
+              )}
+              {list.data?.items.map((s) => (
+                <tr key={s.id}>
+                  <td>
+                    <div className="cell-title">{s.leadName?.trim() || s.value}</div>
+                    <div className="cell-sub">
+                      {SUPPRESSION_KINDS[s.kind] ?? s.kind}: {s.value}
+                    </div>
+                  </td>
+                  <td>
+                    {REASONS[s.reason] ?? s.reason}
+                    <div className="cell-sub">
+                      {s.source ? `${s.source} · ` : ''}
+                      {timeAgo(s.createdAt)}
+                    </div>
+                  </td>
+                  <td className="num">
+                    {admin && (
+                      <ConfirmButton size="sm" variant="ghost" onConfirm={() => run(`d${s.id}`, async () => (await api(`/api/suppressions/${s.id}`, { method: 'DELETE' }), list.reload()), 'Removed from the list')}>
+                        Remove
+                      </ConfirmButton>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {list.data && <Pager page={page} pageSize={list.data.pageSize} total={list.data.total} onPage={setPage} />}
       </div>
     </div>
   );

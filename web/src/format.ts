@@ -1,6 +1,6 @@
-import { serverNow, type ActionType, type ConditionKind, type ImportKind, type ProviderKind } from './api';
+import { serverNow, type ActionType, type ConditionKind, type ImportKind, type ProviderKind, type ReplyCategory } from './api';
 
-export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted' | 'replied' | 'ab_winner' | 'ai_personalize', string> = {
+export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted' | 'replied' | 'ab_winner' | 'ai_personalize' | 'classified', string> = {
   view_profile: 'View profile',
   follow: 'Follow',
   endorse: 'Endorse skills',
@@ -16,6 +16,7 @@ export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted
   replied: 'Replied',
   ab_winner: 'A/B winner set',
   ai_personalize: 'AI personalization',
+  classified: 'Reply classified',
 };
 
 export const CONDITION_LABELS: Record<ConditionKind, string> = {
@@ -24,7 +25,22 @@ export const CONDITION_LABELS: Record<ConditionKind, string> = {
   has_email: 'Has an email address',
   replied: 'Has replied',
   is_open_profile: 'Has an open profile',
+  reply_sentiment: 'Reply category matches',
 };
+
+export const CATEGORY_LABELS: Record<ReplyCategory, string> = {
+  interested: 'Interested',
+  meeting_booked: 'Meeting booked',
+  question: 'Question',
+  not_now: 'Not now',
+  not_interested: 'Not interested',
+  out_of_office: 'Out of office',
+  wrong_person: 'Wrong person',
+  unsubscribe: 'Unsubscribe',
+  other: 'Other',
+};
+
+export const STAGE_LABELS = { interested: 'Interested', meeting: 'Meeting', lost: 'Lost' } as const;
 
 export const IMPORT_KIND_LABELS: Record<ImportKind, string> = {
   search: 'Search',

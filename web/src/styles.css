@@ -1233,6 +1233,36 @@ th.num {
 .composer textarea {
   min-height: 44px;
 }
+.thread-meta {
+  gap: 8px;
+  font-size: 13px;
+}
+.thread-meta select {
+  width: auto;
+}
+.suggestions {
+  border-top: 1px solid var(--line);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface-2);
+}
+.suggestion {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  cursor: pointer;
+  white-space: pre-wrap;
+}
+.suggestion:hover,
+.suggestion:focus-visible {
+  border-color: var(--accent);
+}
 
 .feed-item {
   display: flex;

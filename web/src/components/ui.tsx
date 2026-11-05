@@ -35,6 +35,16 @@ const STATUS_TONE: Record<string, string> = {
   winner: 'good',
   leading: 'info',
   open_profile: 'info',
+  // Reply categories
+  interested: 'good',
+  meeting_booked: 'good',
+  question: 'info',
+  not_now: 'warning',
+  not_interested: 'critical',
+  out_of_office: 'neutral',
+  wrong_person: 'warning',
+  unsubscribe: 'critical',
+  other: 'neutral',
 };
 
 const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', none: 'Not connected', ok: 'Working', untested: 'Not tested' };

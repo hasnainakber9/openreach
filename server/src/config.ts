@@ -21,6 +21,7 @@ export interface Config {
   publicUrl?: string;
   jobConcurrency: number;
   aiWaitMaxMin: number;
+  replyHoldMin: number;
 }
 
 export function loadConfig(env = process.env): Config {
@@ -48,6 +49,8 @@ export function loadConfig(env = process.env): Config {
     jobConcurrency: Math.max(1, Number(env.JOB_CONCURRENCY ?? 4) || 4),
     // How long a step waits for its AI variables before sending with the fallbacks.
     aiWaitMaxMin: Math.max(1, Number(env.AI_WAIT_MAX_MIN ?? 30) || 30),
+    // How long a replied lead waits for its reply to be classified (campaigns that keep going after some replies).
+    replyHoldMin: Math.max(1, Number(env.REPLY_HOLD_MIN ?? 30) || 30),
   };
 }
 

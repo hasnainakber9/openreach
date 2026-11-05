@@ -96,7 +96,8 @@ describe('campaign engine', () => {
   });
 
   it('keeps going after a reply when stop-on-reply is off', async () => {
-    const w = makeWorld({ acceptRate: 1, replyRate: 1, acceptHours: [1, 2], replyHours: [1, 2] });
+    // A "not interested" reply suppresses the lead everywhere (g2-ai-replies), so these people ask a question instead.
+    const w = makeWorld({ acceptRate: 1, replyRate: 1, acceptHours: [1, 2], replyHours: [1, 2], replies: ['Interesting, can you send over a few more details?'] });
     const { id } = makeCampaign(w, inviteThenMessage, { stopOnReply: false }, addLeads(w, 2));
     await runFor(w, 8 * DAY, 5 * 60_000);
     expect(states(w, id)).toEqual({ done: 2 });

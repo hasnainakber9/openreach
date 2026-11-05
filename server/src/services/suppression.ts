@@ -1,6 +1,7 @@
 import type { Ctx } from '../context.js';
 import type { LeadRow } from '../types.js';
 import { publicLead } from './leads.js';
+import { stopLeadEverywhere } from './replies.js';
 
 export type SuppressionKind = 'linkedin' | 'email' | 'phone';
 export type SuppressionReason = 'unsubscribe' | 'not_interested' | 'sms_stop' | 'bounce' | 'manual';
@@ -36,17 +37,11 @@ export function suppressIdentity(ctx: Ctx, workspaceId: number, kind: Suppressio
 // Suppresses every identity the lead has (profile, email, phone) and takes the lead out of
 // every running campaign, so no channel contacts them again.
 export function suppressLead(ctx: Ctx, lead: LeadRow, reason: SuppressionReason, source: string | null) {
-  const now = ctx.clock.now();
   ctx.db.tx(() => {
     suppressIdentity(ctx, lead.workspace_id, 'linkedin', lead.public_id, reason, source, lead.id);
     if (lead.email) suppressIdentity(ctx, lead.workspace_id, 'email', lead.email, reason, source, lead.id);
     if (lead.phone) suppressIdentity(ctx, lead.workspace_id, 'phone', lead.phone, reason, source, lead.id);
-    ctx.db.run("UPDATE campaign_leads SET state = 'skipped', finished_at = ?, next_run_at = ?, last_error = ? WHERE lead_id = ? AND state = 'active'", [
-      now,
-      now,
-      `Suppressed: ${reason}`,
-      lead.id,
-    ]);
+    stopLeadEverywhere(ctx, lead.id, 'skipped', `Suppressed: ${reason}`);
   });
   ctx.webhooks.emit(lead.workspace_id, 'lead.suppressed', { lead: publicLead(lead), reason, source });
 }

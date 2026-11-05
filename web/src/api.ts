@@ -67,7 +67,10 @@ export function useApi<T = any>(path: string | null, poll?: number) {
 // ---- Shared types (mirror the server's JSON) -------------------------------------
 
 export type ActionType = 'view_profile' | 'follow' | 'endorse' | 'like_post' | 'connect' | 'message' | 'email' | 'withdraw_invite' | 'inmail';
-export type ConditionKind = 'is_connected' | 'accepted_within' | 'has_email' | 'replied' | 'is_open_profile';
+export type ConditionKind = 'is_connected' | 'accepted_within' | 'has_email' | 'replied' | 'is_open_profile' | 'reply_sentiment';
+// What a reply means, as classified by the AI (or set by hand in the inbox). Order is the display order.
+export const REPLY_CATEGORIES = ['interested', 'meeting_booked', 'question', 'not_now', 'not_interested', 'out_of_office', 'wrong_person', 'unsubscribe', 'other'] as const;
+export type ReplyCategory = (typeof REPLY_CATEGORIES)[number];
 export type InMailVia = 'profile' | 'sales_navigator';
 
 // A/B testing: connect, message, email and InMail steps may hold 2–5 variants (A–E). The single-text fields
@@ -88,7 +91,8 @@ export type SeqNode =
   | ({ id: string; type: 'email'; subject: string; body: string; next: string | null } & AbFields<{ subject: string; body: string }>)
   | ({ id: string; type: 'inmail'; subject: string; body: string; via: InMailVia; next: string | null } & AbFields<{ subject: string; body: string }>)
   | { id: string; type: 'wait'; days: number; hours: number; next: string | null }
-  | { id: string; type: 'condition'; kind: ConditionKind; withinDays: number; yes: string | null; no: string | null };
+  // `categories`: reply_sentiment only, the reply categories that go down Yes.
+  | { id: string; type: 'condition'; kind: ConditionKind; withinDays: number; categories?: ReplyCategory[]; yes: string | null; no: string | null };
 
 export type VariantNode = Extract<SeqNode, { type: 'connect' | 'message' | 'email' | 'inmail' }>;
 
@@ -161,6 +165,8 @@ export interface CampaignSettings {
   skipAlreadyConnected: boolean;
   noteLimit: number;
   aiVariables: AiVariable[];
+  // With stopOnReply: replies in these categories let the sequence go on once classified.
+  continueOnCategories: ReplyCategory[];
 }
 
 export type AiTone = 'friendly' | 'professional' | 'direct' | 'casual';
@@ -267,6 +273,7 @@ export interface Lead {
   connectionStatus: 'none' | 'pending' | 'connected';
   connectedAt: number | null;
   repliedAt: number | null;
+  replyCategory: ReplyCategory | null;
   // Open Profile members take InMail without a credit; null until a profile view tells.
   openProfile: boolean | null;
   createdAt: number;
@@ -307,6 +314,53 @@ export interface LeadImport {
 }
 
 export type Role = 'owner' | 'admin' | 'member' | 'client';
+
+// GET /api/inbox items and GET /api/inbox/:id.
+export interface Conversation {
+  id: number;
+  channel: string;
+  accountId: number | null;
+  accountName: string | null;
+  leadId: number | null;
+  name: string;
+  profileUrl: string;
+  lastMessageAt: number;
+  unread: number;
+  category: ReplyCategory | null;
+  categoryConfidence: number | null;
+  headline: string | null;
+  company: string | null;
+  lastMessage: string | null;
+  lastDirection: 'in' | 'out' | null;
+  campaignName: string | null;
+}
+
+export interface Thread {
+  id: number;
+  channel: string;
+  accountId: number | null;
+  leadId: number | null;
+  name: string;
+  profileUrl: string;
+  category: ReplyCategory | null;
+  categoryConfidence: number | null;
+  categorySource: 'ai' | 'manual' | null;
+  // A hint until pipeline stages exist.
+  suggestedStage: 'interested' | 'meeting' | 'lost' | null;
+  messages: { id: number; direction: 'in' | 'out'; body: string; sentAt: number; category: ReplyCategory | null; confidence: number | null }[];
+}
+
+export type SuppressionKind = 'linkedin' | 'email' | 'phone';
+export interface Suppression {
+  id: number;
+  kind: SuppressionKind;
+  value: string;
+  reason: string;
+  source: string | null;
+  leadId: number | null;
+  leadName: string | null;
+  createdAt: number;
+}
 
 export type ProviderKind = 'ai' | 'email_finder' | 'email_verifier' | 'enrichment' | 'crm' | 'sms';
 

@@ -10,7 +10,7 @@ OpenReach is an independent project. It is not affiliated with LinkedIn or with 
 
 | | |
 |---|---|
-| **Visual sequence builder** | Chain steps: view profile, follow, like a post, endorse skills, invite (with a personalized note), message, InMail, email, withdraw invite, and wait. Branch on *invite accepted within N days*, *already connected*, *has email*, *has replied* or *has an open profile*. |
+| **Visual sequence builder** | Chain steps: view profile, follow, like a post, endorse skills, invite (with a personalized note), message, InMail, email, withdraw invite, and wait. Branch on *invite accepted within N days*, *already connected*, *has email*, *has replied*, *has an open profile* or *what the reply was* (interested, out of office, ...). |
 | **Personalization** | `{{firstName}}`, `{{company\|your team}}` fallbacks, `{Hi\|Hello}` spintax, and any CSV column as a variable. Live preview against a real lead. |
 | **AI writing and personalization** | *Write with AI* on invitation, message, InMail and email steps drafts 1 to 5 versions from a short brief (offer, audience, tone, length, language, call to action); insert one, or use them all as A/B variants. Nothing is sent from the writer. *AI variables* (campaign **Settings**) are named instructions such as "one friendly line about their role": the AI writes a value per lead from their profile in the background before the step runs, and templates use it as `{{ai:icebreaker}}`. Values are cached per lead, rewritten when the instruction changes, and previewed on a real lead, both in the settings and inside each step of the builder (the full message with its length against the limit). Simulated values cached before you connect a real AI provider are rewritten by it. If writing fails or takes longer than `AI_WAIT_MAX_MIN`, the variable's fallback is sent and the failure shows in the activity feed; other leads keep going meanwhile. Invitation notes, InMails and messages are kept within LinkedIn's limits after variables are filled in. Works with Anthropic (Claude) or any OpenAI-compatible API (OpenAI, OpenRouter, Ollama, LM Studio, ...); token usage is recorded per workspace. Without a provider, a built-in simulator writes templated text, which is only ever sent from simulated accounts: real accounts send the fallback instead. |
 | **A/B testing** | Invitation notes, messages, InMails and emails can have 2 to 5 variants. Each lead gets one variant per step, always the same one, and the campaign's Results tab shows sends, acceptances, replies and the rate per variant. A variant is marked *Leading* only once every variant has 20 sends and the gap is statistically clear. Pick a winner by hand, or let the step pick automatically after a number of sends, once one variant is ahead; leads who already got a variant keep it. Editing or removing a variant in the sequence starts its results over and ends its win. |
@@ -18,10 +18,11 @@ OpenReach is an independent project. It is not affiliated with LinkedIn or with 
 | **InMail and Sales Navigator** | An *InMail* step writes to people you aren't connected to, with a subject, from their profile or from Sales Navigator. It has its own daily limit (10 by default) and uses the account's InMail credits, except for open profiles, which are free. Without credits, leads who aren't open profiles are skipped with the reason; when LinkedIn says the credits are used up, InMail pauses for a day. Leads who are already connected get a normal message instead, which counts toward the daily message limit. |
 | **Safety** | Per-account daily and weekly limits, a 7-day warm-up ramp, working hours and days in the account's time zone, randomized pauses between actions, and human-like scrolling and typing. LinkedIn's own pushback (for example the weekly invite cap) puts that action on a 24-hour cool-down. |
 | **Multiple accounts and sender rotation** | Each account has its own session, proxy, schedule and limits. A campaign can send from several accounts: each new lead goes to the account with the most room left today (or to the one it is already connected to), and stays with the account that first contacted it, so a person always hears from the same sender. Every account still keeps to its own limits, hours and delays. If an account is paused or logged out, the others take over the leads it hadn't contacted yet. The campaign page shows each lead's sender and results per sender. |
-| **Unified inbox** | Conversations from every account in one place. Replies are detected automatically and stop the lead's sequence. You can reply from the inbox. |
+| **Unified inbox** | Conversations from every account in one place. Replies are detected automatically and stop the lead's sequence (or, if you choose, let it carry on after certain kinds of reply). You can reply from the inbox. |
+| **Reply classification and suggested replies** | Every new reply is labelled in the background as interested, meeting booked, question, not now, not interested, out of office, wrong person, unsubscribe or other, with how sure the AI is. The inbox shows the label, filters by it, lets you correct it, and hints at the pipeline stage it suggests. *Suggest reply* drafts up to three answers from the conversation; you pick one, edit it, and nothing is sent until you press Send. People who clearly ask to be left alone (unsubscribe, or a confident *not interested*) go on a do-not-contact list and stop in every campaign; review or undo it under **Settings → Blacklist → Do not contact**. Without an AI provider, keyword rules stand in. |
 | **Analytics** | Daily activity, an acceptance and reply funnel, and per-campaign results and timelines. Live activity feed. |
 | **Team** | Workspaces with owner, admin and member roles. |
-| **Integrations** | Signed webhooks (`lead.connected`, `lead.replied`, `lead.finished`, ...) for Zapier, Make, n8n or your CRM. CSV export of any list or campaign. **Settings → Integrations** holds per-workspace provider settings (AI, email finding and verification, enrichment, CRM, SMS) with encrypted keys and a *Test connection* button. Until you add one, a built-in simulator stands in, so every feature works offline with made-up data that never reaches anyone (CRM sync only runs once you add a CRM). |
+| **Integrations** | Signed webhooks (`lead.connected`, `lead.replied`, `lead.classified`, `lead.finished`, ...) for Zapier, Make, n8n or your CRM. CSV export of any list or campaign. **Settings → Integrations** holds per-workspace provider settings (AI, email finding and verification, enrichment, CRM, SMS) with encrypted keys and a *Test connection* button. Until you add one, a built-in simulator stands in, so every feature works offline with made-up data that never reaches anyone (CRM sync only runs once you add a CRM). |
 | **Blacklist** | By profile, company, keyword or email domain. Checked when leads are added and again before every action. |
 
 ## Quick start
@@ -113,9 +114,23 @@ server/
 ```
 
 - Every lead in a campaign has a position in the sequence tree and a `next_run_at` time. Waits and conditions only read the database, so they advance immediately at any hour. Actions wait for their account to be inside working hours, under its limits and past its randomized cool-off from the previous action.
-- About every 45 minutes during working hours, each account syncs its recent connections and inbox. An accepted invite moves the lead down the *Yes* branch straight away. A reply stops the lead (configurable per campaign).
+- About every 45 minutes during working hours, each account syncs its recent connections and inbox. An accepted invite moves the lead down the *Yes* branch straight away. A reply stops the lead (configurable per campaign, see below).
 - Each account's actions run one at a time through a single browser. Different accounts run in parallel.
 - When a campaign has several senders, a lead is pinned to one of them just before its first LinkedIn step. Rotation only decides which account takes a lead; it never lets an account go past its own limits. Removing a sender from a campaign (or deleting the account) hands its not-yet-contacted leads to the others; leads it already contacted keep running from it (or stop, if the account is deleted).
+
+### What happens when a lead replies
+
+Each campaign decides with two settings, **Stop when a lead replies** and **Keep going after these replies**:
+
+| Stop on reply | Keep going after | What happens to the lead in this campaign |
+|---|---|---|
+| on | nothing chosen (default) | Stops as *replied* as soon as the reply is synced. |
+| on | some categories | Waits (at most `REPLY_HOLD_MIN`) for the reply to be classified. A chosen category lets the sequence carry on, anything else stops it as *replied*, and so does a reply still unclassified when the time is up. |
+| off | (ignored) | Carries on. Conditions such as *has replied* or *reply is* look again right away. |
+
+An *If reply is…* condition goes down *Yes* when the lead's latest reply since it joined the campaign is in the chosen categories, and down *No* when it hasn't replied. A reply that isn't classified yet waits for its category (up to `REPLY_HOLD_MIN`, then it counts as *other*). Example: keep going after *out of office*, then *If reply is: out of office* → *Wait 5 days* → *Message* ("Welcome back...").
+
+Whatever the settings, a reply classified as *unsubscribe* (even a polite one, unless the classifier is less than 50% sure), or as *not interested* with at least 70% confidence, puts the person on the do-not-contact list and stops them in every campaign. Less certain opt-outs are only labelled, so a misread reply never silently drops a real prospect, but they still stop the lead in a stop-on-reply campaign: *not interested* and *unsubscribe* can't be chosen under "Keep going after these replies". Only the lead's latest reply counts, so a late answer about an older message changes nothing. Changing a category by hand in the inbox counts like a classification.
 
 ### When LinkedIn changes its markup
 
@@ -139,6 +154,7 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 | `PUBLIC_URL` | | External https:// address of this server. Used for links that leave the app (unsubscribe, tracking, invites); never taken from request headers. |
 | `JOB_CONCURRENCY` | `4` | Background jobs (enrichment, AI, CRM sync, ...) running at once. Jobs run inside the campaign engine, so they need `RUN_WORKER`. |
 | `AI_WAIT_MAX_MIN` | `30` | How long a step waits for its `{{ai:...}}` variables before sending with the fallbacks |
+| `REPLY_HOLD_MIN` | `30` | How long a lead that replied waits for its reply to be classified, in campaigns that keep going after some replies |
 
 ## API and webhooks
 
@@ -159,6 +175,8 @@ To verify a delivery, compute `sha256=` + HMAC-SHA256(body, secret) and compare 
 - With real accounts, whether a lead has an *open profile* is not detected yet (LinkedIn shows no reliable marker), so the *has an open profile* branch only works with the simulator for now.
 - LinkedIn imports and AI personalization run as background jobs inside the campaign engine, so they need `RUN_WORKER` (the default).
 - The Anthropic and OpenAI-compatible providers follow the vendors' public API docs and are tested against fakes, not the live services. The default Claude models are `claude-sonnet-5-5` (writing) and `claude-haiku-5-5` (classification); change them in the integration's settings. AI text is generated from profile fields only; it can still be wrong, so preview it before launching.
+- Reply classification can be wrong, especially for short or sarcastic replies; check the inbox and correct the category when it matters. Without an AI provider it uses simple English keyword rules. When several replies arrive in one sync, only the newest is classified.
+- Pipeline stages are not built yet: the inbox only *suggests* a stage from the reply.
 - LinkedIn only shows coarse message timestamps, so inbox messages are time-stamped when they are first synced.
 - SQLite and an in-process scheduler (with a database-backed job queue for background work) suit one server running dozens of accounts. Beyond that you'd want Postgres.
 
