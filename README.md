@@ -4,7 +4,7 @@
 
 OpenReach is an independent project. It is not affiliated with LinkedIn or with any commercial outreach tool.
 
-> **Read this first.** Automating a LinkedIn account goes against [LinkedIn's User Agreement](https://www.linkedin.com/legal/user-agreement) (section 8.2) and can get the account restricted or banned. OpenReach keeps activity slow and human-paced, but it cannot make automation invisible. You are responsible for how you use it, and for complying with privacy and anti-spam law (GDPR, CAN-SPAM and so on) when you contact people. Start with the built-in **simulator**, which never touches LinkedIn.
+> **Read this first.** Automating a LinkedIn account goes against [LinkedIn's User Agreement](https://www.linkedin.com/legal/user-agreement) (section 8.2) and can get the account restricted or banned. OpenReach keeps activity slow and human-paced, but it cannot make automation invisible. You are responsible for how you use it, and for complying with privacy and anti-spam law (GDPR, CAN-SPAM and so on) when you contact people. Start with the built-in **simulator**, which never touches LinkedIn. See [Privacy, consent and anti-spam](#privacy-consent-and-anti-spam) before sending email or text messages.
 
 ## Features
 
@@ -31,6 +31,7 @@ OpenReach is an independent project. It is not affiliated with LinkedIn or with 
 | **Integrations** | Signed webhooks (`lead.connected`, `lead.replied`, `lead.classified`, `lead.stage_changed`, `lead.enriched`, `lead.finished`, ...) for Zapier, Make, n8n or your CRM. CSV export of any list or campaign. **Settings → Integrations** holds per-workspace provider settings (AI, email finding and verification, enrichment, CRM, SMS) with encrypted keys and a *Test connection* button. Until you add one, a built-in simulator stands in, so every feature works offline with made-up data that never reaches anyone (CRM sync only runs once you add a CRM). |
 | **CRM sync (HubSpot, Pipedrive)** | Add HubSpot (private app access token) or Pipedrive (API token and company domain) under **Settings → Integrations**, or the simulated CRM to try it. Leads are created or updated as contacts, matched by email or by a LinkedIn URL property you name, with a field mapping you choose (our field → CRM property). Replies, chosen stage moves and, if you like, sent messages, accepted invitations and finished campaigns are added as notes, each only once; reaching a stage you pick (for example *Interested*) opens one deal per lead. Syncs run in the background with retries and respect the CRM's rate limits; the sync log on the same page shows every call with its errors and a *Retry* button, and the lead drawer links to the CRM records and has *Push to CRM*. |
 | **Blacklist** | By profile, company, keyword or email domain. Checked when leads are added and again before every action. |
+| **Plans and billing (hosted installs)** | Off by default. With a Stripe key, plans from your own JSON limit LinkedIn accounts, mailboxes, seats, client workspaces and monthly AI and enrichment credits per workspace (an agency counts with its clients). The owner subscribes through Stripe Checkout and manages the plan in Stripe's Customer Portal; a signed webhook keeps the plan up to date, and going over a limit shows an upgrade prompt instead of an error. |
 | **SQLite or Postgres** | SQLite in one file by default, with nothing to set up. Set `DATABASE_URL` to use Postgres instead, so several app instances can share one database: one of them runs the campaign engine and background jobs, the others serve the app and take over if it stops. |
 
 ## Quick start
@@ -116,6 +117,52 @@ Email steps send from **Mailboxes** (owners and admins manage them). Set `PUBLIC
 
 If the server refuses the login, the mailbox switches to **Needs attention** and stops; fix the settings and press **Resume**. SMTP settings that were saved on a LinkedIn account before mailboxes existed are moved to a mailbox automatically, with the account's email limit, schedule and pauses and no warm-up.
 
+## Setting up integrations
+
+Every external service is optional. API keys are not environment variables: owners and admins add them per workspace under **Settings → Integrations → Add provider**, where they are encrypted with `APP_SECRET` and only ever shown masked. Each provider has a **Test connection** button, and can be turned off without deleting it. Until you add one, a built-in simulator stands in (marked *Simulated*), so you can try every feature first; simulated output never reaches a real person.
+
+### AI (writing, personalization, reply classification)
+
+- **Anthropic (Claude):** create an API key in the Claude Console and paste it. The writing model defaults to `claude-sonnet-5-5` and the classification model to `claude-haiku-5-5`; both can be changed.
+- **OpenAI-compatible API:** enter the base URL (the part before `/chat/completions`, for example `https://api.openai.com/v1`, an OpenRouter URL, or a local Ollama or LM Studio server), an API key if the server needs one, and the model names. The classification model defaults to the writing model.
+
+Usage is recorded per workspace; on hosted plans every call to a real provider uses one AI credit.
+
+### Email finding and verification
+
+Add **Hunter** or **Apollo** as finders and **Hunter**, **ZeroBounce** or **NeverBounce** as verifiers, each with its API key (Apollo's key needs access to People Enrichment). Drag them into the order you want them tried. Under **Email lookup** on the same page, choose whether *risky* addresses count as found and whether new imports are looked up automatically. Lookups use your own vendor credits; the **Usage** table shows our calls per month.
+
+### SMS and WhatsApp (Twilio)
+
+1. In the Twilio Console, copy the **Account SID** and **Auth token**, and buy or choose a number that can send SMS (or set up a Messaging Service). For WhatsApp, register an approved WhatsApp sender.
+2. Add **Twilio** and fill in the SIDs, the SMS from number or Messaging Service SID, and the WhatsApp sender. Optionally set a default country code, daily limits per channel (100 each by default), the time zone and the sending window (09:00–19:00 by default).
+3. Set `PUBLIC_URL`, then paste the webhook URL shown on the Twilio card into your number's (or Messaging Service's) *A message comes in* setting, so replies and STOP messages reach OpenReach.
+
+### CRM (HubSpot, Pipedrive)
+
+- **HubSpot:** create a private app (HubSpot → Settings → Integrations → Private apps) with the scopes `crm.objects.contacts.read/write` and `crm.objects.deals.read/write`, and paste its access token. Add your Hub ID to get links to records, and the internal ids of the deal pipeline and stage if you create deals.
+- **Pipedrive:** paste your personal API token (Personal preferences → API) and your company domain (the part before `.pipedrive.com`), and optionally the stage id new deals start in.
+
+Then choose the field mapping, what gets logged as notes and which pipeline stage opens a deal on the CRM sync card. Nothing is synced until a CRM is added; the simulated CRM lets you try it.
+
+### Agency mode and white-label
+
+1. As the workspace owner, open **Settings → Team → Agency mode** and turn it on. An **Agency** page appears in the sidebar.
+2. On the **Agency** page, add a client per customer. Open a client from the workspace switcher to connect its LinkedIn accounts and mailboxes and run its campaigns.
+3. Invite the customer's people into their client workspace (**Settings → Team → Invites**, while that client is open) with the *Client* role for read-only access, or as members if they work in it.
+4. Under **White-label branding** on the Agency page, set the product name, logo URL (https), primary color and support email. A client can override single fields. To use your own domain, see [Custom domains for agencies](#custom-domains-for-agencies).
+
+Plans, limits and Stripe billing for hosted installs are described under [Plans and billing](#plans-and-billing-hosted-installs); Postgres under [Deploy](#any-docker-host-vps-railway-flyio-home-server) and in the configuration table.
+
+## Privacy, consent and anti-spam
+
+OpenReach gives you the tools; whether a message is lawful depends on where you and the recipient are. In particular:
+
+- **Email.** Every campaign email carries an unsubscribe link and a one-click `List-Unsubscribe` header. Using it puts the person on the do-not-contact list for every campaign in the workspace. Laws such as CAN-SPAM (US), CASL (Canada) and the ePrivacy rules and GDPR (EU/UK) require a working opt-out, a truthful sender and subject, and, depending on the country, a physical address or prior consent. Add your postal address to the mailbox signature where it's required. Keep volumes low and lists clean (verified addresses, bounces are dropped automatically) to protect your domain.
+- **SMS and WhatsApp.** Only text people who agreed to hear from you. Many countries require prior consent for marketing texts and limit the hours you may send. STOP, STOPALL, UNSUBSCRIBE, CANCEL, END and QUIT are honored automatically; mention how to opt out in your first message. US senders need A2P 10DLC registration, and WhatsApp business-initiated messages need an approved template.
+- **Personal data.** Leads, enrichment results, AI-written text, replies and (if you turn it on) open and click tracking are personal data that you control as the data controller. Data sent to AI, enrichment, CRM and SMS providers is processed by them under their terms. Delete leads you no longer need, honor access and deletion requests, and keep the do-not-contact list (**Settings → Blacklist → Do not contact**) instead of deleting people who opted out, so they aren't imported again.
+- **LinkedIn.** The warning at the top of this page applies to every LinkedIn feature, including imports, InMail and sender rotation.
+
 ## How it works
 
 ```
@@ -166,6 +213,7 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 |---|---|---|
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | |
 | `DATA_DIR` | `./data` | SQLite database, browser profiles, generated secret |
+| `DB_PATH` | `DATA_DIR/openreach.db` | Path of the SQLite file (ignored with `DATABASE_URL`) |
 | `DATABASE_URL` | | `postgres://user:password@host:5432/db` to use Postgres instead of SQLite (tables are created on first start; add `?sslmode=require` for hosted databases that need TLS). Several instances may share it: the one holding a database lock runs the campaign engine, the jobs and every LinkedIn browser session; the others serve the API (sending *Check*, *Sync now* and LinkedIn inbox replies to it as jobs and waiting for the answer) and take over within 30 seconds if it goes away. Sign-in throttling, checkout starts and plan limits are kept in the database, so they hold across instances. Existing SQLite data is not copied over. |
 | `APP_SECRET` | generated into `DATA_DIR/app-secret` | Key for encrypting session cookies, SMTP passwords and integration API keys. Back it up: changing it makes saved sessions unreadable. |
 | `SETUP_TOKEN` | | If set, creating the first (owner) account requires this value. **Set it on any public server**, or whoever opens the URL first owns the installation. |
@@ -186,6 +234,13 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 | `CUSTOM_DOMAINS` | | Comma-separated hostnames, or `*.example.com` patterns, that agencies may use as custom domains. Unset: any domain, except when `ALLOW_SIGNUP=true`, where custom domains are off until you list them. |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | | Hosted billing (see below). Unset: billing is off and nothing is limited. |
 | `BILLING_PLANS` / `BILLING_PLANS_FILE` | | The plans, as inline JSON or the path of a JSON file. Required when `STRIPE_SECRET_KEY` is set; checked at startup. |
+| `WEB_DIST` | `web/dist` | Folder of the built web app the server serves |
+| `LOG_REQUESTS` | `false` | `true` logs every HTTP request |
+| `SIM_LATENCY_MS` | `150` | Simulated LinkedIn's delay per action (simulator only) |
+| `SEED_EMAIL` / `SEED_PASSWORD` | `demo@openreach.local` / `demo-password` | Login created by `npm run seed -w server` |
+| `TEST_DATABASE_URL` | | Postgres database for `npm run test:pg -w server` (tests only) |
+
+API keys for AI, email finding and verification, Twilio and CRMs are not environment variables: they are entered per workspace under **Settings → Integrations** (see [Setting up integrations](#setting-up-integrations)). Mailbox passwords are entered under **Mailboxes**.
 
 Inbound SMS and WhatsApp need `PUBLIC_URL`: Twilio signs each webhook request for that exact URL, and OpenReach refuses requests whose signature doesn't match. The Twilio card under **Settings → Integrations** shows the URL to paste into your number's *A message comes in* webhook.
 
