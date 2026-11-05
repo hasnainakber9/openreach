@@ -18,7 +18,17 @@ export const ACTION_TYPES = [
 export type ActionType = (typeof ACTION_TYPES)[number];
 
 // Nodes the engine advances on its own (they only read the database), whatever the account's hours or limits.
-export const FREE_NODE_TYPES = ['wait', 'condition'] as const;
+// A task holds the lead until someone completes or skips it (or it is skipped automatically).
+export const FREE_NODE_TYPES = ['wait', 'condition', 'task'] as const;
+
+// Steps sent by the messaging runner through the workspace's SMS provider, not by a LinkedIn account.
+export const CHANNEL_NODE_TYPES = ['sms', 'whatsapp'] as const;
+export type ChannelNodeType = (typeof CHANNEL_NODE_TYPES)[number];
+
+export const TASK_KINDS = ['call', 'manual_linkedin', 'manual_email', 'custom'] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
+// Twilio splits long texts into segments; 1,600 characters is the most it accepts in one message.
+export const SMS_MAX = 1600;
 
 // reply_sentiment branches on the category of the lead's latest reply in this campaign (see engine walk()).
 export const CONDITION_KINDS = ['is_connected', 'accepted_within', 'has_email', 'replied', 'is_open_profile', 'reply_sentiment'] as const;
@@ -26,11 +36,11 @@ export type ConditionKind = (typeof CONDITION_KINDS)[number];
 
 const ptr = z.string().min(1).nullable().default(null);
 
-// A/B testing: connect, message, email and InMail steps can hold 2–5 variants with ids A–E. The single-text
+// A/B testing: connect, message, email, InMail and SMS steps can hold 2–5 variants with ids A–E. The single-text
 // fields stay required and hold variant A, so sequences saved before variants existed keep working.
 export const VARIANT_IDS = ['A', 'B', 'C', 'D', 'E'] as const;
 export type VariantId = (typeof VARIANT_IDS)[number];
-export const VARIANT_NODE_TYPES = ['connect', 'message', 'email', 'inmail'] as const;
+export const VARIANT_NODE_TYPES = ['connect', 'message', 'email', 'inmail', 'sms'] as const;
 export const INMAIL_VIA = ['profile', 'sales_navigator'] as const;
 export const AB_METRICS = ['accepted', 'replied'] as const;
 export type AbMetric = (typeof AB_METRICS)[number];
@@ -91,6 +101,37 @@ export const NodeSchema = z.discriminatedUnion('type', [
     via: z.enum(INMAIL_VIA).default('profile'),
     variants: variantList({ subject: z.string().min(1).max(200), body: z.string().min(1).max(1900) }),
     abtest,
+    next: ptr,
+  }),
+  // A to-do for a person (a call, a manual LinkedIn or email touch). The lead waits at this step until the task
+  // is completed or skipped; `autoSkipAfterDays` skips it that many days after it is due.
+  z.object({
+    id: z.string(),
+    type: z.literal('task'),
+    kind: z.enum(TASK_KINDS).default('call'),
+    title: z.string().trim().min(1).max(200),
+    instructions: z.string().max(4000).default(''),
+    dueAfterHours: z.number().min(0).max(720).default(0),
+    assigneeId: z.number().int().positive().nullable().default(null),
+    autoSkipAfterDays: z.number().int().min(1).max(60).nullable().default(null),
+    next: ptr,
+  }),
+  z.object({
+    id: z.string(),
+    type: z.literal('sms'),
+    text: z.string().min(1).max(SMS_MAX),
+    variants: variantList({ text: z.string().min(1).max(SMS_MAX) }),
+    abtest,
+    next: ptr,
+  }),
+  // Outside a 24-hour window after the person last wrote, WhatsApp only delivers business-initiated messages
+  // from an approved template (`contentSid`, with its variables); `text` is sent otherwise.
+  z.object({
+    id: z.string(),
+    type: z.literal('whatsapp'),
+    text: z.string().min(1).max(SMS_MAX),
+    contentSid: z.string().trim().regex(/^HX[0-9a-fA-F]{32}$/, 'A Twilio content template id starts with HX').optional(),
+    contentVariables: z.record(z.string().regex(/^\w{1,30}$/), z.string().max(500)).optional(),
     next: ptr,
   }),
   z.object({
@@ -165,7 +206,7 @@ export function isVariantNode(n: SeqNode): n is VariantNode {
 export function nodeVariants(n: VariantNode): VariantContent[] {
   if (n.variants?.length) return [...(n.variants as VariantContent[])].sort((a, b) => a.id.localeCompare(b.id));
   if (n.type === 'connect') return [{ id: 'A', note: n.note }];
-  if (n.type === 'message') return [{ id: 'A', text: n.text }];
+  if (n.type === 'message' || n.type === 'sms') return [{ id: 'A', text: n.text }];
   return [{ id: 'A', subject: n.subject, body: n.body }];
 }
 
@@ -182,7 +223,7 @@ export function withVariant<T extends VariantNode>(n: T, id: VariantId | null): 
   if (!v) return n;
   const node: VariantNode = n;
   if (node.type === 'connect') return { ...n, note: v.note ?? '' };
-  if (node.type === 'message') return { ...n, text: v.text ?? node.text };
+  if (node.type === 'message' || node.type === 'sms') return { ...n, text: v.text ?? node.text };
   return { ...n, subject: v.subject ?? node.subject, body: v.body ?? node.body };
 }
 

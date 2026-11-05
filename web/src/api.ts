@@ -91,11 +91,62 @@ export type SeqNode =
   // replyInThread: sent as "Re: <first subject>" in the same thread (campaigns with mailboxes).
   | ({ id: string; type: 'email'; subject: string; body: string; replyInThread?: boolean; next: string | null } & AbFields<{ subject: string; body: string }>)
   | ({ id: string; type: 'inmail'; subject: string; body: string; via: InMailVia; next: string | null } & AbFields<{ subject: string; body: string }>)
+  // A to-do for a person; the lead waits here until it is completed or skipped (or auto-skipped N days after it is due).
+  | {
+      id: string;
+      type: 'task';
+      kind: TaskKind;
+      title: string;
+      instructions: string;
+      dueAfterHours: number;
+      assigneeId: number | null;
+      autoSkipAfterDays: number | null;
+      next: string | null;
+    }
+  | ({ id: string; type: 'sms'; text: string; next: string | null } & AbFields<{ text: string }>)
+  // contentSid: an approved WhatsApp template (needed outside 24 hours after the person last wrote).
+  | { id: string; type: 'whatsapp'; text: string; contentSid?: string; contentVariables?: Record<string, string>; next: string | null }
   | { id: string; type: 'wait'; days: number; hours: number; next: string | null }
   // `categories`: reply_sentiment only, the reply categories that go down Yes.
   | { id: string; type: 'condition'; kind: ConditionKind; withinDays: number; categories?: ReplyCategory[]; yes: string | null; no: string | null };
 
-export type VariantNode = Extract<SeqNode, { type: 'connect' | 'message' | 'email' | 'inmail' }>;
+export type VariantNode = Extract<SeqNode, { type: 'connect' | 'message' | 'email' | 'inmail' | 'sms' }>;
+
+export type TaskKind = 'call' | 'manual_linkedin' | 'manual_email' | 'custom';
+export const CALL_OUTCOMES = ['connected', 'voicemail', 'no_answer', 'wrong_number', 'meeting_booked', 'not_interested', 'other'] as const;
+export type CallOutcome = (typeof CALL_OUTCOMES)[number];
+
+// GET /api/tasks items.
+export interface Task {
+  id: number;
+  kind: TaskKind;
+  title: string;
+  instructions: string;
+  status: 'open' | 'done' | 'skipped';
+  overdue: boolean;
+  dueAt: number;
+  autoSkipAt: number | null;
+  outcome: CallOutcome | null;
+  notes: string | null;
+  completedAt: number | null;
+  createdAt: number;
+  nodeId: string | null;
+  assignee: { id: number; name: string } | null;
+  lead: { id: number; name: string; profileUrl: string; phone: string | null; email: string | null; company: string; title: string } | null;
+  campaign: { id: number; name: string } | null;
+}
+export interface TaskCounts {
+  open: number;
+  dueToday: number;
+  overdue: number;
+  mine: number;
+}
+export interface TeamMember {
+  id: number;
+  name: string;
+  email: string;
+  role: Role;
+}
 
 // Results of one A/B tested step (GET /api/campaigns/:id/variants).
 export interface VariantStat {
@@ -506,6 +557,8 @@ export interface Integration {
   settings: Record<string, unknown>;
   credentials: Record<string, string>; // masked
   hasCredentials: boolean;
+  // Twilio: the inbound webhook URL to paste into Twilio (null until PUBLIC_URL is set on the server).
+  webhookUrl?: string | null;
   lastStatus: 'ok' | 'error' | null;
   lastMessage: string | null;
   lastCheckedAt: number | null;

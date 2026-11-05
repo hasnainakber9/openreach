@@ -3,6 +3,7 @@ import { accountLimits, exhaustedFrom, remaining, schedule, usage } from '../eng
 import { isWorkingTime, type Limits } from '../engine/limits.js';
 import type { ActionType } from '../engine/sequence.js';
 import type { AccountRow, CampaignRow, ConnectionStatus, LeadRow } from '../types.js';
+import { skipTasksOfStoppedLeads } from './tasks.js';
 
 // Sender rotation: a campaign can run from several LinkedIn accounts. Each lead is pinned to one
 // sender before its first LinkedIn action, so the same person always hears from the same account.
@@ -82,6 +83,8 @@ export function retireAccount(ctx: Ctx, accountId: number) {
       "UPDATE campaign_leads SET state = 'skipped', finished_at = ?, next_run_at = ?, last_error = 'Sender account was removed' WHERE account_id = ? AND state = 'active' AND contacted_at IS NOT NULL",
       [now, now, accountId],
     );
+    const ws = ctx.db.get<{ workspace_id: number }>('SELECT workspace_id FROM accounts WHERE id = ?', [accountId]);
+    if (ws) skipTasksOfStoppedLeads(ctx, ws.workspace_id, 'Lead left the campaign (sender account was removed)');
     releaseUnstartedLeads(ctx, accountId);
     const campaigns = ctx.db
       .all<{ id: number }>('SELECT campaign_id AS id FROM campaign_accounts WHERE account_id = ? UNION SELECT id FROM campaigns WHERE account_id = ?', [accountId, accountId])

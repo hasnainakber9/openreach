@@ -14,6 +14,8 @@ import { logActivity } from '../services/activity.js';
 import { mailError } from '../services/email.js';
 import type { AccountRow, EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
 import { aiThrottle } from './ai.js';
+import { SMS_MAX } from '../engine/sequence.js';
+import { recordPhoneMessage } from '../messaging/runner.js';
 
 interface ConversationRow {
   id: number;
@@ -39,7 +41,7 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
       z.object({
         accountId: z.coerce.number().int().optional(),
         mailboxId: z.coerce.number().int().optional(),
-        channel: z.enum(['linkedin', 'email']).optional(),
+        channel: z.enum(['linkedin', 'email', 'sms', 'whatsapp']).optional(),
         unread: z.enum(['true', 'false']).optional(),
         q: z.string().optional(),
         campaignId: z.coerce.number().int().optional(),
@@ -134,6 +136,7 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
     const c = load(req);
     const { text } = parse(z.object({ text: z.string().trim().min(1).max(8000) }), req.body);
     if (c.channel === 'email') return replyByEmail(c, text);
+    if (c.channel === 'sms' || c.channel === 'whatsapp') return replyByPhone(c, c.channel, text);
     const a = ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [c.account_id]);
     if (!a) throw new HttpError(409, 'This conversation has no LinkedIn account to reply from');
     if (a.status === 'needs_login') throw new HttpError(409, 'This LinkedIn account needs a fresh session cookie before it can send');
@@ -151,6 +154,34 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
     logActivity(ctx, { workspaceId: a.workspace_id, accountId: a.id, leadId: c.lead_id, type: 'message', detail: text, timezone: a.timezone });
     return { ok: true };
   });
+
+  // Texts back through the workspace's SMS provider, right away; it counts toward the channel's daily limit.
+  // A number that opted out (STOP) can't be texted until it sends START.
+  async function replyByPhone(c: ConversationRow, channel: 'sms' | 'whatsapp', text: string) {
+    const phone = c.participant_address ?? '';
+    if (!phone) throw new HttpError(409, 'This conversation has no phone number to reply to');
+    if (ctx.db.get("SELECT 1 FROM suppressions WHERE workspace_id = ? AND kind = 'phone' AND value = ?", [c.workspace_id, phone])) {
+      throw new HttpError(409, 'This number opted out (STOP). It can be texted again once it sends START.');
+    }
+    const provider = ctx.providers.get(c.workspace_id, 'sms');
+    if (!provider) throw new HttpError(409, 'No SMS provider is set up');
+    if (channel === 'sms' && !provider.policy.sms) throw new HttpError(409, 'The SMS integration has no SMS from number or Messaging Service');
+    if (channel === 'whatsapp' && !provider.policy.whatsapp) throw new HttpError(409, 'The SMS integration has no WhatsApp sender');
+    if (text.length > SMS_MAX) throw new HttpError(400, `Keep the message under ${SMS_MAX} characters`);
+    let externalId: string;
+    try {
+      externalId = (await provider.send({ channel, to: phone, body: text })).externalId;
+    } catch (e) {
+      if (e instanceof ProviderError) throw new HttpError(422, `The message was not sent: ${e.message}`);
+      throw e;
+    }
+    const lead = c.lead_id ? (ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ? AND workspace_id = ?', [c.lead_id, c.workspace_id]) ?? null) : null;
+    ctx.db.tx(() => {
+      recordPhoneMessage(ctx, { workspaceId: c.workspace_id, channel, phone, lead, direction: 'out', externalId, body: text });
+      logActivity(ctx, { workspaceId: c.workspace_id, leadId: c.lead_id, type: channel, detail: provider.simulated ? `${text} (simulated: not delivered)` : text, timezone: provider.policy.timezone });
+    });
+    return { ok: true };
+  }
 
   // Answers in the thread from the conversation's mailbox, right away. It counts toward the mailbox's
   // daily limit like a campaign email, but a person who wrote to us gets no unsubscribe footer.

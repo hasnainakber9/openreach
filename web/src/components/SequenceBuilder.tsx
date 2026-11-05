@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { api, REPLY_CATEGORIES, type AbMetric, type AiDraft, type AiVariable, type ConditionKind, type InMailVia, type ReplyCategory, type SeqNode, type Sequence, type VariantId, type VariantNode } from '../api';
-import { ACTION_LABELS, CATEGORY_LABELS, CONDITION_LABELS } from '../format';
+import { api, REPLY_CATEGORIES, useApi, type AbMetric, type AiDraft, type AiVariable, type ConditionKind, type InMailVia, type ReplyCategory, type SeqNode, type Sequence, type TaskKind, type TeamMember, type VariantId, type VariantNode } from '../api';
+import { ACTION_LABELS, CATEGORY_LABELS, CONDITION_LABELS, TASK_KIND_LABELS } from '../format';
 import { AiLeadPreview, AiWriterModal, type AiStepPreview } from './Ai';
 import { Icon } from './Icon';
 import { Button, CheckList, Field, Toggle } from './ui';
@@ -19,6 +19,9 @@ const PALETTE: { type: SeqNode['type']; kind?: ConditionKind; label: string }[] 
   { type: 'email', label: ACTION_LABELS.email },
   { type: 'withdraw_invite', label: ACTION_LABELS.withdraw_invite },
   { type: 'inmail', label: ACTION_LABELS.inmail },
+  { type: 'task', label: ACTION_LABELS.task },
+  { type: 'sms', label: ACTION_LABELS.sms },
+  { type: 'whatsapp', label: ACTION_LABELS.whatsapp },
   { type: 'condition', kind: 'accepted_within', label: 'If invite accepted' },
   { type: 'condition', kind: 'is_connected', label: 'If already connected' },
   { type: 'condition', kind: 'has_email', label: 'If email known' },
@@ -58,6 +61,11 @@ function makeNode(type: SeqNode['type'], kind: ConditionKind = 'accepted_within'
       return { id, type, subject: 'Quick question, {{firstName}}', body: 'Hi {{firstName}},\n\n', next: null };
     case 'inmail':
       return { id, type, subject: 'Idea for {{company|your team}}', body: 'Hi {{firstName}},\n\n', via: 'profile', next: null };
+    case 'task':
+      return { id, type, kind: 'call', title: 'Call {{firstName}}', instructions: '', dueAfterHours: 0, assigneeId: null, autoSkipAfterDays: null, next: null };
+    case 'sms':
+    case 'whatsapp':
+      return { id, type, text: 'Hi {{firstName}}, ', next: null };
     case 'wait':
       return { id, type, days: 1, hours: 0, next: null };
     case 'endorse':
@@ -105,11 +113,11 @@ const MAX_VARIANTS = 5;
 type Content = { note?: string; text?: string; subject?: string; body?: string };
 type Variant = Content & { id: VariantId };
 
-const isVariantNode = (n: SeqNode): n is VariantNode => n.type === 'connect' || n.type === 'message' || n.type === 'email' || n.type === 'inmail';
+const isVariantNode = (n: SeqNode): n is VariantNode => n.type === 'connect' || n.type === 'message' || n.type === 'email' || n.type === 'inmail' || n.type === 'sms';
 
 function contentOf(n: VariantNode): Content {
   if (n.type === 'connect') return { note: n.note };
-  if (n.type === 'message') return { text: n.text };
+  if (n.type === 'message' || n.type === 'sms') return { text: n.text };
   return { subject: n.subject, body: n.body };
 }
 
@@ -120,7 +128,7 @@ function variantsOf(n: VariantNode): Variant[] | null {
 // Writes the step's own fields from `c`, keeping the rest of the node.
 function withContent(n: VariantNode, c: Content): VariantNode {
   if (n.type === 'connect') return { ...n, note: c.note ?? '' };
-  if (n.type === 'message') return { ...n, text: c.text ?? '' };
+  if (n.type === 'message' || n.type === 'sms') return { ...n, text: c.text ?? '' };
   return { ...n, subject: c.subject ?? '', body: c.body ?? '' };
 }
 
@@ -135,13 +143,13 @@ function withVariants(n: VariantNode, variants: Variant[]): VariantNode {
     return plain as VariantNode;
   }
   const pick = (v: Variant) =>
-    n.type === 'connect' ? { id: v.id, note: v.note ?? '' } : n.type === 'message' ? { id: v.id, text: v.text ?? '' } : { id: v.id, subject: v.subject ?? '', body: v.body ?? '' };
+    n.type === 'connect' ? { id: v.id, note: v.note ?? '' } : n.type === 'message' || n.type === 'sms' ? { id: v.id, text: v.text ?? '' } : { id: v.id, subject: v.subject ?? '', body: v.body ?? '' };
   return { ...base, variants: sorted.map(pick) } as VariantNode;
 }
 
 function contentSummary(n: VariantNode): string {
   if (n.type === 'connect') return n.note.trim() ? n.note : 'Invite without a note';
-  if (n.type === 'message') return n.text;
+  if (n.type === 'message' || n.type === 'sms') return n.text;
   return n.subject;
 }
 
@@ -166,6 +174,10 @@ export function summary(n: SeqNode): string {
       return 'Likes their most recent post';
     case 'withdraw_invite':
       return 'Withdraws a pending invitation';
+    case 'task':
+      return `${TASK_KIND_LABELS[n.kind]}: ${n.title}`;
+    case 'whatsapp':
+      return n.contentSid ? `Template ${n.contentSid.slice(0, 8)}…` : n.text;
   }
 }
 
@@ -325,7 +337,7 @@ export function SequenceBuilder({
 // A draft from the AI writer as the step's text fields.
 function draftContent(type: VariantNode['type'], d: AiDraft): Content {
   if (type === 'connect') return { note: d.note ?? d.text ?? '' };
-  if (type === 'message') return { text: d.text ?? d.note ?? d.body ?? '' };
+  if (type === 'message' || type === 'sms') return { text: d.text ?? d.note ?? d.body ?? '' };
   return { subject: d.subject ?? '', body: d.body ?? d.text ?? '' };
 }
 
@@ -367,6 +379,14 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
           </div>
         </>
       )}
+      {node.type === 'sms' && (
+        <div className="note">
+          Sent through the SMS provider under Settings → Integrations (Twilio, or the simulator, which sends nothing) to leads with a phone number, within the
+          provider's daily limit and sending hours. People who reply STOP are never texted again.
+        </div>
+      )}
+      {node.type === 'whatsapp' && <WhatsAppEditor node={node} onChange={onChange} />}
+      {node.type === 'task' && <TaskEditor node={node} onChange={onChange} />}
       {node.type === 'wait' && (
         <div className="grid grid-2">
           <Field label="Days">
@@ -556,6 +576,18 @@ function ContentFields({ type, value, onChange, variantId }: { type: VariantNode
     );
   }
   if (type === 'message') return <TemplateField label={`Message${suffix}`} value={value.text ?? ''} onChange={(text) => onChange({ ...value, text })} rows={6} />;
+  if (type === 'sms') {
+    return (
+      <TemplateField
+        label={`Text message${suffix}`}
+        value={value.text ?? ''}
+        onChange={(text) => onChange({ ...value, text })}
+        rows={4}
+        limit={SMS_MAX}
+        hint="Over 160 characters (70 with emoji) a text goes out as several SMS segments, each charged."
+      />
+    );
+  }
   if (type === 'inmail') {
     return (
       <>
@@ -574,6 +606,106 @@ function ContentFields({ type, value, onChange, variantId }: { type: VariantNode
         rows={7}
         hint="Sent from the campaign's mailboxes (see Settings) to leads with a known email address, with your signature and an unsubscribe link."
       />
+    </>
+  );
+}
+
+const SMS_MAX = 1600;
+
+function TaskEditor({ node, onChange }: { node: Extract<SeqNode, { type: 'task' }>; onChange: (n: SeqNode) => void }) {
+  const team = useApi<TeamMember[]>('/api/team');
+  return (
+    <>
+      <Field label="Kind of task">
+        <select value={node.kind} onChange={(e) => onChange({ ...node, kind: e.target.value as TaskKind })}>
+          {Object.entries(TASK_KIND_LABELS).map(([k, v]) => (
+            <option key={k} value={k}>
+              {v}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Title" hint="Variables such as {{firstName}} work here too.">
+        <input type="text" value={node.title} maxLength={200} onChange={(e) => onChange({ ...node, title: e.target.value })} />
+      </Field>
+      <TemplateField label="Instructions" value={node.instructions} onChange={(instructions) => onChange({ ...node, instructions })} rows={4} hint="What to do or say, filled in for each lead." ai={false} />
+      <div className="grid grid-2">
+        <Field label="Due after (hours)" hint="Counted from when the lead reaches this step.">
+          <input type="number" min={0} max={720} value={node.dueAfterHours} onChange={(e) => onChange({ ...node, dueAfterHours: Math.max(0, Math.min(720, Number(e.target.value) || 0)) })} />
+        </Field>
+        <Field label="Assign to">
+          <select value={node.assigneeId ?? ''} onChange={(e) => onChange({ ...node, assigneeId: e.target.value ? Number(e.target.value) : null })}>
+            <option value="">Nobody (anyone can pick it up)</option>
+            {team.data?.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <Toggle
+        checked={node.autoSkipAfterDays != null}
+        onChange={(on) => onChange({ ...node, autoSkipAfterDays: on ? 3 : null })}
+        label="Skip automatically"
+        hint="If nobody completes the task, it is skipped this many days after it is due and the lead moves on."
+      />
+      {node.autoSkipAfterDays != null && (
+        <Field label="Days after the due date">
+          <input
+            type="number"
+            min={1}
+            max={60}
+            value={node.autoSkipAfterDays}
+            onChange={(e) => onChange({ ...node, autoSkipAfterDays: Math.max(1, Math.min(60, Math.round(Number(e.target.value) || 1))) })}
+          />
+        </Field>
+      )}
+      <div className="note">The lead waits at this step until the task is completed or skipped on the Tasks page. A lead that replies or leaves the campaign has its task skipped.</div>
+    </>
+  );
+}
+
+// WhatsApp only delivers free text within 24 hours of the person's last message; outside that window it needs an
+// approved template, identified by its Content SID, with the template's variables.
+function WhatsAppEditor({ node, onChange }: { node: Extract<SeqNode, { type: 'whatsapp' }>; onChange: (n: SeqNode) => void }) {
+  const vars = Object.entries(node.contentVariables ?? {});
+  const setVars = (entries: [string, string][]) => onChange({ ...node, contentVariables: entries.length ? Object.fromEntries(entries) : undefined });
+  return (
+    <>
+      <TemplateField
+        label="Message"
+        value={node.text}
+        onChange={(text) => onChange({ ...node, text })}
+        rows={4}
+        limit={SMS_MAX}
+        hint={node.contentSid ? 'Shown in the inbox; WhatsApp delivers the template.' : 'Sent through the SMS provider’s WhatsApp sender to leads with a phone number.'}
+      />
+      <Field
+        label="Approved template (Content SID)"
+        hint="Optional. A first WhatsApp message to someone needs an approved template (HX…); free text only reaches people who wrote to you in the last 24 hours."
+      >
+        <input type="text" value={node.contentSid ?? ''} placeholder="HX…" onChange={(e) => onChange({ ...node, contentSid: e.target.value.trim() || undefined })} />
+      </Field>
+      {node.contentSid && (
+        <div className="stack" style={{ gap: 6 }}>
+          <span className="field-label">Template variables</span>
+          {vars.map(([k, v], i) => (
+            <div className="row" key={i} style={{ flexWrap: 'nowrap' }}>
+              <input type="text" value={k} aria-label={`Variable ${i + 1} name`} style={{ width: 70 }} onChange={(e) => setVars(vars.map((x, j) => (j === i ? [e.target.value.replace(/\W/g, ''), x[1]] : x)))} />
+              <input type="text" value={v} aria-label={`Variable ${i + 1} value`} placeholder="{{firstName}}" onChange={(e) => setVars(vars.map((x, j) => (j === i ? [x[0], e.target.value] : x)))} />
+              <Button size="sm" variant="ghost" aria-label={`Remove variable ${i + 1}`} onClick={() => setVars(vars.filter((_, j) => j !== i))}>
+                Remove
+              </Button>
+            </div>
+          ))}
+          <div>
+            <Button size="sm" onClick={() => setVars([...vars, [String(vars.length + 1), '']])}>
+              + Add variable
+            </Button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -620,11 +752,12 @@ function AutoPick({ node, onChange }: { node: VariantNode; onChange: (n: SeqNode
   );
 }
 
-function TemplateField({ label, value, onChange, hint, limit, rows = 4 }: { label: string; value: string; onChange: (v: string) => void; hint?: string; limit?: number; rows?: number }) {
+// `ai`: offer the campaign's {{ai:name}} variables (task instructions don't fill them in).
+function TemplateField({ label, value, onChange, hint, limit, rows = 4, ai = true }: { label: string; value: string; onChange: (v: string) => void; hint?: string; limit?: number; rows?: number; ai?: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [preview, setPreview] = useState<{ text: string; length: number; unknown: string[]; sampleLead: string } | null>(null);
   const { campaignId, aiNames, aiPreview } = useContext(BuilderContext);
-  const usesAi = !!campaignId && aiNames.length > 0 && usesAiVariable(value);
+  const usesAi = ai && !!campaignId && aiNames.length > 0 && usesAiVariable(value);
 
   useEffect(() => {
     if (!value.trim()) return setPreview(null);
@@ -653,7 +786,7 @@ function TemplateField({ label, value, onChange, hint, limit, rows = 4 }: { labe
         <textarea ref={ref} value={value} rows={rows} style={rows === 1 ? { minHeight: 0 } : undefined} onChange={(e) => onChange(e.target.value)} />
       </Field>
       <div className="row" style={{ gap: 4 }}>
-        {[...VARIABLES, ...aiNames.map((n) => `ai:${n}`)].map((v) => (
+        {[...VARIABLES, ...(ai ? aiNames.map((n) => `ai:${n}`) : [])].map((v) => (
           <button type="button" className="chip" key={v} onClick={() => insertVar(v)}>
             {v}
           </button>

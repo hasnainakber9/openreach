@@ -555,4 +555,40 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE activity ADD COLUMN mailbox_id INTEGER;
   CREATE INDEX activity_mailbox_day ON activity(mailbox_id, day, type);
   `,
+  // [M8] g3-tasks-sms: manual/call tasks that hold a lead, SMS/WhatsApp conversations keyed by phone
+  `
+  CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    campaign_id INTEGER REFERENCES campaigns(id) ON DELETE CASCADE,
+    campaign_lead_id INTEGER REFERENCES campaign_leads(id) ON DELETE CASCADE,
+    lead_id INTEGER REFERENCES leads(id) ON DELETE CASCADE,
+    node_id TEXT,
+    -- call | manual_linkedin | manual_email | custom
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    instructions TEXT NOT NULL DEFAULT '',
+    assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    -- open | done | skipped
+    status TEXT NOT NULL DEFAULT 'open',
+    due_at INTEGER NOT NULL,
+    auto_skip_at INTEGER,
+    -- connected | voicemail | no_answer | wrong_number | meeting_booked | not_interested | other
+    outcome TEXT,
+    notes TEXT,
+    completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    completed_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX tasks_due ON tasks(workspace_id, status, due_at);
+  CREATE INDEX tasks_assignee ON tasks(assignee_id, status, due_at);
+  CREATE INDEX tasks_lead ON tasks(lead_id);
+  -- One task per lead and sequence step, however often the lead is woken while it waits.
+  CREATE UNIQUE INDEX tasks_step ON tasks(campaign_lead_id, node_id) WHERE campaign_lead_id IS NOT NULL;
+  -- SMS/WhatsApp threads have neither a LinkedIn account nor a mailbox: one per workspace, channel and phone.
+  -- Uses conversations.mailbox_id from M7.
+  CREATE UNIQUE INDEX conversations_phone_thread ON conversations(workspace_id, channel, thread_id) WHERE account_id IS NULL AND mailbox_id IS NULL;
+  -- SMS/WhatsApp daily limits count a workspace's sends per day.
+  CREATE INDEX activity_workspace_day ON activity(workspace_id, day, type);
+  `,
 ];

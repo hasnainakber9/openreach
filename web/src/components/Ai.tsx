@@ -3,7 +3,7 @@ import { api, useApi, type AiBrief, type AiDraft, type AiLength, type AiPreview,
 import { fullName } from '../format';
 import { Button, ErrorNote, Field, Modal, ProviderBadge } from './ui';
 
-export type WriterNodeType = 'connect' | 'message' | 'inmail' | 'email';
+export type WriterNodeType = 'connect' | 'message' | 'inmail' | 'email' | 'sms';
 
 const TONES: { value: AiTone; label: string }[] = [
   { value: 'friendly', label: 'Friendly' },

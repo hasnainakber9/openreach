@@ -2,12 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { ACTION_TYPES, CampaignSettingsSchema, defaultSequence, type CampaignSettings, isAbTest, isVariantNode, nodeVariants, precededBy, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
+import { ACTION_TYPES, CHANNEL_NODE_TYPES, CampaignSettingsSchema, defaultSequence, type CampaignSettings, isAbTest, isVariantNode, nodeVariants, precededBy, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
 import { leadVars, render, unknownVariables, VARIABLE_NAMES } from '../engine/template.js';
 import { setWinner, syncVariants, variantReport } from '../engine/variants.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
 import { contactTypesSql } from '../services/activity.js';
 import { addLeadsToCampaign, campaignSequence, campaignSettings } from '../services/leads.js';
+import { isWorkspaceMember, skipOpenTasks } from '../services/tasks.js';
 import { campaignAccountIds, campaignAccounts, setCampaignAccounts } from '../services/rotation.js';
 import { campaignMailboxes, campaignMailboxIds, setCampaignMailboxes } from '../mail/mailboxes.js';
 import type { CampaignRow, LeadRow } from '../types.js';
@@ -147,6 +148,12 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     if (found.length !== unique.length) notFound('Mailbox');
     return unique;
   };
+  // Task steps may only be assigned to members of this workspace (re-checked when a task is created).
+  const checkAssignees = (req: any, seq: Sequence | undefined) => {
+    for (const n of Object.values(seq?.nodes ?? {})) {
+      if (n.type === 'task' && n.assigneeId != null && !isWorkspaceMember(ctx, user(req).workspace_id, n.assigneeId)) notFound('User');
+    }
+  };
 
   const serialize = (c: CampaignRow, full = false) => {
     const seq = campaignSequence(c);
@@ -169,7 +176,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
       startedAt: c.started_at,
       stats: campaignStats(ctx, c.id),
       steps: Object.keys(seq.nodes).length,
-      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: [...sequenceWarnings(seq, settings), ...senderWarnings(ctx, seq, settings, mailboxes.length)] } : {}),
+      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: [...sequenceWarnings(seq, settings), ...senderWarnings(ctx, seq, settings, mailboxes.length), ...channelWarnings(ctx, c.workspace_id, seq)] } : {}),
     };
   };
 
@@ -194,6 +201,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     );
     const senders = senderIds(req, body) ?? [];
     const mailboxIds = mailboxIdList(req, body.mailboxIds) ?? [];
+    checkAssignees(req, body.sequence);
     const id = ctx.db.tx(() => {
       const id = ctx.db.insert('campaigns', {
         workspace_id: user(req).workspace_id,
@@ -218,6 +226,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     // Senders and mailboxes can change while the campaign runs: leads they already contacted stay with them.
     const senders = senderIds(req, body);
     const mailboxIds = mailboxIdList(req, body.mailboxIds);
+    checkAssignees(req, body.sequence);
     if (c.status === 'active' && (senders || mailboxIds || body.sequence)) {
       const problem = senderProblem(body.sequence ?? campaignSequence(c), (senders ?? campaignAccountIds(ctx, c.id)).length, (mailboxIds ?? campaignMailboxIds(ctx, c.id)).length);
       if (problem) throw new HttpError(409, `${problem} Pause the campaign first.`);
@@ -363,9 +372,11 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 }
 
-// Who sends what: LinkedIn steps need a LinkedIn account; a campaign needs at least one sender of any kind.
+// Who sends what: LinkedIn steps need a LinkedIn account; LinkedIn and email steps need at least one sender of
+// either kind. Tasks and SMS/WhatsApp steps need neither (SMS goes through the workspace's SMS provider).
 function senderProblem(seq: Sequence, accounts: number, mailboxes: number): string | null {
-  if (!accounts && !mailboxes) return 'Choose a LinkedIn account or a mailbox for this campaign first.';
+  const sends = Object.values(seq.nodes).some((n) => (ACTION_TYPES as readonly string[]).includes(n.type));
+  if (sends && !accounts && !mailboxes) return 'Choose a LinkedIn account or a mailbox for this campaign first.';
   const linkedIn = Object.values(seq.nodes).some((n) => (ACTION_TYPES as readonly string[]).includes(n.type) && n.type !== 'email');
   if (linkedIn && !accounts) return 'This sequence has LinkedIn steps: choose a LinkedIn account for this campaign.';
   return null;
@@ -378,6 +389,20 @@ function senderWarnings(ctx: Ctx, seq: Sequence, settings: CampaignSettings, mai
   if (!mailboxes) out.push('Email steps have no mailbox: they go out through the LinkedIn account’s old SMTP settings, or are only recorded (not delivered) without them. Choose mailboxes in the campaign settings.');
   if ((settings.trackOpens || settings.trackClicks) && !ctx.config.publicUrl) out.push('Open and click tracking need PUBLIC_URL on the server; without it emails go out untracked.');
   if (!mailboxes && emails.some((n) => n.type === 'email' && n.replyInThread)) out.push('"Reply in the same thread" only works when the campaign sends from mailboxes.');
+  return out;
+}
+
+// SMS and WhatsApp steps go through the workspace's SMS provider; say when that is only the simulator.
+function channelWarnings(ctx: Ctx, workspaceId: number, seq: Sequence): string[] {
+  const nodes = Object.values(seq.nodes);
+  if (!nodes.some((n) => (CHANNEL_NODE_TYPES as readonly string[]).includes(n.type))) return [];
+  const out = ['SMS and WhatsApp steps only reach leads with a phone number (in international form, or with the SMS integration’s default country code).'];
+  const sms = ctx.providers.get(workspaceId, 'sms');
+  if (sms?.simulated) out.push('SMS and WhatsApp steps use the built-in simulator, so nothing is delivered. Add Twilio under Settings → Integrations to send for real.');
+  else if (sms) {
+    if (nodes.some((n) => n.type === 'sms') && !sms.policy.sms) out.push('The SMS integration has no SMS from number or Messaging Service, so SMS steps are skipped.');
+    if (nodes.some((n) => n.type === 'whatsapp') && !sms.policy.whatsapp) out.push('The SMS integration has no WhatsApp sender, so WhatsApp steps are skipped.');
+  }
   return out;
 }
 
@@ -394,6 +419,10 @@ function sequenceWarnings(seq: Sequence, settings: CampaignSettings): string[] {
     // Open Profile status is only known once a profile view has seen it; before that the answer is No.
     if (n.type === 'condition' && n.kind === 'is_open_profile' && !precededBy(seq, n.id, 'view_profile')) {
       out.push('An "open profile" check needs a View profile step before it, or every lead goes down No.');
+    }
+    if (n.type === 'task' || n.type === 'whatsapp') {
+      const unknown = unknownVariables(n.type === 'task' ? `${n.title} ${n.instructions}` : n.text, VARIABLE_NAMES, aiNames);
+      if (unknown.length) out.push(`Unknown variable${unknown.length > 1 ? 's' : ''} ${unknown.map((u) => `{{${u}}}`).join(', ')}: they are blank unless a lead has a custom field with that name.`);
     }
     if (!isVariantNode(n)) continue;
     // Every variant is checked, not just the one in the single-text fields.
@@ -417,7 +446,10 @@ function reconcile(ctx: Ctx, campaignId: number, seq: Sequence) {
   const active = ctx.db.all<{ id: number; node_id: string | null }>("SELECT id, node_id FROM campaign_leads WHERE campaign_id = ? AND state = 'active'", [campaignId]);
   for (const cl of active) {
     const node = cl.node_id ? seq.nodes[cl.node_id] : undefined;
-    if (!node) ctx.db.update('campaign_leads', cl.id, { state: 'done', finished_at: now, node_id: null, node_type: null });
+    if (!node) {
+      ctx.db.update('campaign_leads', cl.id, { state: 'done', finished_at: now, node_id: null, node_type: null, hold_reason: null });
+      skipOpenTasks(ctx, cl.id, 'The task step was removed from the sequence');
+    }
     else ctx.db.update('campaign_leads', cl.id, { node_type: node.type, next_run_at: now });
   }
 }

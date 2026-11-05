@@ -5,10 +5,11 @@ import type { CampaignSettings } from '../engine/sequence.js';
 import type { CampaignLeadRow, CampaignLeadState, CampaignRow, LeadRow } from '../types.js';
 import { logActivity } from './activity.js';
 import { campaignSettings, publicLead } from './leads.js';
+import { skipOpenTasks } from './tasks.js';
 
 // Every inbound reply (LinkedIn today; email and SMS later) goes through handleInboundReply, and every
 // path that stops a lead goes through stopCampaignLead, so stop-on-reply, holds and later hooks
-// (closing tasks, pipeline stages) live in one place.
+// (closing open tasks, pipeline stages) live in one place.
 
 export type Channel = 'linkedin' | 'email' | 'sms' | 'whatsapp';
 
@@ -19,6 +20,7 @@ export function stopCampaignLead(ctx: Ctx, cl: Pick<CampaignLeadRow, 'id'>, stat
     `UPDATE campaign_leads SET state = ?, finished_at = ?, next_run_at = ?, hold_reason = NULL${reason ? ', last_error = ?' : ''} WHERE id = ? AND state = 'active'`,
     reason ? [state, now, now, reason, cl.id] : [state, now, now, cl.id],
   );
+  if (r.changes > 0) skipOpenTasks(ctx, cl.id, `Lead left the campaign (${state})`);
   return r.changes > 0;
 }
 

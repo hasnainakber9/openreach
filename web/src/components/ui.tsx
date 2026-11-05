@@ -37,6 +37,9 @@ const STATUS_TONE: Record<string, string> = {
   winner: 'good',
   leading: 'info',
   open_profile: 'info',
+  // Tasks
+  open: 'info',
+  overdue: 'critical',
   // Reply categories
   interested: 'good',
   meeting_booked: 'good',

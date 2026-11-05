@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { api, REPLY_CATEGORIES, useApi, type Account, type Conversation, type Mailbox, type ReplyCategory, type Thread as ThreadData } from '../api';
 import { Icon } from '../components/Icon';
 import { Button, Empty, Pill, ProviderBadge, useAction } from '../components/ui';
-import { CATEGORY_LABELS, dateTime, STAGE_LABELS, timeAgo } from '../format';
+import { CATEGORY_LABELS, CHANNEL_LABELS, dateTime, STAGE_LABELS, timeAgo } from '../format';
 
 export default function Inbox() {
   const accounts = useApi<Account[]>('/api/accounts');
   const mailboxes = useApi<Mailbox[]>('/api/mailboxes');
-  // "a12" = LinkedIn account 12, "m3" = mailbox 3.
+  // "a12" = LinkedIn account 12, "m3" = mailbox 3, "c:sms" = every SMS (or WhatsApp) thread.
   const [source, setSource] = useState('');
   const [category, setCategory] = useState('');
   const [unreadOnly, setUnreadOnly] = useState(false);
@@ -15,6 +15,7 @@ export default function Inbox() {
   const params = new URLSearchParams();
   if (source.startsWith('a')) params.set('accountId', source.slice(1));
   if (source.startsWith('m')) params.set('mailboxId', source.slice(1));
+  if (source.startsWith('c:')) params.set('channel', source.slice(2));
   if (category) params.set('category', category);
   if (unreadOnly) params.set('unread', 'true');
   if (q) params.set('q', q);
@@ -63,6 +64,8 @@ export default function Inbox() {
                       {m.name} (email)
                     </option>
                   ))}
+                  <option value="c:sms">SMS</option>
+                  <option value="c:whatsapp">WhatsApp</option>
                 </select>
                 <select value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Reply category">
                   <option value="">All replies</option>
@@ -87,8 +90,8 @@ export default function Inbox() {
               <button key={c.id} className={`inbox-item ${openId === c.id ? 'active' : ''} ${c.unread ? 'unread' : ''}`} onClick={() => setOpenId(c.id)}>
                 <div className="spread">
                   <span className="cell-title row" style={{ gap: 6, flexWrap: 'nowrap' }}>
-                    <span className="muted" title={c.channel === 'email' ? 'Email' : 'LinkedIn'} aria-label={c.channel === 'email' ? 'Email' : 'LinkedIn'}>
-                      <Icon name={c.channel === 'email' ? 'email' : 'message'} size={12} />
+                    <span className="muted" title={CHANNEL_LABELS[c.channel] ?? 'LinkedIn'} aria-label={CHANNEL_LABELS[c.channel] ?? 'LinkedIn'}>
+                      <Icon name={c.channel === 'linkedin' ? 'message' : c.channel} size={12} />
                     </span>
                     {c.name || c.participantAddress || 'Unknown'}
                   </span>
@@ -173,6 +176,11 @@ function Thread({ id, onChange }: { id: number; onChange: () => void }) {
               <div className="cell-sub">
                 {c.subject && <>{c.subject} · </>}
                 {c.participantAddress} via {c.mailboxName ?? 'a removed mailbox'}
+              </div>
+            )}
+            {(c.channel === 'sms' || c.channel === 'whatsapp') && (
+              <div className="cell-sub">
+                {CHANNEL_LABELS[c.channel]} · {c.participantAddress}
               </div>
             )}
           </div>

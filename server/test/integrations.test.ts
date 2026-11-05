@@ -296,13 +296,14 @@ describe('foundation plumbing', () => {
 
   it('takes form bodies only outside /api and on provider callbacks, so cross-site forms cannot drive the API', async () => {
     const app = await buildApp(makeWorld().ctx);
-    // (/u/:token itself is the real unsubscribe route since g3-mailboxes; any non-API path takes forms.)
+    // (/u/:token itself is the real unsubscribe route since g3-mailboxes, and /api/public/twilio/:id/inbound the real
+    // Twilio webhook since g3-tasks-sms; any non-API path, and any path under the Twilio prefix, takes forms.)
     app.post('/form-echo/:token', async (req) => req.body);
-    app.post('/api/public/twilio/:id/inbound', async (req) => req.body);
+    app.post('/api/public/twilio/echo/:id', async (req) => req.body);
     const form = (url: string, payload: string, cookie?: string) =>
       app.inject({ method: 'POST', url, payload, headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', ...(cookie ? { cookie } : {}) } });
     expect((await form('/form-echo/abc', 'List-Unsubscribe=One-Click')).json()).toEqual({ 'List-Unsubscribe': 'One-Click' });
-    expect((await form('/api/public/twilio/3/inbound', 'From=%2B15550100&Body=STOP')).json()).toEqual({ From: '+15550100', Body: 'STOP' });
+    expect((await form('/api/public/twilio/echo/3', 'From=%2B15550100&Body=STOP')).json()).toEqual({ From: '+15550100', Body: 'STOP' });
 
     const { app: api, owner } = await setup();
     // Login CSRF: a cross-site form must not sign the victim into someone else's workspace.

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { api, syncClock, useApi, type Role } from './api';
+import { api, syncClock, useApi, type Role, type TaskCounts } from './api';
 import { Button, ErrorNote, Field } from './components/ui';
 import Accounts from './pages/Accounts';
 import CampaignDetail from './pages/CampaignDetail';
@@ -10,6 +10,7 @@ import Inbox from './pages/Inbox';
 import Leads from './pages/Leads';
 import Mailboxes from './pages/Mailboxes';
 import Settings from './pages/Settings';
+import Tasks, { taskCountsPath } from './pages/Tasks';
 
 export interface Me {
   id: number;
@@ -29,13 +30,14 @@ interface NavItem {
   end?: boolean;
   roles?: Role[];
   feature?: string;
-  badge?: 'inbox';
+  badge?: 'inbox' | 'tasks';
 }
 
 const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/campaigns', label: 'Campaigns' },
   { to: '/leads', label: 'Leads' },
+  { to: '/tasks', label: 'Tasks', badge: 'tasks' },
   { to: '/inbox', label: 'Inbox', badge: 'inbox' },
   { to: '/accounts', label: 'LinkedIn accounts' },
   { to: '/mailboxes', label: 'Mailboxes', roles: ['owner', 'admin', 'member'] },
@@ -62,7 +64,8 @@ export default function App() {
 
 function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
   const unread = useApi<any[]>('/api/inbox?unread=true', 30_000);
-  const badges: Record<NonNullable<NavItem['badge']>, number> = { inbox: unread.data?.length ?? 0 };
+  const tasks = useApi<TaskCounts>(taskCountsPath, 60_000);
+  const badges: Record<NonNullable<NavItem['badge']>, number> = { inbox: unread.data?.length ?? 0, tasks: tasks.data?.dueToday ?? 0 };
   const nav = NAV.filter((n) => (!n.roles || n.roles.includes(me.role)) && (!n.feature || me.features?.[n.feature]));
   const signOut = async () => {
     await api('/api/auth/logout', { body: {} });
@@ -104,6 +107,7 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
           <Route path="/campaigns" element={<Campaigns />} />
           <Route path="/campaigns/:id" element={<CampaignDetail />} />
           <Route path="/leads" element={<Leads />} />
+          <Route path="/tasks" element={<Tasks me={me} />} />
           <Route path="/inbox" element={<Inbox />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/mailboxes" element={<Mailboxes me={me} />} />

@@ -38,7 +38,7 @@ export const definitionHash = (v: Pick<AiVariable, 'instruction' | 'maxChars'>) 
 // The texts a step sends (after its variant is applied).
 export function nodeTexts(node: SeqNode): string[] {
   if (node.type === 'connect') return [node.note];
-  if (node.type === 'message') return [node.text];
+  if (node.type === 'message' || node.type === 'sms' || node.type === 'whatsapp') return [node.text];
   if (node.type === 'email' || node.type === 'inmail') return [node.subject, node.body];
   return [];
 }

@@ -128,6 +128,18 @@ function KindCard({
                     {i.lastCheckedAt ? ` · checked ${timeAgo(i.lastCheckedAt)}` : ''}
                   </div>
                 )}
+                {i.webhookUrl !== undefined && (
+                  <div className="muted" style={{ fontSize: 13 }}>
+                    {i.webhookUrl ? (
+                      <>
+                        Replies and STOP messages: in Twilio, set the number's “A message comes in” webhook (HTTP POST) to{' '}
+                        <code className="webhook-url">{i.webhookUrl}</code>
+                      </>
+                    ) : (
+                      'Set PUBLIC_URL on the server to receive replies and STOP messages from Twilio; the webhook URL then shows here.'
+                    )}
+                  </div>
+                )}
               </div>
               <div className="row" style={{ gap: 4 }}>
                 {items.length > 1 && (

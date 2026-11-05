@@ -6,11 +6,13 @@ import { stopLeadEverywhere } from './replies.js';
 export type SuppressionKind = 'linkedin' | 'email' | 'phone';
 export type SuppressionReason = 'unsubscribe' | 'not_interested' | 'sms_stop' | 'bounce' | 'manual';
 
-// Phones are stored as E.164. Only numbers already written in international form are
-// recognised here; country-code guessing arrives with the SMS channel.
-export function normalizePhone(raw: string | null | undefined): string | null {
+// Phones are stored as E.164. Numbers in international form (+44..., 0044...) are always recognised; a
+// national number (07700 900123) only with a default country code (the SMS provider's setting, e.g. "44").
+export function normalizePhone(raw: string | null | undefined, defaultCountryCode?: string | null): string | null {
   if (!raw) return null;
-  const s = raw.replace(/[\s().-]/g, '').replace(/^00/, '+');
+  let s = raw.replace(/^(whatsapp|tel|sms):/i, '').replace(/[\s().\-/]/g, '').replace(/^00/, '+');
+  const cc = defaultCountryCode?.replace(/^\+/, '');
+  if (!s.startsWith('+') && cc && /^[1-9]\d{0,3}$/.test(cc) && /^\d+$/.test(s)) s = `+${cc}${s.replace(/^0+/, '')}`;
   return /^\+[1-9]\d{6,14}$/.test(s) ? s : null;
 }
 

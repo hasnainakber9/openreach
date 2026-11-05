@@ -15,6 +15,8 @@ import { leadRoutes } from './routes/leads.js';
 import { mailboxRoutes } from './routes/mailboxes.js';
 import { publicRoutes } from './routes/public.js';
 import { settingsRoutes } from './routes/settings.js';
+import { taskRoutes } from './routes/tasks.js';
+import { twilioRoutes } from './messaging/twilio-webhook.js';
 
 const PUBLIC = new Set(['/api/auth/status', '/api/auth/login', '/api/auth/register', '/api/health']);
 // Unauthenticated endpoints (unsubscribe, tracking, provider callbacks) identify the tenant through
@@ -69,6 +71,9 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
   jobRoutes(app, ctx);
   aiRoutes(app, ctx);
   mailboxRoutes(app, ctx);
+  taskRoutes(app, ctx);
+  // Inbound SMS/WhatsApp (no session; verified by Twilio's signature).
+  twilioRoutes(app, ctx);
   // Unsubscribe and tracking links (outside /api, no session); registered before the SPA fallback.
   publicRoutes(app, ctx);
 

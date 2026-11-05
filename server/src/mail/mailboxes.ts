@@ -4,6 +4,7 @@ import { json } from '../db/db.js';
 import { DEFAULT_LIMITS, isWorkingTime, localParts, nextWorkingTime, type Schedule } from '../engine/limits.js';
 import { mask } from '../services/crypto.js';
 import type { SmtpConfig, SmtpTransport } from '../services/email.js';
+import { skipTasksOfStoppedLeads } from '../services/tasks.js';
 import type { AccountRow, CampaignRow, LeadRow, MailboxRow } from '../types.js';
 
 // Mailboxes are the workspace's sending addresses for email steps, separate from LinkedIn accounts.
@@ -181,6 +182,8 @@ export function retireMailbox(ctx: Ctx, mailboxId: number) {
        WHERE mailbox_id = ? AND state = 'active' AND ${EMAILED}`,
       [now, now, mailboxId],
     );
+    const ws = ctx.db.get<{ workspace_id: number }>('SELECT workspace_id FROM mailboxes WHERE id = ?', [mailboxId]);
+    if (ws) skipTasksOfStoppedLeads(ctx, ws.workspace_id, 'Lead left the campaign (mailbox was removed)');
     releaseUnstartedMailboxLeads(ctx, mailboxId);
     const campaigns = ctx.db.all<{ campaign_id: number }>('SELECT campaign_id FROM campaign_mailboxes WHERE mailbox_id = ?', [mailboxId]).map((r) => r.campaign_id);
     ctx.db.run('DELETE FROM campaign_mailboxes WHERE mailbox_id = ?', [mailboxId]);

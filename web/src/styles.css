@@ -669,6 +669,15 @@ th.num {
   background: var(--warning-soft);
   color: var(--warning-text);
 }
+/* Tasks: instructions keep their line breaks; long webhook URLs wrap instead of widening the card. */
+.task-instructions {
+  white-space: pre-wrap;
+  max-width: 520px;
+}
+.webhook-url {
+  word-break: break-all;
+  user-select: all;
+}
 .pager {
   display: flex;
   gap: 12px;

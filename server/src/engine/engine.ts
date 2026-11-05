@@ -5,10 +5,12 @@ import { json } from '../db/db.js';
 import { DriverError, type LinkedInDriver } from '../drivers/types.js';
 import { CONTACT_ACTIVITY_TYPES, logActivity } from '../services/activity.js';
 import { MailRunner } from '../mail/runner.js';
+import { MessagingRunner } from '../messaging/runner.js';
 import { newMessageId } from '../mail/compose.js';
 import type { SmtpConfig } from '../services/email.js';
 import { replyDecision, replyHoldDeadline, replySince } from '../services/replies.js';
 import { suppressionReason } from '../services/suppression.js';
+import { skipOpenTasks, taskGate } from '../services/tasks.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
 import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLegacy, pinLead, releaseUnstartedLeads, setConnection, type CapacityCache } from '../services/rotation.js';
 import type { AccountRow, CampaignLeadRow, CampaignLeadState, CampaignRow, ConnectionStatus, LeadRow } from '../types.js';
@@ -41,9 +43,12 @@ export class Engine {
   private capacity: CapacityCache = new Map();
   // Email steps of campaigns that have mailboxes (they don't wait for a LinkedIn account).
   readonly mail: MailRunner;
+  // SMS and WhatsApp steps, sent through the workspace's SMS provider.
+  readonly messaging: MessagingRunner;
 
   constructor(private ctx: Ctx) {
     this.mail = new MailRunner(ctx, this);
+    this.messaging = new MessagingRunner(ctx, this);
   }
 
   start() {
@@ -65,6 +70,7 @@ export class Engine {
     await Promise.all([
       this.ctx.jobs.tick().catch((e) => console.error('[jobs] tick failed', e)),
       this.mail.tick().catch((e) => console.error('[mail] tick failed', e)),
+      this.messaging.tick().catch((e) => console.error('[messaging] tick failed', e)),
       ...accounts
         .filter((a) => !this.busy.has(a.id))
         .map(async (a) => {
@@ -242,6 +248,11 @@ export class Engine {
         cur = this.moveTo(campaign, cur, branch ? node.yes : node.no);
         continue;
       }
+      if (node.type === 'task') {
+        if (taskGate(this.ctx, campaign, cur, node) === 'hold') return;
+        cur = this.moveTo(campaign, { ...cur, hold_reason: null }, node.next);
+        continue;
+      }
       return; // an action: the scheduler picks it up when an account has capacity
     }
   }
@@ -281,6 +292,7 @@ export class Engine {
   finish(campaign: CampaignRow, job: CampaignLeadRow, state: CampaignLeadState, error?: string) {
     const now = this.ctx.clock.now();
     this.ctx.db.update('campaign_leads', job.id, { state, finished_at: now, next_run_at: now, hold_reason: null, ...(error ? { last_error: error } : {}) });
+    skipOpenTasks(this.ctx, job.id, `Lead left the campaign (${state})`);
     if (state === 'done' || state === 'failed') {
       const lead = this.lead(job.lead_id);
       this.ctx.webhooks.emit(campaign.workspace_id, state === 'done' ? 'lead.finished' : 'lead.failed', {
@@ -299,7 +311,7 @@ export class Engine {
     const campaign = this.campaign(job.campaign_id);
     const seq = campaignSequence(campaign);
     const settings = campaignSettings(campaign);
-    const step = seq.nodes[job.node_id!] as Exclude<SeqNode, { type: 'wait' | 'condition' }>;
+    const step = seq.nodes[job.node_id!] as Exclude<SeqNode, { type: 'wait' | 'condition' | 'task' | 'sms' | 'whatsapp' }>;
     let lead = this.lead(job.lead_id);
     const base: Parameters<typeof logActivity>[1] = { workspaceId: a.workspace_id, accountId: a.id, campaignId: campaign.id, leadId: lead.id, type: step.type, timezone: a.timezone, nodeId: step.id };
 
@@ -454,7 +466,7 @@ export class Engine {
   // `conn` is the lead's connection with the acting account (not with any account).
   private async perform(
     d: LinkedInDriver,
-    node: Exclude<SeqNode, { type: 'wait' | 'condition' | 'email' }>,
+    node: Exclude<SeqNode, { type: 'wait' | 'condition' | 'email' | 'task' | 'sms' | 'whatsapp' }>,
     lead: LeadRow,
     conn: ConnectionStatus,
     vars: Record<string, string>,

@@ -151,6 +151,29 @@ export interface MailboxRow {
   created_at: number;
 }
 
+export type TaskStatus = 'open' | 'done' | 'skipped';
+
+export interface TaskRow {
+  id: number;
+  workspace_id: number;
+  campaign_id: number | null;
+  campaign_lead_id: number | null;
+  lead_id: number | null;
+  node_id: string | null;
+  kind: 'call' | 'manual_linkedin' | 'manual_email' | 'custom';
+  title: string;
+  instructions: string;
+  assignee_id: number | null;
+  status: TaskStatus;
+  due_at: number;
+  auto_skip_at: number | null;
+  outcome: string | null;
+  notes: string | null;
+  completed_by: number | null;
+  completed_at: number | null;
+  created_at: number;
+}
+
 export interface EmailMessageRow {
   id: number;
   workspace_id: number;

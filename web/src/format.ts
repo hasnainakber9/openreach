@@ -1,6 +1,9 @@
-import { serverNow, type ActionType, type ConditionKind, type ImportKind, type ProviderKind, type ReplyCategory } from './api';
+import { serverNow, type ActionType, type CallOutcome, type ConditionKind, type ImportKind, type ProviderKind, type ReplyCategory, type TaskKind } from './api';
 
-export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted' | 'replied' | 'ab_winner' | 'ai_personalize' | 'classified' | 'email_open' | 'email_click' | 'email_bounce', string> = {
+export const ACTION_LABELS: Record<
+  ActionType | 'wait' | 'condition' | 'task' | 'sms' | 'whatsapp' | 'accepted' | 'replied' | 'ab_winner' | 'ai_personalize' | 'classified' | 'email_open' | 'email_click' | 'email_bounce' | 'task_created' | 'task_done' | 'task_skipped',
+  string
+> = {
   view_profile: 'View profile',
   follow: 'Follow',
   endorse: 'Endorse skills',
@@ -12,6 +15,9 @@ export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted
   inmail: 'Send InMail',
   wait: 'Wait',
   condition: 'Condition',
+  task: 'Manual task',
+  sms: 'Send SMS',
+  whatsapp: 'Send WhatsApp',
   accepted: 'Accepted invite',
   replied: 'Replied',
   ab_winner: 'A/B winner set',
@@ -20,7 +26,29 @@ export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted
   email_open: 'Email opened',
   email_click: 'Email link clicked',
   email_bounce: 'Email bounced',
+  task_created: 'Task created',
+  task_done: 'Task done',
+  task_skipped: 'Task skipped',
 };
+
+export const TASK_KIND_LABELS: Record<TaskKind, string> = {
+  call: 'Call',
+  manual_linkedin: 'LinkedIn by hand',
+  manual_email: 'Email by hand',
+  custom: 'Other to-do',
+};
+
+export const OUTCOME_LABELS: Record<CallOutcome, string> = {
+  connected: 'Talked to them',
+  voicemail: 'Left a voicemail',
+  no_answer: 'No answer',
+  wrong_number: 'Wrong number',
+  meeting_booked: 'Meeting booked',
+  not_interested: 'Not interested',
+  other: 'Other',
+};
+
+export const CHANNEL_LABELS: Record<string, string> = { linkedin: 'LinkedIn', email: 'Email', sms: 'SMS', whatsapp: 'WhatsApp' };
 
 export const CONDITION_LABELS: Record<ConditionKind, string> = {
   accepted_within: 'Accepted the invite',
