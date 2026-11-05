@@ -12,7 +12,8 @@ const PER_STAGE = 50;
 // "Move to" menu for keyboard and screen-reader users.
 export default function Pipeline({ me }: { me: Me }) {
   const campaigns = useApi<Campaign[]>('/api/campaigns');
-  const team = useApi<TeamMember[]>('/api/team');
+  // Clients see the board only: no team list (owner filter) and no lead drawer.
+  const team = useApi<TeamMember[]>(me.role !== 'client' ? '/api/team' : null);
   const tags = useApi<Tag[]>('/api/tags');
   const [campaignId, setCampaignId] = useState('');
   const [ownerId, setOwnerId] = useState('');
@@ -86,16 +87,18 @@ export default function Pipeline({ me }: { me: Me }) {
               </option>
             ))}
           </select>
-          <select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} style={{ width: 150 }} aria-label="Owner">
-            <option value="">Any owner</option>
-            <option value="me">Mine</option>
-            <option value="none">No owner</option>
-            {team.data?.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-          </select>
+          {canWrite && (
+            <select value={ownerId} onChange={(e) => setOwnerId(e.target.value)} style={{ width: 150 }} aria-label="Owner">
+              <option value="">Any owner</option>
+              <option value="me">Mine</option>
+              <option value="none">No owner</option>
+              {team.data?.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+          )}
           <select value={tag} onChange={(e) => setTag(e.target.value)} style={{ width: 150 }} aria-label="Tag">
             <option value="">Any tag</option>
             {tags.data?.map((t) => (
@@ -113,7 +116,7 @@ export default function Pipeline({ me }: { me: Me }) {
       <ErrorNote error={board.error} />
       {board.data && !total && !filtered ? (
         <div className="card">
-          <Empty title="No leads yet" action={<Link className="btn btn-primary" to="/leads">Go to leads</Link>}>
+          <Empty title="No leads yet" action={canWrite && <Link className="btn btn-primary" to="/leads">Go to leads</Link>}>
             Import leads and add them to a campaign. They show up here and move through the stages as they are contacted and reply.
           </Empty>
         </div>
@@ -158,9 +161,13 @@ export default function Pipeline({ me }: { me: Me }) {
                       }}
                       aria-busy={busy === `move-${l.id}`}
                     >
-                      <button type="button" className="board-card-name" onClick={() => setOpenLead(l.id)}>
-                        {l.name}
-                      </button>
+                      {canWrite ? (
+                        <button type="button" className="board-card-name" onClick={() => setOpenLead(l.id)}>
+                          {l.name}
+                        </button>
+                      ) : (
+                        <div className="board-card-name">{l.name}</div>
+                      )}
                       {(l.title || l.company) && <div className="cell-sub">{[l.title, l.company].filter(Boolean).join(' · ')}</div>}
                       {!!l.tags.length && (
                         <div className="row tag-row">

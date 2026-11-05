@@ -6,6 +6,7 @@ import { buildContext } from './context.js';
 import { SimulatorDriver } from './drivers/simulator.js';
 import { defaultSequence } from './engine/sequence.js';
 import { hashPassword } from './services/crypto.js';
+import { addMembership } from './services/memberships.js';
 import { addLeadsToCampaign, importLeads, personToLead } from './services/leads.js';
 import { setCampaignAccounts } from './services/rotation.js';
 import { setCampaignMailboxes } from './mail/mailboxes.js';
@@ -23,7 +24,8 @@ if (db.get('SELECT 1 FROM users WHERE email = ?', [email])) {
 
 const now = Date.now();
 const ws = db.insert('workspaces', { name: 'Demo workspace', created_at: now });
-db.insert('users', { workspace_id: ws, email, name: 'Demo User', password_hash: hashPassword(password), role: 'owner', created_at: now });
+const userId = db.insert('users', { workspace_id: ws, email, name: 'Demo User', password_hash: hashPassword(password), role: 'owner', created_at: now });
+addMembership(ctx, userId, ws, 'owner');
 const seat = (name: string) =>
   db.insert('accounts', {
     workspace_id: ws,

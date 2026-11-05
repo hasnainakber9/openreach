@@ -148,7 +148,11 @@ export interface TeamMember {
   name: string;
   email: string;
   role: Role;
+  // An agency owner/admin who runs this client workspace through the agency (managed there).
+  inherited?: boolean;
 }
+// People who can own leads and take tasks: everyone but read-only clients.
+export const assignable = (team: TeamMember[] | null | undefined) => (team ?? []).filter((u) => u.role !== 'client');
 
 // Results of one A/B tested step (GET /api/campaigns/:id/variants).
 export interface VariantStat {
@@ -711,4 +715,77 @@ export interface Job {
   createdAt: number;
   finishedAt: number | null;
   result?: unknown;
+}
+
+// ---- Agency mode, workspaces, invites, white-label ----
+
+export type WorkspaceKind = 'standard' | 'agency' | 'client';
+
+// GET /api/workspaces items: direct memberships plus the clients of agencies the user runs.
+export interface WorkspaceItem {
+  id: number;
+  name: string;
+  kind: WorkspaceKind;
+  role: Role;
+  parentId: number | null;
+  parentName: string | null;
+  inherited: boolean;
+  active: boolean;
+}
+
+export interface Branding {
+  productName: string;
+  logoUrl: string | null;
+  primaryColor: string | null;
+  supportEmail: string | null;
+}
+
+// GET/PUT /api/agency/branding: the workspace's own values (null = inherited) and the agency's.
+export interface BrandingSettings {
+  productName: string | null;
+  logoUrl: string | null;
+  primaryColor: string | null;
+  supportEmail: string | null;
+  customDomain: string | null;
+  // Only the agency owner picks custom domains.
+  canEditDomain: boolean;
+  inherited: Omit<Branding, 'productName'> & { productName: string | null } | null;
+  effective: Branding;
+}
+
+export interface ClientOverview {
+  id: number;
+  name: string;
+  createdAt: number;
+  accounts: number;
+  accountsNeedingAttention: number;
+  mailboxesNeedingAttention: number;
+  activeCampaigns: number;
+  contacted: number;
+  replies: number;
+  meetings: number;
+  replyRate: number;
+  lastActivityAt: number | null;
+}
+
+export type InviteRole = 'admin' | 'member' | 'client';
+export interface Invite {
+  id: number;
+  email: string;
+  role: InviteRole;
+  invitedBy: string | null;
+  createdAt: number;
+  expiresAt: number;
+  expired: boolean;
+}
+
+// GET /api/public/invites/:token
+export interface InviteInfo {
+  workspaceName: string;
+  email: string;
+  role: InviteRole;
+  existingUser: boolean;
+  signedIn: boolean;
+  expiresAt: number;
+  branding: Branding;
 }

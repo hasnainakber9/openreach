@@ -254,6 +254,25 @@ export function ConfirmButton({
   );
 }
 
+// The product's logo and name: the white-label logo when one is set, else the built-in mark.
+export function BrandMark({ name, logoUrl }: { name: string; logoUrl?: string | null }) {
+  return (
+    <div className="brand">
+      {logoUrl ? (
+        <img className="brand-logo" src={logoUrl} alt="" referrerPolicy="no-referrer" />
+      ) : (
+        <span className="brand-mark" aria-hidden>
+          <svg width="16" height="16" viewBox="0 0 32 32">
+            <path d="M5 24c4-11 15-11 20-14" stroke="white" strokeWidth="4" fill="none" strokeLinecap="round" />
+            <circle cx="25" cy="10" r="4" fill="white" />
+          </svg>
+        </span>
+      )}
+      <span className="brand-name">{name}</span>
+    </div>
+  );
+}
+
 export function Empty({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="empty">

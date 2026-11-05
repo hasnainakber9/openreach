@@ -46,6 +46,7 @@ export function testConfig(): Config {
     aiWaitMaxMin: 30,
     replyHoldMin: 30,
     mailSyncIntervalMin: 5,
+    trustProxy: false,
   };
 }
 
@@ -265,7 +266,7 @@ export async function makeApi(w: World = makeWorld()) {
     return owner;
   };
   // Adds a user to the current user's workspace (the current user must be an admin).
-  const addUser = async (role: 'admin' | 'member') => {
+  const addUser = async (role: 'admin' | 'member' | 'client') => {
     const email = `${role}${++n}@example.com`;
     const r = await call('POST', '/api/team', { name: `${role} ${n}`, email, password: 'correct-horse', role });
     if (r.status !== 200) throw new Error(`addUser failed: ${JSON.stringify(r.body)}`);

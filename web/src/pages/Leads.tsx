@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, useApi, type Account, type Campaign, type EnrichmentRun, type EnrichmentSettings, type EnrichOptions, type ImportKind, type KindStatus, type Lead, type LeadImport, type LeadList, type ProviderKind, type Stage, type Tag, type TeamMember } from '../api';
+import { api, assignable, useApi, type Account, type Campaign, type EnrichmentRun, type EnrichmentSettings, type EnrichOptions, type ImportKind, type KindStatus, type Lead, type LeadImport, type LeadList, type ProviderKind, type Stage, type Tag, type TeamMember } from '../api';
 import LeadDrawer from '../components/LeadDrawer';
 import { Button, ColorTag, Empty, ErrorNote, Field, Modal, Pager, Pill, ProgressBar, Tabs, Toggle, useAction, useToast } from '../components/ui';
 import { EMAIL_STATUS_LABELS, emailSourceLabel, ENRICHMENT_STATUS_LABELS, fullName, IMPORT_KIND_LABELS, timeAgo } from '../format';
@@ -324,7 +324,7 @@ export default function Leads() {
           leadIds={[...selected]}
           stages={stages.data ?? []}
           tags={tags.data ?? []}
-          team={team.data ?? []}
+          team={assignable(team.data)}
           onClose={() => setBulk(false)}
           onDone={() => {
             setBulk(false);

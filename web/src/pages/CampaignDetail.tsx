@@ -6,6 +6,7 @@ import { AiVariablesEditor } from '../components/Ai';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
 import { Button, CheckList, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
 import { ACTION_LABELS, CATEGORY_LABELS, CONDITION_LABELS, fullName, pct, senderSummary, timeAgo } from '../format';
+import { canWrite, useMe } from '../session';
 
 type Tab = 'sequence' | 'leads' | 'results' | 'settings';
 
@@ -13,7 +14,9 @@ export default function CampaignDetail() {
   const { id } = useParams();
   const nav = useNavigate();
   const campaign = useApi<Campaign>(`/api/campaigns/${id}`, 15_000);
-  const [tab, setTab] = useState<Tab>('sequence');
+  // Clients get a read-only view: leads and results, no sequence editor or settings.
+  const writer = canWrite(useMe());
+  const [tab, setTab] = useState<Tab>(writer ? 'sequence' : 'results');
   const [draft, setDraft] = useState<Sequence | null>(null);
   const { busy, run } = useAction();
   const c = campaign.data;
@@ -82,30 +85,39 @@ export default function CampaignDetail() {
             {c.stats.total} leads
           </p>
         </div>
-        <div className="row">
-          {dirty && (
-            <Button busy={busy === 'save'} onClick={save}>
-              Save changes
+        {writer && (
+          <div className="row">
+            {dirty && (
+              <Button busy={busy === 'save'} onClick={save}>
+                Save changes
+              </Button>
+            )}
+            <Button variant={c.status === 'active' ? 'default' : 'primary'} busy={busy === 'toggle'} onClick={toggle}>
+              {c.status === 'active' ? 'Pause campaign' : c.status === 'draft' ? 'Launch campaign' : 'Resume campaign'}
             </Button>
-          )}
-          <Button variant={c.status === 'active' ? 'default' : 'primary'} busy={busy === 'toggle'} onClick={toggle}>
-            {c.status === 'active' ? 'Pause campaign' : c.status === 'draft' ? 'Launch campaign' : 'Resume campaign'}
-          </Button>
-        </div>
+          </div>
+        )}
       </div>
 
       <Tabs<Tab>
         value={tab}
         onChange={setTab}
-        tabs={[
-          { id: 'sequence', label: `Sequence${dirty ? ' •' : ''}` },
-          { id: 'leads', label: `Leads (${c.stats.total})` },
-          { id: 'results', label: 'Results' },
-          { id: 'settings', label: 'Settings' },
-        ]}
+        tabs={
+          writer
+            ? [
+                { id: 'sequence', label: `Sequence${dirty ? ' •' : ''}` },
+                { id: 'leads', label: `Leads (${c.stats.total})` },
+                { id: 'results', label: 'Results' },
+                { id: 'settings', label: 'Settings' },
+              ]
+            : [
+                { id: 'results', label: 'Results' },
+                { id: 'leads', label: `Leads (${c.stats.total})` },
+              ]
+        }
       />
 
-      {tab === 'sequence' && (
+      {writer && tab === 'sequence' && (
         <div className="stack">
           {!!c.problems?.length && !dirty && (
             <div className="note note-error">
@@ -126,7 +138,7 @@ export default function CampaignDetail() {
       )}
       {tab === 'leads' && <CampaignLeads campaign={c} onChange={campaign.reload} />}
       {tab === 'results' && <Results campaign={c} />}
-      {tab === 'settings' && <CampaignSettingsTab campaign={c} onSaved={campaign.reload} onDeleted={() => nav('/campaigns')} />}
+      {writer && tab === 'settings' && <CampaignSettingsTab campaign={c} onSaved={campaign.reload} onDeleted={() => nav('/campaigns')} />}
     </>
   );
 }
@@ -138,10 +150,11 @@ function stepLabel(seq: Sequence | undefined, nodeId: string | null) {
 }
 
 function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: () => void }) {
+  const writer = canWrite(useMe());
   const [state, setState] = useState('');
   const [page, setPage] = useState(1);
   const leads = useApi<{ total: number; items: CampaignLead[] }>(`/api/campaigns/${campaign.id}/leads?page=${page}&pageSize=50${state ? `&state=${state}` : ''}`, 15_000);
-  const lists = useApi<LeadList[]>('/api/lists');
+  const lists = useApi<LeadList[]>(writer ? '/api/lists' : null);
   const [listId, setListId] = useState<number | ''>('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const { busy, run } = useAction();
@@ -173,24 +186,26 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
     <div className="stack">
       <div className="card">
         <div className="spread" style={{ flexWrap: 'wrap' }}>
+          {writer && (
+            <div className="row">
+              <select value={listId} onChange={(e) => setListId(e.target.value ? Number(e.target.value) : '')} style={{ width: 260 }} aria-label="Lead list">
+                <option value="">Choose a lead list…</option>
+                {lists.data?.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name} ({l.leads})
+                  </option>
+                ))}
+              </select>
+              <Button variant="primary" disabled={!listId} busy={busy === 'add'} onClick={add}>
+                Add leads
+              </Button>
+              <Link to="/leads" className="muted">
+                Import leads
+              </Link>
+            </div>
+          )}
           <div className="row">
-            <select value={listId} onChange={(e) => setListId(e.target.value ? Number(e.target.value) : '')} style={{ width: 260 }} aria-label="Lead list">
-              <option value="">Choose a lead list…</option>
-              {lists.data?.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name} ({l.leads})
-                </option>
-              ))}
-            </select>
-            <Button variant="primary" disabled={!listId} busy={busy === 'add'} onClick={add}>
-              Add leads
-            </Button>
-            <Link to="/leads" className="muted">
-              Import leads
-            </Link>
-          </div>
-          <div className="row">
-            {!!selected.size && (
+            {writer && !!selected.size && (
               <Button variant="danger" busy={busy === 'remove'} onClick={remove}>
                 Remove {selected.size}
               </Button>
@@ -208,13 +223,13 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
       </div>
       <div className="card card-flush">
         {leads.data && !leads.data.total ? (
-          <Empty title="No leads in this campaign">Pick a lead list above to add people. Duplicates, blacklisted people and leads busy in other campaigns are skipped automatically.</Empty>
+          <Empty title="No leads in this campaign">{writer ? 'Pick a lead list above to add people. Duplicates, blacklisted people and leads busy in other campaigns are skipped automatically.' : 'Leads appear here once they are added to the campaign.'}</Empty>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: 32 }} />
+                  {writer && <th style={{ width: 32 }} />}
                   <th>Lead</th>
                   <th>State</th>
                   <th>Current step</th>
@@ -226,18 +241,20 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
               <tbody>
                 {leads.data?.items.map((r) => (
                   <tr key={r.lead.id}>
-                    <td>
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${fullName(r.lead)}`}
-                        checked={selected.has(r.lead.id)}
-                        onChange={(e) => {
-                          const s = new Set(selected);
-                          e.target.checked ? s.add(r.lead.id) : s.delete(r.lead.id);
-                          setSelected(s);
-                        }}
-                      />
-                    </td>
+                    {writer && (
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${fullName(r.lead)}`}
+                          checked={selected.has(r.lead.id)}
+                          onChange={(e) => {
+                            const s = new Set(selected);
+                            e.target.checked ? s.add(r.lead.id) : s.delete(r.lead.id);
+                            setSelected(s);
+                          }}
+                        />
+                      </td>
+                    )}
                     <td>
                       <a href={r.lead.profileUrl} target="_blank" rel="noreferrer" className="cell-title">
                         {fullName(r.lead)}
@@ -438,6 +455,7 @@ function variantText(node: SeqNode | undefined, id: VariantId): string {
 // gap is statistically clear), and buttons to choose a variant by hand.
 function AbTests({ campaign }: { campaign: Campaign }) {
   const report = useApi<{ nodes: AbTestReport[] }>(`/api/campaigns/${campaign.id}/variants`, 20_000);
+  const writer = canWrite(useMe());
   const { busy, run } = useAction();
   if (!report.data?.nodes.length) return null;
 
@@ -474,7 +492,7 @@ function AbTests({ campaign }: { campaign: Campaign }) {
                   {!t.winner && !called && sent > 0 && ' Not enough data to call a winner yet: each variant needs 20 sends and a clear gap.'}
                 </p>
               </div>
-              {t.winner && (
+              {writer && t.winner && (
                 <Button size="sm" busy={busy === `${t.nodeId}:null`} onClick={() => choose(t, null)}>
                   Split leads again
                 </Button>
@@ -512,7 +530,7 @@ function AbTests({ campaign }: { campaign: Campaign }) {
                         {!t.winner && v.leader && !v.significant && <div className="cell-sub">ahead so far</div>}
                       </td>
                       <td className="num">
-                        {t.winner !== v.id && (
+                        {writer && t.winner !== v.id && (
                           <Button size="sm" variant="ghost" busy={busy === `${t.nodeId}:${v.id}`} onClick={() => choose(t, v.id)}>
                             Use this variant
                           </Button>

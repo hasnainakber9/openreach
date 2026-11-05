@@ -14,6 +14,8 @@ export interface JobPayloads {
   'ai.classify': { messageId: number };
   'email.sync': { mailboxId: number };
   'enrich.lead': EnrichJobPayload;
+  // tokenEnc: the invite token sealed with APP_SECRET (only its hash is in the invites table).
+  'invite.email': { inviteId: number; tokenEnc: string };
 }
 
 export type JobType = keyof JobPayloads & string;

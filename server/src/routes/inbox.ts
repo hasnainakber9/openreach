@@ -108,7 +108,8 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
 
   app.get('/api/inbox/:id', async (req) => {
     const c = load(req);
-    ctx.db.run('UPDATE conversations SET unread = 0 WHERE id = ?', [c.id]);
+    // A client looking at the thread doesn't mean the agency's team has read it.
+    if (user(req).role !== 'client') ctx.db.run('UPDATE conversations SET unread = 0 WHERE id = ?', [c.id]);
     return detail(c);
   });
 

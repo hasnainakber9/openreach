@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, CALL_OUTCOMES, serverNow, useApi, type Campaign, type CallOutcome, type Lead, type Task, type TaskCounts, type TaskKind, type TeamMember } from '../api';
+import { api, assignable, CALL_OUTCOMES, serverNow, useApi, type Campaign, type CallOutcome, type Lead, type Task, type TaskCounts, type TaskKind, type TeamMember } from '../api';
 import { Icon } from '../components/Icon';
 import { Button, Empty, Field, Modal, Pager, Pill, Stat, useAction } from '../components/ui';
 import { dateTime, OUTCOME_LABELS, TASK_KIND_LABELS, timeAgo } from '../format';
@@ -120,7 +120,7 @@ export default function Tasks({ me }: { me: Me }) {
       </div>
 
       {closing && <CloseTaskModal task={closing.task} action={closing.action} onClose={() => setClosing(null)} onDone={reload} />}
-      {creating && <NewTaskModal team={team.data ?? []} onClose={() => setCreating(false)} onDone={reload} />}
+      {creating && <NewTaskModal team={assignable(team.data)} onClose={() => setCreating(false)} onDone={reload} />}
     </>
   );
 }

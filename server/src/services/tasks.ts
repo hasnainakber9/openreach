@@ -5,6 +5,7 @@ import type { SeqNode } from '../engine/sequence.js';
 import { leadVars, render } from '../engine/template.js';
 import type { CampaignLeadRow, CampaignRow, LeadRow, TaskRow } from '../types.js';
 import { logActivity } from './activity.js';
+import { roleIn } from './memberships.js';
 import { publicLead } from './leads.js';
 import { autoAdvance } from './pipeline.js';
 
@@ -20,8 +21,22 @@ type TaskNode = Extract<SeqNode, { type: 'task' }>;
 // Without auto-skip the hold is only a fallback wake-up; completing the task wakes the lead right away.
 const NO_DEADLINE = 365 * DAY;
 
+// Who can own leads and be assigned tasks: anyone who works in the workspace, including agency admins
+// who reach a client through the agency. Clients (read-only portal users) can't.
 export function isWorkspaceMember(ctx: Ctx, workspaceId: number, userId: number): boolean {
-  return !!ctx.db.get('SELECT 1 FROM users WHERE id = ? AND workspace_id = ?', [userId, workspaceId]);
+  const role = roleIn(ctx, userId, workspaceId);
+  return !!role && role !== 'client';
+}
+
+// After someone loses access (removed, demoted, or no longer an agency admin), leads and tasks of the
+// workspace, and of its clients when it is an agency, no longer point at them.
+export function releaseAssignments(ctx: Ctx, userId: number, workspaceId: number) {
+  const clients = ctx.db.all<{ id: number }>("SELECT id FROM workspaces WHERE parent_id = ? AND kind = 'client'", [workspaceId]).map((c) => c.id);
+  for (const ws of [workspaceId, ...clients]) {
+    if (isWorkspaceMember(ctx, ws, userId)) continue;
+    ctx.db.run('UPDATE leads SET owner_id = NULL WHERE workspace_id = ? AND owner_id = ?', [ws, userId]);
+    ctx.db.run('UPDATE tasks SET assignee_id = NULL WHERE workspace_id = ? AND assignee_id = ?', [ws, userId]);
+  }
 }
 
 export function serializeTask(ctx: Ctx, t: TaskRow) {

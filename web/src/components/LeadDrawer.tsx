@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, useApi, type EnrichOptions, type Lead, type Note, type Stage, type Tag, type TeamMember, type TimelineItem } from '../api';
+import { api, assignable, useApi, type EnrichOptions, type Lead, type Note, type Stage, type Tag, type TeamMember, type TimelineItem } from '../api';
 import { ACTION_LABELS, CATEGORY_LABELS, CHANNEL_LABELS, dateTime, EMAIL_STATUS_LABELS, emailSourceLabel, ENRICHMENT_STATUS_LABELS, fullName, OUTCOME_LABELS, TASK_KIND_LABELS, timeAgo } from '../format';
 import { Button, ColorTag, Field, Modal, Pill, useAction } from './ui';
 
@@ -105,7 +105,7 @@ export default function LeadDrawer({ id, onClose, onChanged }: { id: number; onC
         <Field label="Owner">
           <select value={l.ownerId ?? ''} onChange={(e) => setOwner(e.target.value ? Number(e.target.value) : null)} disabled={busy === 'owner'}>
             <option value="">Nobody</option>
-            {team.data?.map((u) => (
+            {assignable(team.data).map((u) => (
               <option key={u.id} value={u.id}>
                 {u.name}
               </option>

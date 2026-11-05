@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { api, REPLY_CATEGORIES, useApi, type AbMetric, type AiDraft, type AiVariable, type ConditionKind, type InMailVia, type ReplyCategory, type SeqNode, type Sequence, type TaskKind, type TeamMember, type VariantId, type VariantNode } from '../api';
+import { api, assignable, REPLY_CATEGORIES, useApi, type AbMetric, type AiDraft, type AiVariable, type ConditionKind, type InMailVia, type ReplyCategory, type SeqNode, type Sequence, type TaskKind, type TeamMember, type VariantId, type VariantNode } from '../api';
 import { ACTION_LABELS, CATEGORY_LABELS, CONDITION_LABELS, TASK_KIND_LABELS } from '../format';
 import { AiLeadPreview, AiWriterModal, type AiStepPreview } from './Ai';
 import { Icon } from './Icon';
@@ -656,7 +656,7 @@ function TaskEditor({ node, onChange }: { node: Extract<SeqNode, { type: 'task' 
         <Field label="Assign to">
           <select value={node.assigneeId ?? ''} onChange={(e) => onChange({ ...node, assigneeId: e.target.value ? Number(e.target.value) : null })}>
             <option value="">Nobody (anyone can pick it up)</option>
-            {team.data?.map((u) => (
+            {assignable(team.data).map((u) => (
               <option key={u.id} value={u.id}>
                 {u.name}
               </option>

@@ -154,7 +154,7 @@ export function pipelineRoutes(app: FastifyInstance, ctx: Ctx) {
     if (q.stageId && !stages.some((s) => s.id === q.stageId)) notFound('Stage');
     const f = filterSql(q, me);
     const base = ['l.workspace_id = ?', ...f.where];
-    const owners = new Map(ctx.db.all<{ id: number; name: string }>('SELECT id, name FROM users WHERE workspace_id = ?', [me.workspace_id]).map((u) => [u.id, u.name]));
+    const owners = new Map(ctx.db.all<{ id: number; name: string }>('SELECT u.id, u.name FROM users u JOIN memberships m ON m.user_id = u.id WHERE m.workspace_id = ?', [me.workspace_id]).map((u) => [u.id, u.name]));
     const columns = stages
       .filter((s) => !q.stageId || s.id === q.stageId)
       .map((s) => {

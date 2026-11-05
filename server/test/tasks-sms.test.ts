@@ -427,10 +427,10 @@ describe('tasks API', () => {
     expect((await api.call('POST', `/api/tasks/${created.body.id}/skip`, {})).status).toBe(409);
     expect((await api.call('POST', `/api/tasks/${created.body.id}/complete`, { outcome: 'great' })).status).toBe(400);
 
-    // A read-only role can look but not act.
-    ctx.db.run("UPDATE users SET role = 'client' WHERE id = ?", [member.id]);
-    expect((await api.call('GET', '/api/tasks')).status).toBe(200);
+    // A read-only role can't act (since g5-agency, roles live in memberships and clients don't see tasks at all).
     const open = (await api.call('GET', '/api/tasks')).body.items[0];
+    ctx.db.run("UPDATE memberships SET role = 'client' WHERE user_id = ?", [member.id]);
+    expect((await api.call('GET', '/api/tasks')).status).toBe(403);
     expect((await api.call('POST', `/api/tasks/${open.id}/skip`, {})).status).toBe(403);
     expect((await api.call('PATCH', `/api/tasks/${open.id}`, { title: 'x' })).status).toBe(403);
   });

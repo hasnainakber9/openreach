@@ -3,8 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { api, useApi, type Account, type Campaign } from '../api';
 import { Button, CheckList, Empty, Field, Modal, Pill, useAction } from '../components/ui';
 import { pct, senderSummary } from '../format';
+import { canWrite, type Me } from '../session';
 
-export default function Campaigns() {
+export default function Campaigns({ me }: { me: Me }) {
+  const writer = canWrite(me);
   const campaigns = useApi<Campaign[]>('/api/campaigns', 15_000);
   const [creating, setCreating] = useState(false);
   const nav = useNavigate();
@@ -23,14 +25,16 @@ export default function Campaigns() {
           <h1>Campaigns</h1>
           <p>Each campaign runs one sequence from one or more LinkedIn accounts.</p>
         </div>
-        <Button variant="primary" onClick={() => setCreating(true)}>
-          New campaign
-        </Button>
+        {writer && (
+          <Button variant="primary" onClick={() => setCreating(true)}>
+            New campaign
+          </Button>
+        )}
       </div>
 
       <div className="card card-flush">
         {campaigns.data && !campaigns.data.length ? (
-          <Empty title="No campaigns yet" action={<Button variant="primary" onClick={() => setCreating(true)}>Create your first campaign</Button>}>
+          <Empty title="No campaigns yet" action={writer && <Button variant="primary" onClick={() => setCreating(true)}>Create your first campaign</Button>}>
             A campaign walks each lead through a sequence of steps, like viewing their profile, inviting them, and following up once they accept.
           </Empty>
         ) : (
@@ -78,9 +82,11 @@ export default function Campaigns() {
                         {s.funnel.replied} <span className="muted">({pct(s.replyRate)})</span>
                       </td>
                       <td className="num" onClick={(e) => e.stopPropagation()}>
-                        <Button size="sm" busy={busy === `t${c.id}`} onClick={() => toggle(c)}>
-                          {c.status === 'active' ? 'Pause' : 'Start'}
-                        </Button>
+                        {writer && (
+                          <Button size="sm" busy={busy === `t${c.id}`} onClick={() => toggle(c)}>
+                            {c.status === 'active' ? 'Pause' : 'Start'}
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   );

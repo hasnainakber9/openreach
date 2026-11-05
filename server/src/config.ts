@@ -23,7 +23,15 @@ export interface Config {
   aiWaitMaxMin: number;
   replyHoldMin: number;
   mailSyncIntervalMin: number;
+  smtpUrl?: string;
+  mailFrom?: string;
+  trustProxy: TrustProxy;
+  customDomains?: string[];
 }
+
+// false: ignore X-Forwarded-*. A number: trust that many proxy hops in front of the app. A list: trust
+// proxies at these addresses or CIDR ranges (or proxy-addr names such as 'loopback').
+export type TrustProxy = false | number | string[];
 
 export function loadConfig(env = process.env): Config {
   const dataDir = resolve(env.DATA_DIR ?? './data');
@@ -54,7 +62,25 @@ export function loadConfig(env = process.env): Config {
     replyHoldMin: Math.max(1, Number(env.REPLY_HOLD_MIN ?? 30) || 30),
     // Minutes between IMAP checks for replies and bounces, per mailbox.
     mailSyncIntervalMin: Math.max(1, Number(env.MAIL_SYNC_INTERVAL_MIN ?? 5) || 5),
+    // The installation's own mail (invites), separate from users' mailboxes: smtp(s)://user:pass@host:port.
+    smtpUrl: env.SMTP_URL?.trim() || undefined,
+    mailFrom: env.MAIL_FROM?.trim() || undefined,
+    // Behind a reverse proxy: take the client IP and Host (custom-domain branding) from X-Forwarded-*.
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    // Hostnames (or *.suffix patterns) workspaces may claim as custom domains. Unset: any, unless signup
+    // is open, where strangers could squat domains; then none.
+    customDomains: env.CUSTOM_DOMAINS?.split(',').map((d) => d.trim().toLowerCase().replace(/\.$/, '')).filter(Boolean),
   };
+}
+
+// 'true' means the one proxy in front of us. Trusting every hop would let a client pick its own IP (the
+// left-most X-Forwarded-For entry is whatever it sent), and with it a fresh sign-in throttle each time.
+export function parseTrustProxy(v: string | undefined): TrustProxy {
+  const t = v?.trim().toLowerCase();
+  if (!t || t === 'false' || t === '0') return false;
+  if (t === 'true') return 1;
+  if (/^\d+$/.test(t)) return Number(t);
+  return t.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
 // Without APP_SECRET, generate one on first boot and keep it next to the database,

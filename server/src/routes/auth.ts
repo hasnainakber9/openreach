@@ -1,44 +1,70 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { timingSafeEqual } from 'node:crypto';
 import { hashPassword, token, verifyPassword } from '../services/crypto.js';
+import { addMembership, agencyOf, directRole, ensureLegacyMembership, ownerCount, resolveSession, ROLES, workspaceRow } from '../services/memberships.js';
 import { ensureStages } from '../services/pipeline.js';
-import { HttpError, idParam, parse, requireAdmin, user, type SessionUser } from '../http.js';
+import { releaseAssignments } from '../services/tasks.js';
+import { HttpError, idParam, parse, requireAdmin, user, type Role, type SessionUser } from '../http.js';
 
 export const SESSION_COOKIE = 'or_session';
 const SESSION_DAYS = 30;
 
-// Simple in-memory brake on password guessing: 10 failures per email+IP per 15 minutes.
+// Simple in-memory brake on password guessing: 10 failures per email+IP per 15 minutes. Shared by
+// sign-in and invite acceptance (an existing user accepting with their password).
 const failures = new Map<string, { n: number; until: number }>();
 const FAIL_WINDOW = 15 * 60_000;
+export const throttleKey = (email: string, ip: string) => `${email.toLowerCase()}|${ip}`;
+export function checkThrottle(key: string) {
+  const f = failures.get(key);
+  if (f && f.n >= 10 && f.until > Date.now()) throw new HttpError(429, 'Too many failed attempts. Try again in 15 minutes.');
+}
+export function recordFailure(key: string) {
+  const f = failures.get(key);
+  failures.set(key, { n: (f && f.until > Date.now() ? f.n : 0) + 1, until: Date.now() + FAIL_WINDOW });
+}
+export const clearFailures = (key: string) => void failures.delete(key);
 
 const credentials = z.object({ email: z.string().email(), password: z.string().min(8, 'Password must be at least 8 characters') });
 
-export function sessionUser(ctx: Ctx, tokenValue: string | undefined): SessionUser | null {
-  if (!tokenValue) return null;
-  return (
-    ctx.db.get<SessionUser>(
-      'SELECT u.id, u.workspace_id, u.role, u.name, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?',
-      [tokenValue, Date.now()],
-    ) ?? null
-  );
+export const sessionUser = (ctx: Ctx, tokenValue: string | undefined): SessionUser | null => resolveSession(ctx, tokenValue);
+
+// Signs the user in (optionally straight into a workspace) and returns the session's user.
+export function startSession(ctx: Ctx, reply: FastifyReply, userId: number, workspaceId: number | null = null): SessionUser | null {
+  const t = token();
+  ctx.db.insert('sessions', { token: t, user_id: userId, workspace_id: workspaceId, expires_at: Date.now() + SESSION_DAYS * DAY });
+  reply.setCookie(SESSION_COOKIE, t, { path: '/', httpOnly: true, sameSite: 'lax', secure: 'auto', maxAge: SESSION_DAYS * 86400 });
+  return resolveSession(ctx, t);
+}
+
+// The signed-in user in their active workspace, as the web app keeps it.
+export function meOf(ctx: Ctx, u: SessionUser) {
+  const w = workspaceRow(ctx, u.workspace_id)!;
+  const parent = w.parent_id ? workspaceRow(ctx, w.parent_id) : undefined;
+  const agency = agencyOf(ctx, u);
+  // Feature flags for optional areas of the UI (billing, agency); absent = off.
+  const features: Record<string, boolean> = {};
+  if (agency) features.agency = true;
+  return {
+    user: {
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      workspace_id: w.id,
+      workspace_name: w.name,
+      workspace_kind: w.kind,
+      parent_name: parent?.name ?? null,
+      // The agency this user runs from here (the workspace itself or a client's parent).
+      agency: agency ? { id: agency.id, name: agency.name } : null,
+      features,
+    },
+  };
 }
 
 export function authRoutes(app: FastifyInstance, ctx: Ctx) {
-  const startSession = (userId: number, reply: any) => {
-    const t = token();
-    ctx.db.insert('sessions', { token: t, user_id: userId, expires_at: Date.now() + SESSION_DAYS * DAY });
-    reply.setCookie(SESSION_COOKIE, t, { path: '/', httpOnly: true, sameSite: 'lax', secure: 'auto', maxAge: SESSION_DAYS * 86400 });
-  };
-  const me = (id: number) => {
-    const u = ctx.db.get('SELECT u.id, u.name, u.email, u.role, w.id AS workspace_id, w.name AS workspace_name FROM users u JOIN workspaces w ON w.id = u.workspace_id WHERE u.id = ?', [id]);
-    // Feature flags for optional areas of the UI (billing, agency) that later steps switch on.
-    const features: Record<string, boolean> = {};
-    return { user: u ? { ...u, features } : u };
-  };
-
   app.get('/api/auth/status', async () => {
     const users = ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM users')!.n;
     return { needsSetup: users === 0, allowSignup: users === 0 || ctx.config.allowSignup, setupTokenRequired: users === 0 && !!ctx.config.setupToken };
@@ -57,25 +83,30 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
     const id = ctx.db.tx(() => {
       const ws = ctx.db.insert('workspaces', { name: body.workspace, created_at: Date.now() });
       ensureStages(ctx, ws);
-      return ctx.db.insert('users', { workspace_id: ws, email: body.email, name: body.name, password_hash: hashPassword(body.password), role: 'owner', created_at: Date.now() });
+      const id = ctx.db.insert('users', { workspace_id: ws, email: body.email, name: body.name, password_hash: hashPassword(body.password), role: 'owner', created_at: Date.now() });
+      addMembership(ctx, id, ws, 'owner');
+      return id;
     });
-    startSession(id, reply);
-    return me(id);
+    return meOf(ctx, startSession(ctx, reply, id)!);
   });
 
   app.post('/api/auth/login', async (req, reply) => {
     const body = parse(z.object({ email: z.string(), password: z.string() }), req.body);
-    const key = `${body.email.toLowerCase()}|${req.ip}`;
-    const f = failures.get(key);
-    if (f && f.n >= 10 && f.until > Date.now()) throw new HttpError(429, 'Too many failed attempts. Try again in 15 minutes.');
+    const key = throttleKey(body.email, req.ip);
+    checkThrottle(key);
     const u = ctx.db.get<{ id: number; password_hash: string }>('SELECT id, password_hash FROM users WHERE email = ?', [body.email]);
     if (!u || !verifyPassword(body.password, u.password_hash)) {
-      failures.set(key, { n: (f && f.until > Date.now() ? f.n : 0) + 1, until: Date.now() + FAIL_WINDOW });
+      recordFailure(key);
       throw new HttpError(401, 'Wrong email or password');
     }
-    failures.delete(key);
-    startSession(u.id, reply);
-    return me(u.id);
+    clearFailures(key);
+    ensureLegacyMembership(ctx, u.id);
+    const me = startSession(ctx, reply, u.id);
+    if (!me) {
+      reply.clearCookie(SESSION_COOKIE, { path: '/' });
+      throw new HttpError(403, "You aren't a member of any workspace any more. Ask an admin to invite you.");
+    }
+    return meOf(ctx, me);
   });
 
   app.post('/api/auth/logout', async (req, reply) => {
@@ -85,28 +116,73 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
     return { ok: true };
   });
 
-  app.get('/api/auth/me', async (req) => me(user(req).id));
+  app.get('/api/auth/me', async (req) => meOf(ctx, user(req)));
+
+  // ---- Team: the active workspace's direct members, plus the agency admins who run a client ----
 
   app.get('/api/team', async (req) => {
-    return ctx.db.all('SELECT id, name, email, role, created_at FROM users WHERE workspace_id = ? ORDER BY id', [user(req).workspace_id]);
+    const ws = user(req).workspace_id;
+    const direct = ctx.db.all<{ id: number; name: string; email: string; role: Role; created_at: number }>(
+      'SELECT u.id, u.name, u.email, m.role, m.created_at FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = ? ORDER BY u.id',
+      [ws],
+    );
+    const w = workspaceRow(ctx, ws);
+    // Listed so they can own leads and take tasks; managed in the agency, so read-only here.
+    const inherited =
+      w?.kind === 'client' && w.parent_id && workspaceRow(ctx, w.parent_id)?.kind === 'agency'
+        ? ctx.db.all<{ id: number; name: string; email: string; role: Role; created_at: number }>(
+            "SELECT u.id, u.name, u.email, m.role, m.created_at FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = ? AND m.role IN ('owner', 'admin') ORDER BY u.id",
+            [w.parent_id],
+          )
+        : [];
+    const ids = new Set(direct.map((d) => d.id));
+    return [...direct.map((d) => ({ ...d, inherited: false })), ...inherited.filter((i) => !ids.has(i.id)).map((i) => ({ ...i, inherited: true }))].sort((a, b) => a.id - b.id);
   });
 
+  // Creates a user with a password the admin passes on. Invites (/api/invites) are the other way in.
   app.post('/api/team', async (req) => {
     const admin = requireAdmin(req);
-    const body = parse(credentials.extend({ name: z.string().min(1).max(100), role: z.enum(['admin', 'member']).default('member') }), req.body);
-    if (ctx.db.get('SELECT 1 FROM users WHERE email = ?', [body.email])) throw new HttpError(409, 'That email is already registered');
-    const id = ctx.db.insert('users', { workspace_id: admin.workspace_id, email: body.email, name: body.name, password_hash: hashPassword(body.password), role: body.role, created_at: Date.now() });
+    const body = parse(credentials.extend({ name: z.string().min(1).max(100), role: z.enum(['admin', 'member', 'client']).default('member') }), req.body);
+    if (ctx.db.get('SELECT 1 FROM users WHERE email = ?', [body.email])) throw new HttpError(409, 'That email is already registered. Invite them instead.');
+    const id = ctx.db.tx(() => {
+      const id = ctx.db.insert('users', { workspace_id: admin.workspace_id, email: body.email, name: body.name, password_hash: hashPassword(body.password), role: body.role, created_at: Date.now() });
+      addMembership(ctx, id, admin.workspace_id, body.role);
+      return id;
+    });
     return { id };
   });
 
+  app.patch('/api/team/:id', async (req) => {
+    const admin = requireAdmin(req);
+    const { id } = parse(idParam, req.params);
+    const { role } = parse(z.object({ role: z.enum(ROLES) }), req.body);
+    const current = directRole(ctx, id, admin.workspace_id) ?? notFoundUser();
+    if ((current === 'owner' || role === 'owner') && admin.role !== 'owner') throw new HttpError(403, 'Only owners can make or change owners');
+    if (current === 'owner' && role !== 'owner' && ownerCount(ctx, admin.workspace_id) <= 1) throw new HttpError(409, 'A workspace needs at least one owner. Make someone else an owner first.');
+    ctx.db.tx(() => {
+      ctx.db.run('UPDATE memberships SET role = ? WHERE user_id = ? AND workspace_id = ?', [role, id, admin.workspace_id]);
+      // Made a client here, or no longer an agency admin: their leads and tasks are let go.
+      releaseAssignments(ctx, id, admin.workspace_id);
+    });
+    return { ok: true };
+  });
+
+  // Removes the membership. The person keeps their other workspaces; with none left the user is deleted.
   app.delete('/api/team/:id', async (req) => {
     const admin = requireAdmin(req);
     const { id } = parse(idParam, req.params);
     if (id === admin.id) throw new HttpError(400, "You can't remove yourself");
-    const target = ctx.db.get<{ role: string }>('SELECT role FROM users WHERE id = ? AND workspace_id = ?', [id, admin.workspace_id]);
-    if (!target) throw new HttpError(404, 'User not found');
-    if (target.role === 'owner') throw new HttpError(403, 'The workspace owner cannot be removed');
-    ctx.db.run('DELETE FROM users WHERE id = ?', [id]);
+    const role = directRole(ctx, id, admin.workspace_id) ?? notFoundUser();
+    if (role === 'owner' && (admin.role !== 'owner' || ownerCount(ctx, admin.workspace_id) <= 1)) throw new HttpError(403, 'The workspace owner cannot be removed');
+    const ws = admin.workspace_id;
+    ctx.db.tx(() => {
+      ctx.db.run('DELETE FROM memberships WHERE user_id = ? AND workspace_id = ?', [id, ws]);
+      // Leads and tasks of this workspace (and of its clients, for an agency) no longer point at someone outside it.
+      releaseAssignments(ctx, id, ws);
+      const other = ctx.db.get<{ workspace_id: number }>('SELECT workspace_id FROM memberships WHERE user_id = ? ORDER BY workspace_id LIMIT 1', [id]);
+      if (!other) ctx.db.run('DELETE FROM users WHERE id = ?', [id]);
+      else ctx.db.run('UPDATE users SET workspace_id = ? WHERE id = ? AND workspace_id = ?', [other.workspace_id, id, ws]);
+    });
     return { ok: true };
   });
 
@@ -118,4 +194,8 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
     ctx.db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hashPassword(body.next), u.id]);
     return { ok: true };
   });
+}
+
+function notFoundUser(): never {
+  throw new HttpError(404, 'User not found');
 }

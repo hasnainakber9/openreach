@@ -695,4 +695,53 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX lead_notes_lead ON lead_notes(lead_id, created_at);
   `,
+  // [M11] g5-agency: memberships (a user in several workspaces), active workspace per session, agency and
+  // client workspaces, email invites, white-label branding. users.workspace_id stays as the "home" workspace.
+  `
+  CREATE TABLE memberships (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    -- owner | admin | member | client
+    role TEXT NOT NULL DEFAULT 'member',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, workspace_id)
+  );
+  CREATE INDEX memberships_workspace ON memberships(workspace_id);
+  INSERT INTO memberships (user_id, workspace_id, role, created_at) SELECT id, workspace_id, role, created_at FROM users WHERE workspace_id IN (SELECT id FROM workspaces);
+  -- The session's active workspace; NULL = the user's home workspace.
+  ALTER TABLE sessions ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE CASCADE;
+  -- standard | agency | client
+  ALTER TABLE workspaces ADD COLUMN kind TEXT NOT NULL DEFAULT 'standard';
+  ALTER TABLE workspaces ADD COLUMN parent_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL;
+  CREATE INDEX workspaces_parent ON workspaces(parent_id);
+
+  CREATE TABLE invites (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    -- lower-cased
+    email TEXT NOT NULL,
+    role TEXT NOT NULL,
+    -- sha256 of the token; the token itself is never stored
+    token_hash TEXT NOT NULL UNIQUE,
+    invited_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    expires_at INTEGER NOT NULL,
+    accepted_at INTEGER,
+    accepted_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX invites_workspace ON invites(workspace_id, email);
+
+  -- White-label settings of an agency (clients inherit them field by field and may override).
+  CREATE TABLE branding (
+    workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    product_name TEXT,
+    logo_url TEXT,
+    primary_color TEXT,
+    support_email TEXT,
+    -- lower-cased hostname, matched against the request's Host header
+    custom_domain TEXT,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX branding_domain ON branding(custom_domain) WHERE custom_domain IS NOT NULL;
+  `,
 ];

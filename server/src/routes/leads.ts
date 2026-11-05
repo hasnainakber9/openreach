@@ -228,7 +228,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
       [id],
     );
     const activity = ctx.db.all('SELECT id, type, status, detail, variant, created_at AS createdAt, campaign_id AS campaignId FROM activity WHERE lead_id = ? ORDER BY id DESC LIMIT 200', [id]);
-    const owner = l.owner_id ? ctx.db.get<{ id: number; name: string }>('SELECT id, name FROM users WHERE id = ? AND workspace_id = ?', [l.owner_id, l.workspace_id]) : undefined;
+    const owner = l.owner_id ? ctx.db.get<{ id: number; name: string }>('SELECT u.id, u.name FROM users u JOIN memberships m ON m.user_id = u.id AND m.workspace_id = ? WHERE u.id = ?', [l.workspace_id, l.owner_id]) : undefined;
     return { ...serializeLead(l, listStages(ctx, l.workspace_id)), owner: owner ?? null, campaigns, activity };
   });
 

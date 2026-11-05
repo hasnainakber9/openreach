@@ -20,7 +20,9 @@ export interface SmtpTransport {
 }
 
 export interface OutgoingEmail {
-  from: string; // "Name <address>" or a bare address
+  // "Name <address>", a bare address, or a display name kept apart from the address (nodemailer then
+  // quotes the name, so text chosen by a tenant can't become a second sender).
+  from: string | { name: string; address: string };
   to: string;
   replyTo?: string;
   subject: string;
@@ -104,3 +106,23 @@ export const smtpMailer: Mailer = {
     }
   },
 };
+
+// The installation's own SMTP server (SMTP_URL), for system mail such as invites. Users' campaign mail
+// goes through their mailboxes instead. smtps:// = TLS from the start (465); smtp:// upgrades with STARTTLS.
+export function systemTransport(smtpUrl: string | undefined): SmtpTransport | null {
+  if (!smtpUrl) return null;
+  try {
+    const u = new URL(smtpUrl);
+    if (u.protocol !== 'smtp:' && u.protocol !== 'smtps:') return null;
+    const secure = u.protocol === 'smtps:';
+    return {
+      host: u.hostname,
+      port: Number(u.port) || (secure ? 465 : 587),
+      secure,
+      user: decodeURIComponent(u.username),
+      pass: decodeURIComponent(u.password),
+    };
+  } catch {
+    return null;
+  }
+}

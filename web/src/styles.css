@@ -71,6 +71,14 @@
   }
 }
 
+/* White-label: an agency's primary color (--brand, set on <html> with data-brand) replaces the accent.
+   Placed after the dark block so it wins in both themes; the shades mix with the theme's own colors. */
+:root[data-brand] {
+  --accent: var(--brand);
+  --accent-soft: color-mix(in srgb, var(--brand) 14%, var(--surface));
+  --accent-text: color-mix(in srgb, var(--brand) 75%, var(--ink));
+}
+
 * {
   box-sizing: border-box;
 }
@@ -149,6 +157,23 @@ code {
   background: var(--accent);
   display: grid;
   place-items: center;
+}
+.brand-logo {
+  height: 28px;
+  max-width: 120px;
+  object-fit: contain;
+}
+.brand-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-switch {
+  margin: 0 0 8px;
+}
+.workspace-switch select {
+  width: 100%;
 }
 .nav a {
   display: flex;
@@ -1618,4 +1643,19 @@ th.num {
 }
 .feed-dot.kind-stage {
   background: var(--good);
+}
+
+/* ---------- Agency ---------- */
+.brand-preview {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.brand-preview .brand {
+  padding: 0 4px 8px;
 }

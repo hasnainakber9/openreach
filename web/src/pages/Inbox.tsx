@@ -3,10 +3,13 @@ import { api, REPLY_CATEGORIES, useApi, type Account, type Conversation, type Ma
 import { Icon } from '../components/Icon';
 import { Button, Empty, Pill, ProviderBadge, useAction } from '../components/ui';
 import { CATEGORY_LABELS, CHANNEL_LABELS, dateTime, timeAgo } from '../format';
+import { canWrite, type Me } from '../session';
 
-export default function Inbox() {
-  const accounts = useApi<Account[]>('/api/accounts');
-  const mailboxes = useApi<Mailbox[]>('/api/mailboxes');
+export default function Inbox({ me }: { me: Me }) {
+  // Clients read conversations only: no replies, categories, stage moves or syncing.
+  const writer = canWrite(me);
+  const accounts = useApi<Account[]>(writer ? '/api/accounts' : null);
+  const mailboxes = useApi<Mailbox[]>(writer ? '/api/mailboxes' : null);
   // "a12" = LinkedIn account 12, "m3" = mailbox 3, "c:sms" = every SMS (or WhatsApp) thread.
   const [source, setSource] = useState('');
   const [category, setCategory] = useState('');
@@ -42,9 +45,11 @@ export default function Inbox() {
           <h1>Inbox</h1>
           <p>Conversations from every LinkedIn account and mailbox in one place. Replies are sorted by what they mean.</p>
         </div>
-        <Button busy={busy === 'sync'} onClick={syncAll}>
-          Sync now
-        </Button>
+        {writer && (
+          <Button busy={busy === 'sync'} onClick={syncAll}>
+            Sync now
+          </Button>
+        )}
       </div>
       <div className="card card-flush">
         <div className="inbox">
@@ -115,7 +120,7 @@ export default function Inbox() {
             ))}
           </div>
           {openId ? (
-            <Thread key={openId} id={openId} onChange={() => list.reload()} />
+            <Thread key={openId} id={openId} onChange={() => list.reload()} writer={writer} />
           ) : (
             <Empty title="Pick a conversation">Replies are detected and classified automatically, and stop the lead's campaign unless its settings say to keep going.</Empty>
           )}
@@ -125,7 +130,7 @@ export default function Inbox() {
   );
 }
 
-function Thread({ id, onChange }: { id: number; onChange: () => void }) {
+function Thread({ id, onChange, writer }: { id: number; onChange: () => void; writer: boolean }) {
   const t = useApi<ThreadData>(`/api/inbox/${id}`, 15_000);
   const stages = useApi<Stage[]>('/api/pipeline/stages');
   const [text, setText] = useState('');
@@ -209,17 +214,20 @@ function Thread({ id, onChange }: { id: number; onChange: () => void }) {
             <span className="muted">{c.messages.some((m) => m.direction === 'in') ? 'Not classified yet' : 'No reply yet'}</span>
           )}
           {c.category && <span className="muted">{c.categorySource === 'manual' ? 'set by hand' : c.categoryConfidence != null ? `AI, ${Math.round(c.categoryConfidence * 100)}% sure` : ''}</span>}
-          <select value={c.category ?? ''} onChange={(e) => e.target.value && setCategory(e.target.value as ReplyCategory)} aria-label="Change reply category" disabled={busy === 'category'}>
-            <option value="" disabled>
-              Set category…
-            </option>
-            {REPLY_CATEGORIES.map((k) => (
-              <option key={k} value={k}>
-                {CATEGORY_LABELS[k]}
+          {writer && (
+            <select value={c.category ?? ''} onChange={(e) => e.target.value && setCategory(e.target.value as ReplyCategory)} aria-label="Change reply category" disabled={busy === 'category'}>
+              <option value="" disabled>
+                Set category…
               </option>
-            ))}
-          </select>
-          {c.leadId && c.stage && (
+              {REPLY_CATEGORIES.map((k) => (
+                <option key={k} value={k}>
+                  {CATEGORY_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          )}
+          {c.leadId && c.stage && !writer && <span className="muted">Stage: {c.stage.name}</span>}
+          {writer && c.leadId && c.stage && (
             <select value={c.stage.id} onChange={(e) => moveTo(Number(e.target.value))} aria-label="Pipeline stage" disabled={busy === 'stage' || !stages.data}>
               {(stages.data ?? [c.stage]).map((s) => (
                 <option key={s.id} value={s.id}>
@@ -242,7 +250,7 @@ function Thread({ id, onChange }: { id: number; onChange: () => void }) {
         ))}
         <div ref={bottom} />
       </div>
-      {suggest && (
+      {writer && suggest && (
         <div className="suggestions" role="group" aria-label="Suggested replies">
           <div className="spread">
             <span className="row" style={{ gap: 6 }}>
@@ -267,26 +275,28 @@ function Thread({ id, onChange }: { id: number; onChange: () => void }) {
           <span className="field-hint">Pick one to edit it in the reply box. Nothing is sent until you press Send.</span>
         </div>
       )}
-      <div className="composer">
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder={c.channel === 'email' ? 'Write an email reply, sent in this thread… (Ctrl+Enter to send)' : 'Write a reply… (Ctrl+Enter to send)'}
-          aria-label="Reply"
-          rows={2}
-          onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && text.trim() && send()}
-        />
-        <div className="stack" style={{ gap: 6 }}>
-          {!suggest && (
-            <Button busy={busy === 'suggest'} onClick={draft} title="Draft replies with AI from this conversation">
-              Suggest reply
+      {writer && (
+        <div className="composer">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={c.channel === 'email' ? 'Write an email reply, sent in this thread… (Ctrl+Enter to send)' : 'Write a reply… (Ctrl+Enter to send)'}
+            aria-label="Reply"
+            rows={2}
+            onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && text.trim() && send()}
+          />
+          <div className="stack" style={{ gap: 6 }}>
+            {!suggest && (
+              <Button busy={busy === 'suggest'} onClick={draft} title="Draft replies with AI from this conversation">
+                Suggest reply
+              </Button>
+            )}
+            <Button variant="primary" disabled={!text.trim()} busy={busy === 'send'} onClick={send}>
+              Send
             </Button>
-          )}
-          <Button variant="primary" disabled={!text.trim()} busy={busy === 'send'} onClick={send}>
-            Send
-          </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

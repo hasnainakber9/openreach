@@ -1,16 +1,16 @@
 import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { api, useApi, type Suppression, type SuppressionKind } from '../api';
-import type { Me } from '../App';
-import { Button, ConfirmButton, Field, Modal, Pager, Tabs, useAction, useToast } from '../components/ui';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { api, useApi, type Invite, type InviteRole, type Role, type Suppression, type SuppressionKind, type TeamMember } from '../api';
+import { Button, ConfirmButton, Field, Modal, Pager, Pill, Tabs, useAction, useToast } from '../components/ui';
 import { timeAgo } from '../format';
+import { isAdminRole, type Me } from '../session';
 import Integrations from './Integrations';
 import PipelineSettings from './PipelineSettings';
 
 type Tab = 'team' | 'pipeline' | 'blacklist' | 'integrations' | 'profile';
 const TABS: Tab[] = ['team', 'pipeline', 'blacklist', 'integrations', 'profile'];
 
-export default function Settings({ me }: { me: Me }) {
+export default function Settings({ me, onMe }: { me: Me; onMe: (me: Me) => void }) {
   // ?tab= opens a tab directly (the Pipeline page links to its stages).
   const [params] = useSearchParams();
   const [tab, setTab] = useState<Tab>(TABS.find((t) => t === params.get('tab')) ?? 'team');
@@ -33,7 +33,13 @@ export default function Settings({ me }: { me: Me }) {
           { id: 'profile', label: 'Your profile' },
         ]}
       />
-      {tab === 'team' && <Team me={me} />}
+      {tab === 'team' && (
+        <div className="stack">
+          <Team me={me} />
+          {isAdminRole(me) && <Invites />}
+          {me.role === 'owner' && me.workspace_kind === 'standard' && <AgencyMode onMe={onMe} />}
+        </div>
+      )}
       {tab === 'pipeline' && <PipelineSettings me={me} />}
       {tab === 'blacklist' && (
         <div className="stack">
@@ -52,19 +58,32 @@ export default function Settings({ me }: { me: Me }) {
   );
 }
 
+const ROLE_HELP: Record<Role, string> = {
+  owner: 'Owner: everything, including owners and the agency',
+  admin: 'Admin: also manage team, invites, mailboxes and integrations',
+  member: 'Member: run campaigns and manage leads',
+  client: 'Client: read-only view of results, inbox and pipeline',
+};
+
 function Team({ me }: { me: Me }) {
-  const team = useApi<any[]>('/api/team');
+  const team = useApi<TeamMember[]>('/api/team');
   const [adding, setAdding] = useState(false);
   const [f, setF] = useState({ name: '', email: '', password: '', role: 'member' });
   const { busy, run } = useAction();
-  const admin = me.role === 'owner' || me.role === 'admin';
+  const admin = isAdminRole(me);
+  // Only owners hand out (or take away) the owner role.
+  // Agency owners/admins listed in a client are managed in the agency, so they get no controls here.
+  const editable = (u: TeamMember) => admin && !u.inherited && u.id !== me.id && (u.role !== 'owner' || me.role === 'owner');
+  const rolesFor = (u: TeamMember): Role[] => (me.role === 'owner' || u.role === 'owner' ? ['owner', 'admin', 'member', 'client'] : ['admin', 'member', 'client']);
+  const setRole = (u: TeamMember, role: Role) =>
+    run(`r${u.id}`, async () => (await api(`/api/team/${u.id}`, { method: 'PATCH', body: { role } }), team.reload()), `${u.name} is now ${role === 'admin' ? 'an' : 'a'} ${role}`);
   return (
     <div className="card card-flush">
       <div className="spread" style={{ padding: 16 }}>
         <div>
           <h2>Members</h2>
           <p className="muted" style={{ margin: '4px 0 0' }}>
-            Everyone in the workspace shares accounts, leads and campaigns.
+            Everyone in the workspace shares accounts, leads and campaigns. Clients only see results.
           </p>
         </div>
         {admin && <Button onClick={() => setAdding(true)}>Add member</Button>}
@@ -83,10 +102,25 @@ function Team({ me }: { me: Me }) {
             <tr key={u.id}>
               <td className="cell-title">{u.name}</td>
               <td>{u.email}</td>
-              <td style={{ textTransform: 'capitalize' }}>{u.role}</td>
+              <td>
+                {editable(u) ? (
+                  <select value={u.role} onChange={(e) => setRole(u, e.target.value as Role)} aria-label={`Role of ${u.name}`} disabled={busy === `r${u.id}`} style={{ width: 'auto' }}>
+                    {rolesFor(u).map((r) => (
+                      <option key={r} value={r}>
+                        {r[0].toUpperCase() + r.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <>
+                    <span style={{ textTransform: 'capitalize' }}>{u.role}</span>
+                    {u.inherited && <span className="muted"> (via {me.parent_name ?? 'the agency'})</span>}
+                  </>
+                )}
+              </td>
               <td className="num">
-                {admin && u.id !== me.id && u.role !== 'owner' && (
-                  <Button size="sm" variant="danger" busy={busy === `d${u.id}`} onClick={() => confirm(`Remove ${u.name}?`) && run(`d${u.id}`, async () => (await api(`/api/team/${u.id}`, { method: 'DELETE' }), team.reload()))}>
+                {editable(u) && (
+                  <Button size="sm" variant="danger" busy={busy === `d${u.id}`} onClick={() => confirm(`Remove ${u.name} from this workspace?`) && run(`d${u.id}`, async () => (await api(`/api/team/${u.id}`, { method: 'DELETE' }), team.reload()))}>
                     Remove
                   </Button>
                 )}
@@ -120,6 +154,9 @@ function Team({ me }: { me: Me }) {
             </Button>
           }
         >
+          <p className="muted" style={{ margin: 0 }}>
+            Prefer an invite (below) so people choose their own password.
+          </p>
           <Field label="Name">
             <input type="text" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
           </Field>
@@ -131,12 +168,164 @@ function Team({ me }: { me: Me }) {
           </Field>
           <Field label="Role">
             <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
-              <option value="member">Member: run campaigns and manage leads</option>
-              <option value="admin">Admin: also manage team and webhooks</option>
+              {(['member', 'admin', 'client'] as const).map((r) => (
+                <option key={r} value={r}>
+                  {ROLE_HELP[r]}
+                </option>
+              ))}
             </select>
           </Field>
         </Modal>
       )}
+    </div>
+  );
+}
+
+// Invite links: the link is shown once (only a hash is stored) and emailed when the server has SMTP_URL.
+function Invites() {
+  const invites = useApi<{ items: Invite[]; emailEnabled: boolean }>('/api/invites');
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState<{ email: string; role: InviteRole }>({ email: '', role: 'member' });
+  const [created, setCreated] = useState<{ email: string; link: string; emailed: boolean } | null>(null);
+  const { busy, run } = useAction();
+  const toast = useToast();
+  const close = () => (setOpen(false), setCreated(null), setF({ email: '', role: 'member' }));
+  const send = () =>
+    run('invite', async () => {
+      const r = await api<{ link: string; emailed: boolean }>('/api/invites', { body: f });
+      // Without PUBLIC_URL the server returns a path; make it a full link for copying.
+      setCreated({ email: f.email, link: new URL(r.link, window.location.origin).href, emailed: r.emailed });
+      await invites.reload();
+    });
+  const copy = async (link: string) => {
+    try {
+      await navigator.clipboard.writeText(link);
+      toast('Link copied');
+    } catch {
+      toast('Select the link and copy it', 'error');
+    }
+  };
+  return (
+    <div className="card card-flush">
+      <div className="spread" style={{ padding: 16 }}>
+        <div>
+          <h2>Invites</h2>
+          <p className="muted" style={{ margin: '4px 0 0' }}>
+            {invites.data?.emailEnabled ? 'Invites are emailed, and you can copy the link too.' : 'Copy the link and send it yourself (set SMTP_URL on the server to email invites).'} Links work once and expire after 7 days.
+          </p>
+        </div>
+        <Button onClick={() => setOpen(true)}>Invite people</Button>
+      </div>
+      {!!invites.data?.items.length && (
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Invited</th>
+              <th>Status</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {invites.data.items.map((i) => (
+              <tr key={i.id}>
+                <td className="cell-title">{i.email}</td>
+                <td style={{ textTransform: 'capitalize' }}>{i.role}</td>
+                <td className="muted">
+                  {timeAgo(i.createdAt)}
+                  {i.invitedBy && ` by ${i.invitedBy}`}
+                </td>
+                <td>{i.expired ? <Pill status="failed">Expired</Pill> : <span className="muted">Expires {timeAgo(i.expiresAt)}</span>}</td>
+                <td className="num">
+                  <div className="row" style={{ justifyContent: 'flex-end' }}>
+                    <Button size="sm" onClick={() => (setF({ email: i.email, role: i.role }), setOpen(true))}>
+                      New link
+                    </Button>
+                    <Button size="sm" variant="danger" busy={busy === `x${i.id}`} onClick={() => run(`x${i.id}`, async () => (await api(`/api/invites/${i.id}`, { method: 'DELETE' }), invites.reload()), 'Invite revoked')}>
+                      Revoke
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {open && (
+        <Modal
+          title={created ? 'Invite ready' : 'Invite people'}
+          onClose={close}
+          footer={
+            created ? (
+              <Button variant="primary" onClick={close}>
+                Done
+              </Button>
+            ) : (
+              <Button variant="primary" busy={busy === 'invite'} disabled={!f.email.trim()} onClick={send}>
+                Create invite
+              </Button>
+            )
+          }
+        >
+          {created ? (
+            <>
+              <p style={{ margin: 0 }}>{created.emailed ? `We're emailing ${created.email} the link below.` : `Send ${created.email} this link. It is shown only now; make a new one if it gets lost.`}</p>
+              <Field label="Invite link">
+                <div className="row" style={{ flexWrap: 'nowrap' }}>
+                  <input type="text" readOnly value={created.link} onFocus={(e) => e.target.select()} />
+                  <Button onClick={() => void copy(created.link)}>Copy</Button>
+                </div>
+              </Field>
+            </>
+          ) : (
+            <>
+              <p className="muted" style={{ margin: 0 }}>
+                Inviting an address again replaces its earlier link.
+              </p>
+              <Field label="Email">
+                <input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} autoFocus />
+              </Field>
+              <Field label="Role">
+                <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value as InviteRole })}>
+                  {(['member', 'admin', 'client'] as const).map((r) => (
+                    <option key={r} value={r}>
+                      {ROLE_HELP[r]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// Owners of a standard workspace can turn it into an agency that runs client workspaces.
+function AgencyMode({ onMe }: { onMe: (me: Me) => void }) {
+  const { busy, run } = useAction();
+  const navigate = useNavigate();
+  const enable = () =>
+    run('agency', async () => {
+      const r = await api<{ user: Me }>('/api/agency/enable', { body: {} });
+      onMe(r.user);
+      navigate('/agency');
+    });
+  return (
+    <div className="card stack">
+      <h2>Agency mode</h2>
+      <p className="muted" style={{ margin: 0 }}>
+        Run outreach for your clients from here. Each client gets its own workspace with separate accounts, leads, campaigns and inbox; your owners and
+        admins can open every client, and each client can get a read-only login to follow results. You can also put your own name, logo, color and domain
+        on the app.
+      </p>
+      <div>
+        <ConfirmButton busy={busy === 'agency'} onConfirm={enable} confirmLabel="Click again to turn on agency mode">
+          Turn on agency mode
+        </ConfirmButton>
+      </div>
     </div>
   );
 }
