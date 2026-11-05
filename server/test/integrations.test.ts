@@ -296,11 +296,12 @@ describe('foundation plumbing', () => {
 
   it('takes form bodies only outside /api and on provider callbacks, so cross-site forms cannot drive the API', async () => {
     const app = await buildApp(makeWorld().ctx);
-    app.post('/u/:token', async (req) => req.body);
+    // (/u/:token itself is the real unsubscribe route since g3-mailboxes; any non-API path takes forms.)
+    app.post('/form-echo/:token', async (req) => req.body);
     app.post('/api/public/twilio/:id/inbound', async (req) => req.body);
     const form = (url: string, payload: string, cookie?: string) =>
       app.inject({ method: 'POST', url, payload, headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', ...(cookie ? { cookie } : {}) } });
-    expect((await form('/u/abc', 'List-Unsubscribe=One-Click')).json()).toEqual({ 'List-Unsubscribe': 'One-Click' });
+    expect((await form('/form-echo/abc', 'List-Unsubscribe=One-Click')).json()).toEqual({ 'List-Unsubscribe': 'One-Click' });
     expect((await form('/api/public/twilio/3/inbound', 'From=%2B15550100&Body=STOP')).json()).toEqual({ From: '+15550100', Body: 'STOP' });
 
     const { app: api, owner } = await setup();

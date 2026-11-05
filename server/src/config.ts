@@ -22,6 +22,7 @@ export interface Config {
   jobConcurrency: number;
   aiWaitMaxMin: number;
   replyHoldMin: number;
+  mailSyncIntervalMin: number;
 }
 
 export function loadConfig(env = process.env): Config {
@@ -51,6 +52,8 @@ export function loadConfig(env = process.env): Config {
     aiWaitMaxMin: Math.max(1, Number(env.AI_WAIT_MAX_MIN ?? 30) || 30),
     // How long a replied lead waits for its reply to be classified (campaigns that keep going after some replies).
     replyHoldMin: Math.max(1, Number(env.REPLY_HOLD_MIN ?? 30) || 30),
+    // Minutes between IMAP checks for replies and bounces, per mailbox.
+    mailSyncIntervalMin: Math.max(1, Number(env.MAIL_SYNC_INTERVAL_MIN ?? 5) || 5),
   };
 }
 

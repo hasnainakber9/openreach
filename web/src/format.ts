@@ -1,6 +1,6 @@
 import { serverNow, type ActionType, type ConditionKind, type ImportKind, type ProviderKind, type ReplyCategory } from './api';
 
-export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted' | 'replied' | 'ab_winner' | 'ai_personalize' | 'classified', string> = {
+export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted' | 'replied' | 'ab_winner' | 'ai_personalize' | 'classified' | 'email_open' | 'email_click' | 'email_bounce', string> = {
   view_profile: 'View profile',
   follow: 'Follow',
   endorse: 'Endorse skills',
@@ -17,6 +17,9 @@ export const ACTION_LABELS: Record<ActionType | 'wait' | 'condition' | 'accepted
   ab_winner: 'A/B winner set',
   ai_personalize: 'AI personalization',
   classified: 'Reply classified',
+  email_open: 'Email opened',
+  email_click: 'Email link clicked',
+  email_bounce: 'Email bounced',
 };
 
 export const CONDITION_LABELS: Record<ConditionKind, string> = {

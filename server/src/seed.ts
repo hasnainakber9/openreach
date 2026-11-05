@@ -8,6 +8,7 @@ import { defaultSequence } from './engine/sequence.js';
 import { hashPassword } from './services/crypto.js';
 import { addLeadsToCampaign, importLeads, personToLead } from './services/leads.js';
 import { setCampaignAccounts } from './services/rotation.js';
+import { setCampaignMailboxes } from './mail/mailboxes.js';
 import type { CampaignRow } from './types.js';
 
 const email = process.env.SEED_EMAIL ?? 'demo@openreach.local';
@@ -71,5 +72,44 @@ const campaignId = db.insert('campaigns', {
 setCampaignAccounts(ctx, campaignId, [accountId, secondId]);
 const campaign = db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [campaignId])!;
 const leadIds = db.all<{ id: number }>('SELECT id FROM leads WHERE list_id = ?', [listId]).map((r) => r.id);
-const r = addLeadsToCampaign(ctx, campaign, leadIds);
-console.log(`Seeded ${email} / ${password}: 2 simulated accounts, ${leadIds.length} leads, campaign with ${r.added} leads.`);
+// The last 15 leads get (made-up, never deliverable) addresses and an email-only campaign from a simulated mailbox.
+const emailIds = leadIds.slice(-15);
+const r = addLeadsToCampaign(ctx, campaign, leadIds.slice(0, -15));
+for (const id of emailIds) db.run("UPDATE leads SET email = lower(first_name || '.' || last_name || '@' || replace(company, ' ', '') || '.example') WHERE id = ?", [id]);
+const mailboxId = db.insert('mailboxes', {
+  workspace_id: ws,
+  name: 'Demo mailbox (simulated)',
+  provider: 'simulated',
+  from_name: 'Demo User',
+  from_email: 'demo@openreach.example',
+  signature: 'Demo User\nOpenReach demo',
+  timezone: 'UTC',
+  work_days: '[0,1,2,3,4,5,6]',
+  work_start: '07:00',
+  work_end: '22:00',
+  daily_limit: 30,
+  warmup_start: 5,
+  warmup_days: 7,
+  gap_min_sec: 120,
+  gap_max_sec: 400,
+  created_at: now,
+});
+const emailCampaignId = db.insert('campaigns', {
+  workspace_id: ws,
+  name: 'Email follow-up (simulated mailbox)',
+  status: 'active',
+  sequence: JSON.stringify({
+    start: 'e1',
+    nodes: {
+      e1: { id: 'e1', type: 'email', subject: 'Quick idea for {{company|your team}}', body: 'Hi {{firstName}},\n\nWe help growth teams book more meetings from LinkedIn and email. Worth a short call?', next: 'w' },
+      w: { id: 'w', type: 'wait', days: 2, hours: 0, next: 'e2' },
+      e2: { id: 'e2', type: 'email', subject: 'Following up', body: 'Hi {{firstName}}, just bumping this in case it got buried.', replyInThread: true, next: null },
+    },
+  }),
+  settings: '{}',
+  created_at: now,
+  started_at: now,
+});
+setCampaignMailboxes(ctx, emailCampaignId, [mailboxId]);
+const e = addLeadsToCampaign(ctx, db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [emailCampaignId])!, emailIds);
+console.log(`Seeded ${email} / ${password}: 2 simulated accounts, a simulated mailbox, ${leadIds.length} leads, a LinkedIn campaign with ${r.added} leads and an email campaign with ${e.added}.`);

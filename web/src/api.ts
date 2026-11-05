@@ -88,7 +88,8 @@ export type SeqNode =
   | { id: string; type: 'endorse'; count: number; next: string | null }
   | ({ id: string; type: 'connect'; note: string; next: string | null } & AbFields<{ note: string }>)
   | ({ id: string; type: 'message'; text: string; next: string | null } & AbFields<{ text: string }>)
-  | ({ id: string; type: 'email'; subject: string; body: string; next: string | null } & AbFields<{ subject: string; body: string }>)
+  // replyInThread: sent as "Re: <first subject>" in the same thread (campaigns with mailboxes).
+  | ({ id: string; type: 'email'; subject: string; body: string; replyInThread?: boolean; next: string | null } & AbFields<{ subject: string; body: string }>)
   | ({ id: string; type: 'inmail'; subject: string; body: string; via: InMailVia; next: string | null } & AbFields<{ subject: string; body: string }>)
   | { id: string; type: 'wait'; days: number; hours: number; next: string | null }
   // `categories`: reply_sentiment only, the reply categories that go down Yes.
@@ -134,6 +135,21 @@ export interface CampaignStats {
   replyRate: number;
   atNode: Record<string, number>;
   bySender: SenderStats[];
+  // Leads reached by email; opens and clicks only with tracking on.
+  email: { sent: number; opened: number; clicked: number; bounced: number };
+  byMailbox: MailboxStats[];
+}
+
+// Results for one mailbox in a campaign (leads, not emails).
+export interface MailboxStats {
+  mailboxId: number;
+  name: string;
+  status: string;
+  leads: number;
+  sent: number;
+  replied: number;
+  bounced: number;
+  replyRate: number;
 }
 
 // Results for one sending account in a campaign.
@@ -167,6 +183,9 @@ export interface CampaignSettings {
   aiVariables: AiVariable[];
   // With stopOnReply: replies in these categories let the sequence go on once classified.
   continueOnCategories: ReplyCategory[];
+  // Email open (pixel) and click (redirect) tracking; off by default.
+  trackOpens: boolean;
+  trackClicks: boolean;
 }
 
 export type AiTone = 'friendly' | 'professional' | 'direct' | 'casual';
@@ -205,6 +224,8 @@ export interface Campaign {
   accountId: number | null;
   accounts: { id: number; name: string; status: string }[];
   accountIds: number[];
+  mailboxes: { id: number; name: string; status: string; fromEmail: string; provider: string }[];
+  mailboxIds: number[];
   settings: CampaignSettings;
   createdAt: number;
   startedAt: number | null;
@@ -224,6 +245,7 @@ export interface CampaignLead {
   lastError: string | null;
   addedAt: number;
   sender: { id: number; name: string } | null;
+  mailbox: { id: number; name: string } | null;
 }
 
 export interface Account {
@@ -274,6 +296,9 @@ export interface Lead {
   connectedAt: number | null;
   repliedAt: number | null;
   replyCategory: ReplyCategory | null;
+  // 'invalid' after a bounce: email steps skip the lead.
+  emailStatus: 'valid' | 'risky' | 'invalid' | 'unknown' | null;
+  emailStatusReason: string | null;
   // Open Profile members take InMail without a credit; null until a profile view tells.
   openProfile: boolean | null;
   createdAt: number;
@@ -321,6 +346,11 @@ export interface Conversation {
   channel: string;
   accountId: number | null;
   accountName: string | null;
+  // Email threads: the mailbox, subject and the other person's address.
+  mailboxId: number | null;
+  mailboxName: string | null;
+  subject: string | null;
+  participantAddress: string | null;
   leadId: number | null;
   name: string;
   profileUrl: string;
@@ -339,6 +369,10 @@ export interface Thread {
   id: number;
   channel: string;
   accountId: number | null;
+  mailboxId: number | null;
+  mailboxName: string | null;
+  subject: string | null;
+  participantAddress: string | null;
   leadId: number | null;
   name: string;
   profileUrl: string;
@@ -348,6 +382,74 @@ export interface Thread {
   // A hint until pipeline stages exist.
   suggestedStage: 'interested' | 'meeting' | 'lost' | null;
   messages: { id: number; direction: 'in' | 'out'; body: string; sentAt: number; category: ReplyCategory | null; confidence: number | null }[];
+}
+
+export interface ServerSettings {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string; // masked
+}
+
+// An email sending address (GET /api/mailboxes).
+export interface Mailbox {
+  id: number;
+  name: string;
+  provider: 'smtp' | 'simulated';
+  simulated: boolean;
+  preset: 'gmail' | 'outlook' | 'custom';
+  fromName: string;
+  fromEmail: string;
+  domain: string;
+  replyTo: string | null;
+  signature: string;
+  smtp: ServerSettings | null;
+  imap: ServerSettings | null;
+  hasSmtp: boolean;
+  hasImap: boolean;
+  status: 'active' | 'paused' | 'needs_attention';
+  statusMessage: string | null;
+  timezone: string;
+  workDays: number[];
+  workStart: string;
+  workEnd: string;
+  dailyLimit: number;
+  effectiveLimit: number;
+  sentToday: number;
+  warmup: boolean;
+  warmupDays: number;
+  warmupStart: number;
+  warmupDay: number;
+  gapMinSec: number;
+  gapMaxSec: number;
+  working: boolean;
+  nextWorkingAt: number;
+  nextSendAt: number;
+  lastSyncAt: number;
+  campaigns: number;
+  legacyAccountId: number | null;
+  createdAt: number;
+}
+
+export interface MailboxPreset {
+  id: Mailbox['preset'];
+  label: string;
+  smtp: { host: string; port: number; secure: boolean } | null;
+  imap: { host: string; port: number; secure: boolean } | null;
+  help: string;
+}
+
+export interface DnsCheck {
+  id: 'mx' | 'spf' | 'dkim' | 'dmarc';
+  status: 'pass' | 'warn' | 'fail';
+  record?: string;
+  message: string;
+  fix?: string;
+}
+export interface DomainReport {
+  domain: string;
+  checks: DnsCheck[];
 }
 
 export type SuppressionKind = 'linkedin' | 'email' | 'phone';

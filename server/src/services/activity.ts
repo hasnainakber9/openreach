@@ -10,6 +10,8 @@ export type ActivityStatus = 'ok' | 'skipped' | 'failed';
 export interface ActivityInput {
   workspaceId: number;
   accountId?: number | null;
+  // Email activity: the mailbox it went out from (or came in to); counted against that mailbox's daily limit.
+  mailboxId?: number | null;
   campaignId?: number | null;
   leadId?: number | null;
   type: string;
@@ -27,6 +29,7 @@ export function logActivity(ctx: Ctx, a: ActivityInput): number {
   return ctx.db.insert('activity', {
     workspace_id: a.workspaceId,
     account_id: a.accountId ?? null,
+    mailbox_id: a.mailboxId ?? null,
     campaign_id: a.campaignId ?? null,
     lead_id: a.leadId ?? null,
     type: a.type,

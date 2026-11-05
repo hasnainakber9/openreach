@@ -63,6 +63,8 @@ export function serializeLead(l: LeadRow) {
     connectedAt: l.connected_at,
     repliedAt: l.replied_at,
     replyCategory: l.reply_category ?? null,
+    emailStatus: l.email_status ?? null,
+    emailStatusReason: l.email_status_reason ?? null,
     openProfile: l.open_profile == null ? null : l.open_profile === 1,
     createdAt: l.created_at,
   };
@@ -210,6 +212,9 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     for (const [k, col] of Object.entries(map)) if ((b as any)[k] !== undefined) cols[col] = (b as any)[k] === '' && k === 'email' ? null : (b as any)[k];
     if (b.tags) cols.tags = JSON.stringify(b.tags);
     if (b.custom) cols.custom = JSON.stringify(b.custom);
+    // A new address hasn't bounced: its status starts over.
+    const before = ctx.db.get<{ email: string | null }>('SELECT email FROM leads WHERE id = ?', [id])!;
+    if ('email' in cols && (cols.email ?? '').toLowerCase() !== (before.email ?? '').toLowerCase()) Object.assign(cols, { email_status: null, email_status_reason: null, email_status_at: null });
     ctx.db.update('leads', id, cols);
     return { ok: true };
   });

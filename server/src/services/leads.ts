@@ -208,5 +208,6 @@ export function publicLead(l: LeadRow) {
     email: l.email,
     connectionStatus: l.connection_status,
     replyCategory: l.reply_category ?? null,
+    emailStatus: l.email_status ?? null,
   };
 }

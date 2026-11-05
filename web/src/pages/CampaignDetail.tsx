@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, REPLY_CATEGORIES, useApi, type AbTestReport, type Account, type Campaign, type CampaignLead, type LeadList, type ReplyCategory, type SeqNode, type Sequence, type VariantId } from '../api';
+import { api, REPLY_CATEGORIES, useApi, type AbTestReport, type Account, type Mailbox, type Campaign, type CampaignLead, type LeadList, type ReplyCategory, type SeqNode, type Sequence, type VariantId } from '../api';
 import { Funnel, LineChart } from '../components/LineChart';
 import { AiVariablesEditor } from '../components/Ai';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
@@ -72,6 +72,11 @@ export default function CampaignDetail() {
               </>
             ) : (
               'No LinkedIn account selected'
+            )}
+            {!!c.mailboxes.length && (
+              <>
+                {' · '}email from <strong title={c.mailboxes.map((m) => m.fromEmail).join(', ')}>{senderSummary(c.mailboxes)}</strong>
+              </>
             )}
             {' · '}
             {c.stats.total} leads
@@ -247,8 +252,10 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
                       {r.lastError && <div className="cell-sub" style={{ color: 'var(--critical-text)' }}>{r.lastError}</div>}
                     </td>
                     <td className="muted">{r.state === 'active' ? timeAgo(r.nextRunAt) : '—'}</td>
-                    <td className={r.sender ? undefined : 'muted'} title={r.sender ? undefined : 'Assigned when its first LinkedIn step runs'}>
-                      {r.sender?.name ?? 'Not assigned yet'}
+                    <td className={r.sender || r.mailbox ? undefined : 'muted'} title={r.sender || r.mailbox ? undefined : 'Assigned when its first LinkedIn or email step runs'}>
+                      {r.sender?.name ?? (r.mailbox ? '' : 'Not assigned yet')}
+                      {r.mailbox && <div className={r.sender ? 'cell-sub' : undefined}>{r.mailbox.name}</div>}
+                      {r.lead.emailStatus === 'invalid' && <div className="cell-sub" style={{ color: 'var(--critical-text)' }} title={r.lead.emailStatusReason ?? undefined}>Email bounced</div>}
                     </td>
                     <td>
                       <Pill status={r.lead.connectionStatus} />
@@ -344,6 +351,47 @@ function Results({ campaign }: { campaign: Campaign }) {
                     <td className="num">
                       {r.replied} <span className="muted">({pct(r.replyRate)})</span>
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {!!s.byMailbox.length && (
+        <div className="card card-flush">
+          <h2 style={{ padding: '16px 16px 4px' }}>By mailbox</h2>
+          <p className="muted" style={{ padding: '0 16px', margin: 0 }}>
+            {s.email.sent} leads emailed · {s.email.bounced} bounced
+            {(campaign.settings.trackOpens || campaign.settings.trackClicks) && ` · ${s.email.opened} opened · ${s.email.clicked} clicked (indications only: privacy proxies and scanners open mail too)`}
+          </p>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Mailbox</th>
+                  <th className="num">Leads</th>
+                  <th className="num">Emailed</th>
+                  <th className="num">Replied</th>
+                  <th className="num">Bounced</th>
+                </tr>
+              </thead>
+              <tbody>
+                {s.byMailbox.map((r) => (
+                  <tr key={r.mailboxId}>
+                    <td>
+                      <div className="row">
+                        <span className="cell-title">{r.name}</span>
+                        {r.status !== 'active' && <Pill status={r.status} />}
+                      </div>
+                      {!campaign.mailboxIds.includes(r.mailboxId) && <div className="cell-sub">No longer used here; finishing its threads</div>}
+                    </td>
+                    <td className="num">{r.leads}</td>
+                    <td className="num">{r.sent}</td>
+                    <td className="num">
+                      {r.replied} <span className="muted">({pct(r.replyRate)})</span>
+                    </td>
+                    <td className="num">{r.bounced}</td>
                   </tr>
                 ))}
               </tbody>
@@ -484,7 +532,8 @@ function AbTests({ campaign }: { campaign: Campaign }) {
 
 function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campaign; onSaved: () => void; onDeleted: () => void }) {
   const accounts = useApi<Account[]>('/api/accounts');
-  const [form, setForm] = useState({ name: campaign.name, accountIds: campaign.accountIds, ...campaign.settings });
+  const mailboxes = useApi<Mailbox[]>('/api/mailboxes');
+  const [form, setForm] = useState({ name: campaign.name, accountIds: campaign.accountIds, mailboxIds: campaign.mailboxIds, ...campaign.settings });
   const { busy, run } = useAction();
   const nav = useNavigate();
 
@@ -492,8 +541,8 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
     run(
       'save',
       async () => {
-        const { name, accountIds, ...settings } = form;
-        await api(`/api/campaigns/${campaign.id}`, { method: 'PATCH', body: { name, accountIds, settings } });
+        const { name, accountIds, mailboxIds, ...settings } = form;
+        await api(`/api/campaigns/${campaign.id}`, { method: 'PATCH', body: { name, accountIds, mailboxIds, settings } });
         onSaved();
       },
       'Settings saved',
@@ -514,7 +563,22 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
             empty="No LinkedIn accounts yet. Add one on the LinkedIn accounts page."
             hint="New leads go to the account with the most room left today; each account keeps to its own limits and hours. A lead stays with the account that first contacted it, even if you remove that account here."
           />
-          <Toggle checked={form.stopOnReply} onChange={(v) => setForm({ ...form, stopOnReply: v })} label="Stop when a lead replies" hint="Recommended. Replies are picked up from the LinkedIn inbox." />
+          <CheckList
+            label="Send email from"
+            options={(mailboxes.data ?? []).map((m) => ({ value: m.id, label: m.name, sub: m.simulated ? `${m.fromEmail} · simulated` : m.fromEmail, status: m.status }))}
+            value={form.mailboxIds}
+            onChange={(mailboxIds) => setForm({ ...form, mailboxIds })}
+            empty="No mailboxes yet. An admin can add one on the Mailboxes page."
+            hint="Email steps rotate across these mailboxes: each lead stays with the mailbox that first emailed it, and every mailbox keeps to its own daily limit, warm-up and sending hours."
+          />
+          <Toggle checked={form.trackOpens} onChange={(v) => setForm({ ...form, trackOpens: v })} label="Track email opens" hint="Adds an invisible image to each email. Off by default." />
+          <Toggle checked={form.trackClicks} onChange={(v) => setForm({ ...form, trackClicks: v })} label="Track link clicks" hint="Sends links through this server first. Off by default." />
+          {(form.trackOpens || form.trackClicks) && (
+            <div className="note">
+              Tracking records when someone opens an email or clicks a link, which is personal data: make sure you have a lawful basis (for example under GDPR) and mention it in your privacy notice. Tracking images and rewritten links can also hurt deliverability, and mail privacy features and scanners make the numbers approximate. It needs PUBLIC_URL on the server.
+            </div>
+          )}
+          <Toggle checked={form.stopOnReply} onChange={(v) => setForm({ ...form, stopOnReply: v })} label="Stop when a lead replies" hint="Recommended. Replies are picked up from the LinkedIn inbox and from the campaign's mailboxes." />
           {form.stopOnReply && (
             <CheckList<ReplyCategory>
               label="Keep going after these replies"

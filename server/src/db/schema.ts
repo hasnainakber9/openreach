@@ -458,4 +458,101 @@ export const MIGRATIONS: string[] = [
   -- What an active lead is waiting on (reply | task | enrich); next_run_at is then the hold's deadline.
   ALTER TABLE campaign_leads ADD COLUMN hold_reason TEXT;
   `,
+  // [M7] g3-mailboxes: mailboxes, campaign mailboxes, email messages, email conversations, email status
+  `
+  CREATE TABLE mailboxes (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    -- smtp | simulated
+    provider TEXT NOT NULL DEFAULT 'smtp',
+    -- gmail | outlook | custom (fills host/port in the UI)
+    preset TEXT NOT NULL DEFAULT 'custom',
+    from_name TEXT NOT NULL DEFAULT '',
+    from_email TEXT NOT NULL DEFAULT '',
+    reply_to TEXT,
+    signature TEXT NOT NULL DEFAULT '',
+    -- sealed { host, port, secure, user, pass }
+    smtp_enc TEXT,
+    imap_enc TEXT,
+    -- active | paused | needs_attention
+    status TEXT NOT NULL DEFAULT 'active',
+    status_message TEXT,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    work_days TEXT NOT NULL DEFAULT '[1,2,3,4,5]',
+    work_start TEXT NOT NULL DEFAULT '08:00',
+    work_end TEXT NOT NULL DEFAULT '18:00',
+    daily_limit INTEGER NOT NULL DEFAULT 40,
+    warmup INTEGER NOT NULL DEFAULT 1,
+    warmup_days INTEGER NOT NULL DEFAULT 14,
+    warmup_start INTEGER NOT NULL DEFAULT 5,
+    gap_min_sec INTEGER NOT NULL DEFAULT 120,
+    gap_max_sec INTEGER NOT NULL DEFAULT 420,
+    next_send_at INTEGER NOT NULL DEFAULT 0,
+    imap_uid_validity TEXT,
+    imap_last_uid INTEGER NOT NULL DEFAULT 0,
+    last_sync_at INTEGER NOT NULL DEFAULT 0,
+    -- The LinkedIn account whose SMTP settings this mailbox was migrated from.
+    legacy_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX mailboxes_workspace ON mailboxes(workspace_id);
+  CREATE UNIQUE INDEX mailboxes_legacy ON mailboxes(legacy_account_id) WHERE legacy_account_id IS NOT NULL;
+
+  CREATE TABLE campaign_mailboxes (
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, mailbox_id)
+  );
+  CREATE INDEX campaign_mailboxes_mailbox ON campaign_mailboxes(mailbox_id);
+  -- The mailbox a lead's email steps go out from (pinned like the LinkedIn sender).
+  ALTER TABLE campaign_leads ADD COLUMN mailbox_id INTEGER REFERENCES mailboxes(id) ON DELETE SET NULL;
+  CREATE INDEX campaign_leads_mailbox ON campaign_leads(mailbox_id, state, next_run_at);
+
+  CREATE TABLE email_messages (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+    campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
+    lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+    node_id TEXT,
+    variant TEXT,
+    -- out | in
+    direction TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    in_reply_to TEXT,
+    -- References header, space-separated
+    refs TEXT,
+    subject TEXT NOT NULL DEFAULT '',
+    from_email TEXT NOT NULL DEFAULT '',
+    to_email TEXT NOT NULL DEFAULT '',
+    -- sending | sent | simulated | failed | bounced | received
+    status TEXT NOT NULL,
+    error TEXT,
+    tracking_token TEXT,
+    open_count INTEGER NOT NULL DEFAULT 0,
+    opened_at INTEGER,
+    click_count INTEGER NOT NULL DEFAULT 0,
+    clicked_at INTEGER,
+    sent_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX email_messages_message_id ON email_messages(mailbox_id, message_id);
+  CREATE UNIQUE INDEX email_messages_tracking ON email_messages(tracking_token) WHERE tracking_token IS NOT NULL;
+  CREATE INDEX email_messages_lead ON email_messages(lead_id, sent_at);
+  CREATE INDEX email_messages_day ON email_messages(mailbox_id, direction, sent_at);
+
+  ALTER TABLE conversations ADD COLUMN mailbox_id INTEGER REFERENCES mailboxes(id) ON DELETE CASCADE;
+  ALTER TABLE conversations ADD COLUMN participant_address TEXT;
+  ALTER TABLE conversations ADD COLUMN subject TEXT;
+  CREATE UNIQUE INDEX conversations_mailbox_thread ON conversations(mailbox_id, thread_id) WHERE mailbox_id IS NOT NULL;
+
+  -- valid | risky | invalid | unknown (g4-data reuses these)
+  ALTER TABLE leads ADD COLUMN email_status TEXT;
+  ALTER TABLE leads ADD COLUMN email_status_reason TEXT;
+  ALTER TABLE leads ADD COLUMN email_status_at INTEGER;
+  ALTER TABLE activity ADD COLUMN mailbox_id INTEGER;
+  CREATE INDEX activity_mailbox_day ON activity(mailbox_id, day, type);
+  `,
 ];

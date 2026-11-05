@@ -4,6 +4,9 @@ import { DB } from './db/db.js';
 import { DriverPool } from './drivers/pool.js';
 import { registerHandlers } from './jobs/handlers.js';
 import { JobQueue } from './jobs/queue.js';
+import { systemResolver, type DnsResolver } from './mail/deliverability.js';
+import { imapflowFactory, type ImapFactory } from './mail/imap.js';
+import { ensureLegacyMailboxes } from './mail/mailboxes.js';
 import { registerProviders } from './providers/index.js';
 import { ProviderResolver } from './providers/store.js';
 import { Sealer } from './services/crypto.js';
@@ -23,6 +26,9 @@ export interface Ctx {
   fetch: typeof fetch;
   jobs: JobQueue;
   providers: ProviderResolver;
+  // DNS lookups for the deliverability check, and the IMAP client factory; tests inject fakes.
+  dns: DnsResolver;
+  imap: ImapFactory;
 }
 
 export function buildContext(config: Config, clock: Clock, overrides: Partial<Ctx> = {}): Ctx {
@@ -38,6 +44,8 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
     mailer: smtpMailer,
     random: Math.random,
     fetch: (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => globalThis.fetch(input, init),
+    dns: systemResolver(),
+    imap: imapflowFactory,
     ...overrides,
   } as Ctx;
   // The queue and resolver read ctx lazily, so later overrides (tests) still apply.
@@ -45,5 +53,7 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
   ctx.providers ??= new ProviderResolver(ctx);
   registerProviders();
   registerHandlers(ctx);
+  // Accounts' SMTP settings from before mailboxes become mailboxes (once; needs APP_SECRET, so not a migration).
+  ensureLegacyMailboxes(ctx);
   return ctx;
 }

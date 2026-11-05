@@ -4,6 +4,8 @@ import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { DriverError, type LinkedInDriver } from '../drivers/types.js';
 import { CONTACT_ACTIVITY_TYPES, logActivity } from '../services/activity.js';
+import { MailRunner } from '../mail/runner.js';
+import { newMessageId } from '../mail/compose.js';
 import type { SmtpConfig } from '../services/email.js';
 import { replyDecision, replyHoldDeadline, replySince } from '../services/replies.js';
 import { suppressionReason } from '../services/suppression.js';
@@ -37,8 +39,12 @@ export class Engine {
   private busy = new Set<number>();
   private timer: NodeJS.Timeout | null = null;
   private capacity: CapacityCache = new Map();
+  // Email steps of campaigns that have mailboxes (they don't wait for a LinkedIn account).
+  readonly mail: MailRunner;
 
-  constructor(private ctx: Ctx) {}
+  constructor(private ctx: Ctx) {
+    this.mail = new MailRunner(ctx, this);
+  }
 
   start() {
     this.timer = setInterval(() => void this.tick().catch((e) => console.error('[engine] tick failed', e)), this.ctx.config.tickMs);
@@ -58,6 +64,7 @@ export class Engine {
     const accounts = this.ctx.db.all<AccountRow>("SELECT * FROM accounts WHERE status = 'active'");
     await Promise.all([
       this.ctx.jobs.tick().catch((e) => console.error('[jobs] tick failed', e)),
+      this.mail.tick().catch((e) => console.error('[mail] tick failed', e)),
       ...accounts
         .filter((a) => !this.busy.has(a.id))
         .map(async (a) => {
@@ -138,6 +145,7 @@ export class Engine {
          AND (cl.node_type IN (${types.map(() => '?').join(',')}) OR cl.node_type IS NULL)
          AND ((cl.account_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = cl.account_id AND a.status = 'active'))
            OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_accounts ca JOIN accounts a ON a.id = ca.account_id WHERE ca.campaign_id = c.id AND a.status = 'active'))
+           OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_mailboxes cm JOIN mailboxes m ON m.id = cm.mailbox_id WHERE cm.campaign_id = c.id AND m.status = 'active'))
            OR NOT EXISTS (SELECT 1 FROM campaign_accounts ca WHERE ca.campaign_id = c.id))
        ORDER BY cl.next_run_at, cl.id LIMIT ${FREE_STEPS_PER_TICK}`,
       [this.ctx.clock.now(), ...types],
@@ -154,7 +162,13 @@ export class Engine {
     const blocked = exhaustedActions(this.ctx, a);
     const allowed = ACTION_TYPES.filter((t) => !blocked.includes(t));
     if (!allowed.length) return null;
-    const candidates = this.dueJobs(a, `cl.node_type IN (${allowed.map(() => '?').join(',')})`, allowed, ACTION_CANDIDATES);
+    // Email steps of campaigns with mailboxes belong to the mail runner, not to the LinkedIn account.
+    const candidates = this.dueJobs(
+      a,
+      `cl.node_type IN (${allowed.map(() => '?').join(',')}) AND NOT (cl.node_type = 'email' AND EXISTS (SELECT 1 FROM campaign_mailboxes cm WHERE cm.campaign_id = c.id))`,
+      allowed,
+      ACTION_CANDIDATES,
+    );
     for (const job of candidates) {
       if (job.account_id === a.id) return job;
       const sender = chooseSender(this.ctx, this.campaign(job.campaign_id), this.lead(job.lead_id), job.node_type as ActionType, this.capacity);
@@ -189,7 +203,7 @@ export class Engine {
 
   // Follows free nodes from the job's current position until it reaches an action, a wait
   // that isn't over yet, or the end of the sequence.
-  private walk(campaign: CampaignRow, job: CampaignLeadRow) {
+  walk(campaign: CampaignRow, job: CampaignLeadRow) {
     const seq = campaignSequence(campaign);
     const now = this.ctx.clock.now();
     let cur = job;
@@ -232,7 +246,7 @@ export class Engine {
     }
   }
 
-  private moveTo(campaign: CampaignRow, job: CampaignLeadRow, nextId: string | null): CampaignLeadRow {
+  moveTo(campaign: CampaignRow, job: CampaignLeadRow, nextId: string | null): CampaignLeadRow {
     const seq = campaignSequence(campaign);
     const now = this.ctx.clock.now();
     const next = nextId ? seq.nodes[nextId] : undefined;
@@ -250,7 +264,7 @@ export class Engine {
   // Whether a lead that replied may go on in this campaign (see replyDecision). Stops it, or (re)holds it
   // until its reply is classified; the hold's deadline comes from replied_at, so spurious wake-ups
   // (sequence edits, syncs) re-hold it without moving the deadline.
-  private replyGate(campaign: CampaignRow, job: CampaignLeadRow, lead: LeadRow): boolean {
+  replyGate(campaign: CampaignRow, job: CampaignLeadRow, lead: LeadRow): boolean {
     const decision = replyDecision(campaignSettings(campaign), lead);
     if (decision === 'stop') return this.finish(campaign, job, 'replied'), false;
     if (decision === 'pending') {
@@ -264,7 +278,7 @@ export class Engine {
     return true;
   }
 
-  private finish(campaign: CampaignRow, job: CampaignLeadRow, state: CampaignLeadState, error?: string) {
+  finish(campaign: CampaignRow, job: CampaignLeadRow, state: CampaignLeadState, error?: string) {
     const now = this.ctx.clock.now();
     this.ctx.db.update('campaign_leads', job.id, { state, finished_at: now, next_run_at: now, hold_reason: null, ...(error ? { last_error: error } : {}) });
     if (state === 'done' || state === 'failed') {
@@ -356,10 +370,19 @@ export class Engine {
     try {
       if (node.type === 'email') {
         if (!lead.email) return advance('skipped', 'no email address'), false;
-        const smtp = ctx.sealer.open(a.smtp_enc);
+        // Legacy path (campaigns without mailboxes): the account's own SMTP settings, if any.
+        const raw = ctx.sealer.open(a.smtp_enc);
+        const smtp = raw ? (JSON.parse(raw) as SmtpConfig) : null;
         const subject = fitRendered(render(node.subject, vars, ctx.random), RENDERED_MAX.emailSubject);
-        const how = await ctx.mailer.send(smtp ? (JSON.parse(smtp) as SmtpConfig) : null, lead.email, subject.text, render(node.body, vars, ctx.random));
-        advance('ok', (how === 'simulated' ? `${subject.text} (not delivered: no SMTP configured)` : subject.text) + subject.note);
+        const from = smtp ? smtp.from || smtp.user : '';
+        const how = await ctx.mailer.send(smtp && { host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user, pass: smtp.pass }, {
+          from,
+          to: lead.email,
+          subject: subject.text,
+          text: render(node.body, vars, ctx.random),
+          messageId: newMessageId(/<([^>]+)>/.exec(from)?.[1] ?? from, ctx.random),
+        });
+        advance('ok', (how.status === 'simulated' ? `${subject.text} (not delivered: no SMTP configured)` : subject.text) + subject.note);
         return false;
       }
 
@@ -421,7 +444,7 @@ export class Engine {
     }
   }
 
-  private retry(campaign: CampaignRow, job: CampaignLeadRow, base: Parameters<typeof logActivity>[1], message: string) {
+  retry(campaign: CampaignRow, job: CampaignLeadRow, base: Parameters<typeof logActivity>[1], message: string) {
     const attempts = job.attempts + 1;
     logActivity(this.ctx, { ...base, status: 'failed', detail: message });
     if (attempts >= MAX_ATTEMPTS) return this.finish(campaign, job, 'failed', message);

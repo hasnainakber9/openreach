@@ -8,6 +8,7 @@ import Campaigns from './pages/Campaigns';
 import Dashboard from './pages/Dashboard';
 import Inbox from './pages/Inbox';
 import Leads from './pages/Leads';
+import Mailboxes from './pages/Mailboxes';
 import Settings from './pages/Settings';
 
 export interface Me {
@@ -37,6 +38,7 @@ const NAV: NavItem[] = [
   { to: '/leads', label: 'Leads' },
   { to: '/inbox', label: 'Inbox', badge: 'inbox' },
   { to: '/accounts', label: 'LinkedIn accounts' },
+  { to: '/mailboxes', label: 'Mailboxes', roles: ['owner', 'admin', 'member'] },
   { to: '/settings', label: 'Settings' },
 ];
 
@@ -104,6 +106,7 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
           <Route path="/leads" element={<Leads />} />
           <Route path="/inbox" element={<Inbox />} />
           <Route path="/accounts" element={<Accounts />} />
+          <Route path="/mailboxes" element={<Mailboxes me={me} />} />
           <Route path="/settings" element={<Settings me={me} />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

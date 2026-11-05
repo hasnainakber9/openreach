@@ -346,6 +346,14 @@ function NodeEditor({ node, onChange, onDelete }: { node: SeqNode; onChange: (n:
       </div>
 
       {isVariantNode(node) && <VariantEditor node={node} onChange={onChange} />}
+      {node.type === 'email' && (
+        <Toggle
+          checked={!!node.replyInThread}
+          onChange={(replyInThread) => onChange({ ...node, replyInThread })}
+          label="Reply in the same thread"
+          hint="Sends this email as a reply to the lead's previous email from the same mailbox (Re: first subject), so it stacks in one conversation. The subject above is then not used. Without an earlier email it starts a new thread."
+        />
+      )}
       {node.type === 'inmail' && (
         <>
           <Field label="Send from" hint="Sales Navigator writes from the lead's Sales Navigator page; the account needs Sales Navigator.">
@@ -564,7 +572,7 @@ function ContentFields({ type, value, onChange, variantId }: { type: VariantNode
         value={value.body ?? ''}
         onChange={(body) => onChange({ ...value, body })}
         rows={7}
-        hint="Sent through the account's SMTP settings to leads with a known email address."
+        hint="Sent from the campaign's mailboxes (see Settings) to leads with a known email address, with your signature and an unsubscribe link."
       />
     </>
   );

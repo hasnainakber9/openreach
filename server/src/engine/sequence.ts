@@ -76,6 +76,9 @@ export const NodeSchema = z.discriminatedUnion('type', [
     body: z.string().min(1).max(20000),
     variants: variantList({ subject: z.string().min(1).max(300), body: z.string().min(1).max(20000) }),
     abtest,
+    // Send as a reply to the lead's previous email from the same mailbox ("Re: <first subject>"), threaded
+    // with In-Reply-To/References. Only campaigns with mailboxes thread; the legacy account path ignores it.
+    replyInThread: z.boolean().optional(),
     next: ptr,
   }),
   z.object({ id: z.string(), type: z.literal('withdraw_invite'), next: ptr }),
@@ -144,6 +147,9 @@ export const CampaignSettingsSchema = z.object({
     .max(REPLY_CATEGORIES.length)
     .refine((cs) => !cs.some((c) => SUPPRESS_CATEGORIES.includes(c)), 'Not interested and unsubscribe replies always stop the lead')
     .default([]),
+  // Email open (pixel) and click (redirect) tracking; off by default for privacy. Needs PUBLIC_URL.
+  trackOpens: z.boolean().default(false),
+  trackClicks: z.boolean().default(false),
 });
 export type CampaignSettings = z.infer<typeof CampaignSettingsSchema>;
 

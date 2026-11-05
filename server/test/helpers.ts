@@ -6,6 +6,8 @@ import { DB } from '../src/db/db.js';
 import { Engine } from '../src/engine/engine.js';
 import type { Sequence } from '../src/engine/sequence.js';
 import type { SimulatorOptions } from '../src/drivers/simulator.js';
+import type { ImapClient, InboundEmail } from '../src/mail/imap.js';
+import { MailError, type Mailer, type OutgoingEmail, type SmtpTransport } from '../src/services/email.js';
 import { importLeads, addLeadsToCampaign } from '../src/services/leads.js';
 import { setCampaignAccounts } from '../src/services/rotation.js';
 import type { AccountRow, CampaignRow } from '../src/types.js';
@@ -43,6 +45,7 @@ export function testConfig(): Config {
     jobConcurrency: 4,
     aiWaitMaxMin: 30,
     replyHoldMin: 30,
+    mailSyncIntervalMin: 5,
   };
 }
 
@@ -64,6 +67,19 @@ export function makeWorld(sim: Partial<SimulatorOptions> = {}, account: Record<s
   ctx.fetch = async () => {
     throw new Error('Network access in tests');
   };
+  // Nor SMTP, IMAP or DNS: the mailer records, and tests that need inbox or DNS data pass fakes.
+  ctx.mailer = fakeMailer();
+  ctx.dns = {
+    resolveMx: async () => {
+      throw Object.assign(new Error('DNS lookups in tests'), { code: 'ETEST' });
+    },
+    resolveTxt: async () => {
+      throw Object.assign(new Error('DNS lookups in tests'), { code: 'ETEST' });
+    },
+  };
+  ctx.imap = () => fakeImap(() => {
+    throw new MailError('TRANSIENT', 'IMAP in tests');
+  });
   ctx.drivers.simOptions = { random: seededRandom(99), latencyMs: 0, ...sim };
   const workspaceId = ctx.db.insert('workspaces', { name: 'Test', created_at: clock.now() });
   const accountId = ctx.db.insert('accounts', {
@@ -148,6 +164,48 @@ export function counts(w: World, campaignId: number) {
 export function states(w: World, campaignId: number) {
   const rows = w.ctx.db.all<{ state: string; n: number }>('SELECT state, COUNT(*) AS n FROM campaign_leads WHERE campaign_id = ? GROUP BY state', [campaignId]);
   return Object.fromEntries(rows.map((r) => [r.state, r.n]));
+}
+
+export interface FakeMailer extends Mailer {
+  sent: { transport: SmtpTransport | null; msg: OutgoingEmail }[];
+  // Errors the next sends throw, in order (MailError('AUTH' | 'RECIPIENT' | 'TRANSIENT', ...)).
+  failures: Error[];
+  verifyResult: { ok: boolean; message: string };
+}
+
+// Records every email instead of sending it. It never opens a connection, so no test can reach an SMTP server.
+export function fakeMailer(): FakeMailer {
+  const m: FakeMailer = {
+    sent: [],
+    failures: [],
+    verifyResult: { ok: true, message: 'The SMTP server accepted the login' },
+    async send(transport, msg) {
+      const fail = m.failures.shift();
+      if (fail) throw fail;
+      m.sent.push({ transport, msg });
+      return { status: transport ? 'sent' : 'simulated', messageId: msg.messageId };
+    },
+    async verify() {
+      return m.verifyResult;
+    },
+  };
+  return m;
+}
+
+export const mailerOf = (w: World) => w.ctx.mailer as FakeMailer;
+
+// An IMAP client answering from `inbox` (called with the last UID read): UIDs above it are new.
+export function fakeImap(inbox: (lastUid: number) => InboundEmail[], validity = 'v1'): ImapClient {
+  return {
+    async fetchSince(lastUid, uidValidity) {
+      const from = uidValidity === validity ? lastUid : 0;
+      const messages = inbox(from).filter((m) => m.uid > from);
+      return { uidValidity: validity, lastUid: Math.max(from, ...messages.map((m) => m.uid)), messages };
+    },
+    async test() {
+      return { ok: true, message: 'The IMAP server accepted the login' };
+    },
+  };
 }
 
 // Runs every due background job (and jobs they make due) until none are left.

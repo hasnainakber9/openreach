@@ -51,6 +51,10 @@ export interface LeadRow {
   // Category of the latest classified reply (ai/categories.ts), and when it was set.
   reply_category: string | null;
   reply_category_at: number | null;
+  // valid | risky | invalid | unknown; 'invalid' (a bounce) makes email steps skip the lead.
+  email_status: string | null;
+  email_status_reason: string | null;
+  email_status_at: number | null;
 }
 
 export interface CampaignRow {
@@ -85,6 +89,8 @@ export interface CampaignLeadRow {
   contacted_at: number | null;
   // What the lead is waiting on ('reply': its reply to be classified); next_run_at is the deadline.
   hold_reason: string | null;
+  // Mailbox the lead's email steps go out from (campaigns with mailboxes; null until its first email is scheduled).
+  mailbox_id: number | null;
 }
 
 export type ConnectionStatus = LeadRow['connection_status'];
@@ -111,4 +117,62 @@ export interface ImportRow {
   scraped: number; // profiles loaded on `day` across all attempts (what the scrape budget counts)
   created_at: number;
   finished_at: number | null;
+}
+
+export interface MailboxRow {
+  id: number;
+  workspace_id: number;
+  name: string;
+  provider: 'smtp' | 'simulated';
+  preset: 'gmail' | 'outlook' | 'custom';
+  from_name: string;
+  from_email: string;
+  reply_to: string | null;
+  signature: string;
+  smtp_enc: string | null; // sealed { host, port, secure, user, pass }
+  imap_enc: string | null;
+  status: 'active' | 'paused' | 'needs_attention';
+  status_message: string | null;
+  timezone: string;
+  work_days: string;
+  work_start: string;
+  work_end: string;
+  daily_limit: number;
+  warmup: number;
+  warmup_days: number;
+  warmup_start: number;
+  gap_min_sec: number;
+  gap_max_sec: number;
+  next_send_at: number;
+  imap_uid_validity: string | null;
+  imap_last_uid: number;
+  last_sync_at: number;
+  legacy_account_id: number | null;
+  created_at: number;
+}
+
+export interface EmailMessageRow {
+  id: number;
+  workspace_id: number;
+  mailbox_id: number;
+  campaign_id: number | null;
+  lead_id: number | null;
+  conversation_id: number | null;
+  node_id: string | null;
+  variant: string | null;
+  direction: 'out' | 'in';
+  message_id: string;
+  in_reply_to: string | null;
+  refs: string | null; // space-separated
+  subject: string;
+  from_email: string;
+  to_email: string;
+  status: 'sending' | 'sent' | 'simulated' | 'failed' | 'bounced' | 'received';
+  error: string | null;
+  tracking_token: string | null;
+  open_count: number;
+  opened_at: number | null;
+  click_count: number;
+  clicked_at: number | null;
+  sent_at: number;
 }

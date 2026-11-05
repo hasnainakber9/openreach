@@ -25,6 +25,8 @@ const STATUS_TONE: Record<string, string> = {
   pending: 'warning',
   none: 'neutral',
   needs_login: 'critical',
+  needs_attention: 'critical',
+  removed: 'neutral',
   failed: 'critical',
   error: 'critical',
   skipped: 'neutral',
@@ -47,7 +49,7 @@ const STATUS_TONE: Record<string, string> = {
   other: 'neutral',
 };
 
-const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', none: 'Not connected', ok: 'Working', untested: 'Not tested' };
+const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', needs_attention: 'Needs attention', none: 'Not connected', ok: 'Working', untested: 'Not tested' };
 
 export function Pill({ status, children }: { status: string; children?: ReactNode }) {
   const tone = STATUS_TONE[status] ?? 'neutral';

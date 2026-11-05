@@ -2,13 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { CampaignSettingsSchema, defaultSequence, type CampaignSettings, isAbTest, isVariantNode, nodeVariants, precededBy, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
+import { ACTION_TYPES, CampaignSettingsSchema, defaultSequence, type CampaignSettings, isAbTest, isVariantNode, nodeVariants, precededBy, SequenceSchema, validateSequence, VARIANT_IDS, type Sequence } from '../engine/sequence.js';
 import { leadVars, render, unknownVariables, VARIABLE_NAMES } from '../engine/template.js';
 import { setWinner, syncVariants, variantReport } from '../engine/variants.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
 import { contactTypesSql } from '../services/activity.js';
 import { addLeadsToCampaign, campaignSequence, campaignSettings } from '../services/leads.js';
 import { campaignAccountIds, campaignAccounts, setCampaignAccounts } from '../services/rotation.js';
+import { campaignMailboxes, campaignMailboxIds, setCampaignMailboxes } from '../mail/mailboxes.js';
 import type { CampaignRow, LeadRow } from '../types.js';
 import { serializeLead } from './leads.js';
 
@@ -46,7 +47,35 @@ export function campaignStats(ctx: Ctx, campaignId: number) {
     replyRate: pct(replied, contacted),
     atNode,
     bySender: senderStats(ctx, campaignId),
+    // Email results (opens and clicks only when tracking is on; scanners can inflate them).
+    email: {
+      sent: acts.email ?? 0,
+      opened: acts.email_open ?? 0,
+      clicked: acts.email_click ?? 0,
+      bounced: ctx.db.get<{ n: number }>("SELECT COUNT(DISTINCT lead_id) AS n FROM activity WHERE campaign_id = ? AND type = 'email_bounce'", [campaignId])!.n,
+    },
+    byMailbox: mailboxStats(ctx, campaignId),
   };
+}
+
+// Results per mailbox: current campaign mailboxes plus any mailbox that emailed leads here.
+function mailboxStats(ctx: Ctx, campaignId: number) {
+  // Leads, not emails: a lead who got three emails counts once.
+  const rows = ctx.db.all<{ mailbox_id: number; sent: number; replied: number; bounced: number }>(
+    `SELECT mailbox_id,
+            COUNT(DISTINCT CASE WHEN direction = 'out' AND status IN ('sent', 'simulated', 'bounced') THEN lead_id END) AS sent,
+            COUNT(DISTINCT CASE WHEN direction = 'in' AND status = 'received' THEN lead_id END) AS replied,
+            COUNT(DISTINCT CASE WHEN direction = 'out' AND status = 'bounced' THEN lead_id END) AS bounced
+     FROM email_messages WHERE campaign_id = ? GROUP BY mailbox_id`,
+    [campaignId],
+  );
+  const pinned = ctx.db.all<{ mailbox_id: number; n: number }>('SELECT mailbox_id, COUNT(*) AS n FROM campaign_leads WHERE campaign_id = ? AND mailbox_id IS NOT NULL GROUP BY mailbox_id', [campaignId]);
+  const ids = [...new Set([...campaignMailboxIds(ctx, campaignId), ...pinned.map((r) => r.mailbox_id), ...rows.map((r) => r.mailbox_id)])];
+  return ids.map((id) => {
+    const mb = ctx.db.get<{ name: string; status: string }>('SELECT name, status FROM mailboxes WHERE id = ?', [id]);
+    const r = rows.find((x) => x.mailbox_id === id) ?? { sent: 0, replied: 0, bounced: 0 };
+    return { mailboxId: id, name: mb?.name ?? 'Removed mailbox', status: mb?.status ?? 'removed', leads: pinned.find((p) => p.mailbox_id === id)?.n ?? 0, sent: r.sent, replied: r.replied, bounced: r.bounced, replyRate: pct(r.replied, r.sent) };
+  });
 }
 
 const pct = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 10 : 0);
@@ -109,11 +138,21 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     if (found.length !== unique.length) notFound('Account');
     return unique;
   };
+  // Same rules for the campaign's mailboxes (email steps rotate across them).
+  const mailboxIdList = (req: any, ids: number[] | undefined): number[] | undefined => {
+    if (!ids) return undefined;
+    const unique = [...new Set(ids)];
+    if (!unique.length) return unique;
+    const found = ctx.db.all<{ id: number }>(`SELECT id FROM mailboxes WHERE workspace_id = ? AND id IN (${unique.map(() => '?').join(',')})`, [user(req).workspace_id, ...unique]);
+    if (found.length !== unique.length) notFound('Mailbox');
+    return unique;
+  };
 
   const serialize = (c: CampaignRow, full = false) => {
     const seq = campaignSequence(c);
     const settings = campaignSettings(c);
     const accounts = campaignAccounts(ctx, c.id);
+    const mailboxes = campaignMailboxes(ctx, c.id);
     return {
       id: c.id,
       name: c.name,
@@ -123,12 +162,14 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
       accountId: accounts[0]?.id ?? null,
       accounts,
       accountIds: accounts.map((a) => a.id),
+      mailboxes,
+      mailboxIds: mailboxes.map((m) => m.id),
       settings,
       createdAt: c.created_at,
       startedAt: c.started_at,
       stats: campaignStats(ctx, c.id),
       steps: Object.keys(seq.nodes).length,
-      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: sequenceWarnings(seq, settings) } : {}),
+      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: [...sequenceWarnings(seq, settings), ...senderWarnings(ctx, seq, settings, mailboxes.length)] } : {}),
     };
   };
 
@@ -141,10 +182,18 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   app.post('/api/campaigns', async (req) => {
     requireWriter(req);
     const body = parse(
-      z.object({ name: z.string().min(1).max(150), accountId: z.number().int().nullable().optional(), accountIds: accountIdsSchema.optional(), sequence: SequenceSchema.optional(), settings: settingsPatch.optional() }),
+      z.object({
+        name: z.string().min(1).max(150),
+        accountId: z.number().int().nullable().optional(),
+        accountIds: accountIdsSchema.optional(),
+        mailboxIds: accountIdsSchema.optional(),
+        sequence: SequenceSchema.optional(),
+        settings: settingsPatch.optional(),
+      }),
       req.body,
     );
     const senders = senderIds(req, body) ?? [];
+    const mailboxIds = mailboxIdList(req, body.mailboxIds) ?? [];
     const id = ctx.db.tx(() => {
       const id = ctx.db.insert('campaigns', {
         workspace_id: user(req).workspace_id,
@@ -156,6 +205,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
         created_at: ctx.clock.now(),
       });
       setCampaignAccounts(ctx, id, senders);
+      setCampaignMailboxes(ctx, id, mailboxIds);
       return id;
     });
     return serialize(ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [id])!, true);
@@ -164,10 +214,14 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   app.patch('/api/campaigns/:id', async (req) => {
     requireWriter(req);
     const c = load(req);
-    const body = parse(z.object({ name: z.string().min(1).max(150), accountId: z.number().int().nullable(), accountIds: accountIdsSchema, sequence: SequenceSchema, settings: settingsPatch }).partial(), req.body);
-    // Senders can change while the campaign runs: leads they already contacted stay with them.
+    const body = parse(z.object({ name: z.string().min(1).max(150), accountId: z.number().int().nullable(), accountIds: accountIdsSchema, mailboxIds: accountIdsSchema, sequence: SequenceSchema, settings: settingsPatch }).partial(), req.body);
+    // Senders and mailboxes can change while the campaign runs: leads they already contacted stay with them.
     const senders = senderIds(req, body);
-    if (senders && !senders.length && c.status === 'active') throw new HttpError(409, 'A running campaign needs at least one LinkedIn account. Pause it first.');
+    const mailboxIds = mailboxIdList(req, body.mailboxIds);
+    if (c.status === 'active' && (senders || mailboxIds || body.sequence)) {
+      const problem = senderProblem(body.sequence ?? campaignSequence(c), (senders ?? campaignAccountIds(ctx, c.id)).length, (mailboxIds ?? campaignMailboxIds(ctx, c.id)).length);
+      if (problem) throw new HttpError(409, `${problem} Pause the campaign first.`);
+    }
     const cols: Record<string, any> = {};
     if (body.name) cols.name = body.name;
     if (body.settings) cols.settings = JSON.stringify(CampaignSettingsSchema.parse({ ...campaignSettings(c), ...body.settings }));
@@ -179,6 +233,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     ctx.db.tx(() => {
       ctx.db.update('campaigns', c.id, cols);
       if (senders) setCampaignAccounts(ctx, c.id, senders);
+      if (mailboxIds) setCampaignMailboxes(ctx, c.id, mailboxIds);
       if (body.sequence) {
         syncVariants(ctx, c.id, campaignSequence(c), body.sequence);
         reconcile(ctx, c.id, body.sequence);
@@ -190,7 +245,8 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
   app.post('/api/campaigns/:id/start', async (req) => {
     requireWriter(req);
     const c = load(req);
-    if (!campaignAccountIds(ctx, c.id).length) throw new HttpError(400, 'Choose a LinkedIn account for this campaign first');
+    const sendersProblem = senderProblem(campaignSequence(c), campaignAccountIds(ctx, c.id).length, campaignMailboxIds(ctx, c.id).length);
+    if (sendersProblem) throw new HttpError(400, sendersProblem);
     const problems = validateSequence(campaignSequence(c));
     if (problems.length) throw new HttpError(400, problems[0], problems);
     if (!campaignSequence(c).start) throw new HttpError(400, 'Add at least one step');
@@ -211,6 +267,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     const id = ctx.db.tx(() => {
       const id = ctx.db.insert('campaigns', { workspace_id: c.workspace_id, account_id: c.account_id, name: `${c.name} (copy)`, status: 'draft', sequence: c.sequence, settings: c.settings, created_at: ctx.clock.now() });
       setCampaignAccounts(ctx, id, campaignAccountIds(ctx, c.id));
+      setCampaignMailboxes(ctx, id, campaignMailboxIds(ctx, c.id));
       return id;
     });
     return { id };
@@ -247,15 +304,15 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     const where = q.state ? 'AND cl.state = $state' : '';
     const p = { c: c.id, ...(q.state ? { state: q.state } : {}) };
     const total = ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM campaign_leads cl WHERE cl.campaign_id = $c ${where}`, p)!.n;
-    const rows = ctx.db.all<LeadRow & { cl_state: string; node_id: string; node_type: string; next_run_at: number; last_error: string; added_at: number; sender_id: number | null; sender_name: string | null }>(
-      `SELECT l.*, cl.state AS cl_state, cl.node_id, cl.node_type, cl.next_run_at, cl.last_error, cl.added_at, s.id AS sender_id, s.name AS sender_name
-       FROM campaign_leads cl JOIN leads l ON l.id = cl.lead_id LEFT JOIN accounts s ON s.id = cl.account_id WHERE cl.campaign_id = $c ${where}
+    const rows = ctx.db.all<LeadRow & { cl_state: string; node_id: string; node_type: string; next_run_at: number; last_error: string; added_at: number; sender_id: number | null; sender_name: string | null; mb_id: number | null; mb_name: string | null }>(
+      `SELECT l.*, cl.state AS cl_state, cl.node_id, cl.node_type, cl.next_run_at, cl.last_error, cl.added_at, s.id AS sender_id, s.name AS sender_name, mb.id AS mb_id, mb.name AS mb_name
+       FROM campaign_leads cl JOIN leads l ON l.id = cl.lead_id LEFT JOIN accounts s ON s.id = cl.account_id LEFT JOIN mailboxes mb ON mb.id = cl.mailbox_id WHERE cl.campaign_id = $c ${where}
        ORDER BY cl.id LIMIT ${q.pageSize} OFFSET ${(q.page - 1) * q.pageSize}`,
       p,
     );
     return {
       total,
-      items: rows.map((r) => ({ lead: serializeLead(r), state: r.cl_state, nodeId: r.node_id, nodeType: r.node_type, nextRunAt: r.next_run_at, lastError: r.last_error, addedAt: r.added_at, sender: r.sender_id ? { id: r.sender_id, name: r.sender_name! } : null })),
+      items: rows.map((r) => ({ lead: serializeLead(r), state: r.cl_state, nodeId: r.node_id, nodeType: r.node_type, nextRunAt: r.next_run_at, lastError: r.last_error, addedAt: r.added_at, sender: r.sender_id ? { id: r.sender_id, name: r.sender_name! } : null, mailbox: r.mb_id ? { id: r.mb_id, name: r.mb_name! } : null })),
     };
   });
 
@@ -304,6 +361,24 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
     const text = render(body.template, vars);
     return { text, length: text.length, unknown: unknownVariables(body.template, [...VARIABLE_NAMES, ...custom], ai.map((v) => v.name)), sampleLead: vars.fullName };
   });
+}
+
+// Who sends what: LinkedIn steps need a LinkedIn account; a campaign needs at least one sender of any kind.
+function senderProblem(seq: Sequence, accounts: number, mailboxes: number): string | null {
+  if (!accounts && !mailboxes) return 'Choose a LinkedIn account or a mailbox for this campaign first.';
+  const linkedIn = Object.values(seq.nodes).some((n) => (ACTION_TYPES as readonly string[]).includes(n.type) && n.type !== 'email');
+  if (linkedIn && !accounts) return 'This sequence has LinkedIn steps: choose a LinkedIn account for this campaign.';
+  return null;
+}
+
+function senderWarnings(ctx: Ctx, seq: Sequence, settings: CampaignSettings, mailboxes: number): string[] {
+  const emails = Object.values(seq.nodes).filter((n) => n.type === 'email');
+  if (!emails.length) return [];
+  const out: string[] = [];
+  if (!mailboxes) out.push('Email steps have no mailbox: they go out through the LinkedIn account’s old SMTP settings, or are only recorded (not delivered) without them. Choose mailboxes in the campaign settings.');
+  if ((settings.trackOpens || settings.trackClicks) && !ctx.config.publicUrl) out.push('Open and click tracking need PUBLIC_URL on the server; without it emails go out untracked.');
+  if (!mailboxes && emails.some((n) => n.type === 'email' && n.replyInThread)) out.push('"Reply in the same thread" only works when the campaign sends from mailboxes.');
+  return out;
 }
 
 function sequenceWarnings(seq: Sequence, settings: CampaignSettings): string[] {

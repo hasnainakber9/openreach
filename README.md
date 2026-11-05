@@ -18,7 +18,8 @@ OpenReach is an independent project. It is not affiliated with LinkedIn or with 
 | **InMail and Sales Navigator** | An *InMail* step writes to people you aren't connected to, with a subject, from their profile or from Sales Navigator. It has its own daily limit (10 by default) and uses the account's InMail credits, except for open profiles, which are free. Without credits, leads who aren't open profiles are skipped with the reason; when LinkedIn says the credits are used up, InMail pauses for a day. Leads who are already connected get a normal message instead, which counts toward the daily message limit. |
 | **Safety** | Per-account daily and weekly limits, a 7-day warm-up ramp, working hours and days in the account's time zone, randomized pauses between actions, and human-like scrolling and typing. LinkedIn's own pushback (for example the weekly invite cap) puts that action on a 24-hour cool-down. |
 | **Multiple accounts and sender rotation** | Each account has its own session, proxy, schedule and limits. A campaign can send from several accounts: each new lead goes to the account with the most room left today (or to the one it is already connected to), and stays with the account that first contacted it, so a person always hears from the same sender. Every account still keeps to its own limits, hours and delays. If an account is paused or logged out, the others take over the leads it hadn't contacted yet. The campaign page shows each lead's sender and results per sender. |
-| **Unified inbox** | Conversations from every account in one place. Replies are detected automatically and stop the lead's sequence (or, if you choose, let it carry on after certain kinds of reply). You can reply from the inbox. |
+| **Email mailboxes** | Email steps send from your own mailboxes (Gmail, Microsoft 365 or any SMTP server, with app passwords), separate from LinkedIn accounts. Each mailbox has its own daily limit with a warm-up ramp, sending days and hours in its time zone, random gaps between emails, a signature and a from name. A campaign can rotate leads across several mailboxes; each lead stays with the mailbox that first emailed it. Emails carry a proper Message-ID, plain text plus simple HTML, an unsubscribe link and one-click `List-Unsubscribe` headers; a follow-up can *reply in the same thread*. Replies and bounces are read over IMAP (read-only): replies stop the sequence and show in the inbox, bounces mark the address invalid. A deliverability check looks up MX, SPF, DKIM and DMARC and says what to fix. Open and click tracking exist per campaign and are off by default. A simulated mailbox sends nothing and makes up replies and bounces for demos. |
+| **Unified inbox** | Conversations from every account and mailbox in one place. Replies are detected automatically and stop the lead's sequence (or, if you choose, let it carry on after certain kinds of reply). You can reply from the inbox. |
 | **Reply classification and suggested replies** | Every new reply is labelled in the background as interested, meeting booked, question, not now, not interested, out of office, wrong person, unsubscribe or other, with how sure the AI is. The inbox shows the label, filters by it, lets you correct it, and hints at the pipeline stage it suggests. *Suggest reply* drafts up to three answers from the conversation; you pick one, edit it, and nothing is sent until you press Send. People who clearly ask to be left alone (unsubscribe, or a confident *not interested*) go on a do-not-contact list and stop in every campaign; review or undo it under **Settings → Blacklist → Do not contact**. Without an AI provider, keyword rules stand in. |
 | **Analytics** | Daily activity, an acceptance and reply funnel, and per-campaign results and timelines. Live activity feed. |
 | **Team** | Workspaces with owner, admin and member roles. |
@@ -94,6 +95,17 @@ If LinkedIn logs the session out or asks for a verification check, the account s
 
 Recommended starting limits for an established account: 15–25 invites/day (≤100/week), 30–50 messages/day, and 60–80 profile views/day. For new or quiet accounts, keep warm-up on.
 
+## Connecting a mailbox
+
+Email steps send from **Mailboxes** (owners and admins manage them). Set `PUBLIC_URL` first: every campaign email carries an unsubscribe link, and a real mailbox will not send without it (except one moved over from a LinkedIn account's SMTP settings, which keeps sending as before with a `mailto:` unsubscribe header only).
+
+1. Create an **app password**. Gmail / Google Workspace: turn on 2-step verification, then Google Account → Security → App passwords. Outlook / Microsoft 365: Microsoft account → Security → Advanced security options → App passwords. Signing in with Google or Microsoft (OAuth) is **not** included, and some Microsoft 365 tenants turn SMTP AUTH off (an admin can enable it per mailbox).
+2. In OpenReach, go to **Mailboxes → Add mailbox**, pick the provider (it fills in the SMTP and IMAP servers), and enter the address and the app password for both. Passwords are encrypted at rest and never shown again; if you later change a server's host, port or username, enter the password again.
+3. Press **Test connection**, run the **Deliverability check** for your domain, and fix what it flags (SPF, DKIM and DMARC matter most).
+4. Keep **Warm up** on for a new mailbox (it starts at a few emails a day and reaches the daily limit over a couple of weeks), and choose the mailbox under the campaign's **Settings → Send email from**.
+
+If the server refuses the login, the mailbox switches to **Needs attention** and stops; fix the settings and press **Resume**. SMTP settings that were saved on a LinkedIn account before mailboxes existed are moved to a mailbox automatically, with the account's email limit, schedule and pauses and no warm-up.
+
 ## How it works
 
 ```
@@ -109,6 +121,7 @@ server/
     types.ts        LinkedInDriver interface — the only thing the engine talks to
     simulator.ts    fake LinkedIn network for demos and tests
     playwright/     real browser driver; selectors.ts holds every LinkedIn-specific selector
+  src/mail/         mailboxes, email composing, the mail runner, IMAP replies/bounces, deliverability, links
   src/routes/       REST API (Fastify)
   src/db/           SQLite schema and migrations
 ```
@@ -154,6 +167,7 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 | `PUBLIC_URL` | | External https:// address of this server. Used for links that leave the app (unsubscribe, tracking, invites); never taken from request headers. |
 | `JOB_CONCURRENCY` | `4` | Background jobs (enrichment, AI, CRM sync, ...) running at once. Jobs run inside the campaign engine, so they need `RUN_WORKER`. |
 | `AI_WAIT_MAX_MIN` | `30` | How long a step waits for its `{{ai:...}}` variables before sending with the fallbacks |
+| `MAIL_SYNC_INTERVAL_MIN` | `5` | Minutes between IMAP checks for replies and bounces, per mailbox |
 | `REPLY_HOLD_MIN` | `30` | How long a lead that replied waits for its reply to be classified, in campaigns that keep going after some replies |
 
 ## API and webhooks
@@ -171,6 +185,8 @@ To verify a delivery, compute `sha256=` + HMAC-SHA256(body, secret) and compare 
 ## Limitations
 
 - **Email finding** (looking up work emails from third-party databases) is not included. Email steps use addresses from your CSV, or from a 1st-degree connection's contact info.
+- Mailboxes sign in with passwords (app passwords) over SMTP and IMAP; OAuth sign-in for Google and Microsoft is not included. The IMAP reader (imapflow) and the bounce parsing are tested against fake inbox data only. Replies are only detected in the mailbox's own INBOX, matched to our emails by `In-Reply-To`/`References` or to a lead by sender address; mail filed elsewhere by a rule is missed. Real mailboxes never send to reserved test domains (`.example`, `.test`, ...). OpenReach does not warm mailboxes up by exchanging emails with other mailboxes; warm-up here only ramps the daily limit.
+- Open and click tracking (off by default) records personal data and is approximate: privacy proxies and link scanners open mail too. Check the law that applies to you before turning it on.
 - Imports from posts, events and groups, InMail and Sales Navigator messaging are new and **best effort** on real accounts: their selectors are written from LinkedIn's public markup and tested only against the local mock. Sales Navigator search import is best effort too. Event attendees and group members are only visible to accounts attending the event or in the group.
 - With real accounts, whether a lead has an *open profile* is not detected yet (LinkedIn shows no reliable marker), so the *has an open profile* branch only works with the simulator for now.
 - LinkedIn imports and AI personalization run as background jobs inside the campaign engine, so they need `RUN_WORKER` (the default).

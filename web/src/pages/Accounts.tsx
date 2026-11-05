@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, serverNow, useApi, type Account } from '../api';
 import { Button, Empty, ErrorNote, Field, Meter, Modal, Pill, Toggle, useAction } from '../components/ui';
 import { ACTION_LABELS, timeAgo, WEEKDAYS } from '../format';
@@ -116,8 +117,6 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
     delayMaxSec: account?.delayMaxSec ?? 240,
     warmup: account?.warmup ?? true,
     limits: { ...DEFAULTS, ...(account?.limits ?? {}) } as Record<string, number>,
-    smtpOn: !!account?.smtp,
-    smtp: { host: '', port: 587, secure: false, user: '', pass: '', from: '', ...(account?.smtp ?? {}) },
   });
   const [error, setError] = useState<string | null>(null);
   const { busy, run } = useAction();
@@ -137,7 +136,6 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
         delayMaxSec: f.delayMaxSec,
         warmup: f.warmup,
         limits: f.limits,
-        smtp: f.smtpOn ? f.smtp : null,
       };
       if (f.liAt.trim()) body.liAt = f.liAt.trim();
       if (f.proxyUrl.trim()) body.proxyUrl = f.proxyUrl.trim();
@@ -248,30 +246,10 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
         ))}
       </div>
 
-      <h3>Email (optional)</h3>
-      <Toggle checked={f.smtpOn} onChange={(v) => set('smtpOn', v)} label="Send email steps through SMTP" hint="Without this, email steps are recorded but not delivered." />
-      {f.smtpOn && (
-        <div className="grid grid-3">
-          <Field label="SMTP host">
-            <input type="text" value={f.smtp.host} onChange={(e) => set('smtp', { ...f.smtp, host: e.target.value })} />
-          </Field>
-          <Field label="Port">
-            <input type="number" value={f.smtp.port} onChange={(e) => set('smtp', { ...f.smtp, port: Number(e.target.value) })} />
-          </Field>
-          <Field label="From address">
-            <input type="text" value={f.smtp.from} onChange={(e) => set('smtp', { ...f.smtp, from: e.target.value })} placeholder="Sara <sara@acme.com>" />
-          </Field>
-          <Field label="Username">
-            <input type="text" value={f.smtp.user} onChange={(e) => set('smtp', { ...f.smtp, user: e.target.value })} autoComplete="off" />
-          </Field>
-          <Field label="Password" hint={account?.smtp ? 'Leave blank to keep the saved one.' : undefined}>
-            <input type="password" value={f.smtp.pass} onChange={(e) => set('smtp', { ...f.smtp, pass: e.target.value })} autoComplete="new-password" />
-          </Field>
-          <div style={{ alignSelf: 'end', paddingBottom: 8 }}>
-            <Toggle checked={f.smtp.secure} onChange={(v) => set('smtp', { ...f.smtp, secure: v })} label="TLS (port 465)" />
-          </div>
-        </div>
-      )}
+      <h3>Email</h3>
+      <div className="note">
+        Email steps now send from <Link to="/mailboxes">Mailboxes</Link>, with their own limits, warm-up and reply detection. SMTP settings saved on this account earlier were moved to a mailbox.
+      </div>
       <ErrorNote error={error} />
     </Modal>
   );

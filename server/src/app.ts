@@ -12,6 +12,8 @@ import { inboxRoutes } from './routes/inbox.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { jobRoutes } from './routes/jobs.js';
 import { leadRoutes } from './routes/leads.js';
+import { mailboxRoutes } from './routes/mailboxes.js';
+import { publicRoutes } from './routes/public.js';
 import { settingsRoutes } from './routes/settings.js';
 
 const PUBLIC = new Set(['/api/auth/status', '/api/auth/login', '/api/auth/register', '/api/health']);
@@ -66,6 +68,9 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
   integrationRoutes(app, ctx);
   jobRoutes(app, ctx);
   aiRoutes(app, ctx);
+  mailboxRoutes(app, ctx);
+  // Unsubscribe and tracking links (outside /api, no session); registered before the SPA fallback.
+  publicRoutes(app, ctx);
 
   // Serve the built web app, falling back to index.html for client-side routes.
   if (existsSync(ctx.config.webDist)) {

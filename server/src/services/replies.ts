@@ -76,6 +76,8 @@ export interface InboundReply {
   messageId: number | null;
   body: string;
   account?: { id: number; name: string; timezone?: string } | null;
+  // Email replies: the mailbox the reply came in to.
+  mailbox?: { id: number; name: string; timezone?: string } | null;
 }
 
 export const classifyJobKey = (messageId: number) => `ai.classify:msg:${messageId}`;
@@ -105,17 +107,19 @@ export function handleInboundReply(ctx: Ctx, r: InboundReply) {
     logActivity(ctx, {
       workspaceId: lead.workspace_id,
       accountId: r.account?.id,
+      mailboxId: r.mailbox?.id,
       campaignId: active[0]?.campaign_id,
       leadId: lead.id,
       type: 'replied',
       detail: r.body.slice(0, 500),
-      timezone: r.account?.timezone,
+      timezone: r.account?.timezone ?? r.mailbox?.timezone,
     });
   });
   ctx.webhooks.emit(lead.workspace_id, 'lead.replied', {
     lead: publicLead({ ...lead, replied_at: now }),
     message: r.body,
     ...(r.account ? { account: { id: r.account.id, name: r.account.name } } : {}),
+    ...(r.mailbox ? { mailbox: { id: r.mailbox.id, name: r.mailbox.name } } : {}),
     channel: r.channel,
   });
   if (r.messageId) ctx.jobs.enqueue('ai.classify', { messageId: r.messageId }, { workspaceId: lead.workspace_id, dedupeKey: classifyJobKey(r.messageId) });

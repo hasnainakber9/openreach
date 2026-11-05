@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, REPLY_CATEGORIES, useApi, type Account, type Conversation, type ReplyCategory, type Thread as ThreadData } from '../api';
+import { api, REPLY_CATEGORIES, useApi, type Account, type Conversation, type Mailbox, type ReplyCategory, type Thread as ThreadData } from '../api';
+import { Icon } from '../components/Icon';
 import { Button, Empty, Pill, ProviderBadge, useAction } from '../components/ui';
 import { CATEGORY_LABELS, dateTime, STAGE_LABELS, timeAgo } from '../format';
 
 export default function Inbox() {
   const accounts = useApi<Account[]>('/api/accounts');
-  const [accountId, setAccountId] = useState('');
+  const mailboxes = useApi<Mailbox[]>('/api/mailboxes');
+  // "a12" = LinkedIn account 12, "m3" = mailbox 3.
+  const [source, setSource] = useState('');
   const [category, setCategory] = useState('');
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [q, setQ] = useState('');
   const params = new URLSearchParams();
-  if (accountId) params.set('accountId', accountId);
+  if (source.startsWith('a')) params.set('accountId', source.slice(1));
+  if (source.startsWith('m')) params.set('mailboxId', source.slice(1));
   if (category) params.set('category', category);
   if (unreadOnly) params.set('unread', 'true');
   if (q) params.set('q', q);
@@ -23,6 +27,8 @@ export default function Inbox() {
       'sync',
       async () => {
         for (const a of accounts.data ?? []) if (a.status === 'active') await api(`/api/accounts/${a.id}/sync`, { body: {} });
+        // Mailboxes are read in the background; this only asks for it now.
+        for (const m of mailboxes.data ?? []) if (m.status !== 'needs_attention' && (m.simulated || m.hasImap)) await api(`/api/mailboxes/${m.id}/sync`, { body: {} });
         await list.reload();
       },
       'Inbox synced',
@@ -33,7 +39,7 @@ export default function Inbox() {
       <div className="page-head">
         <div>
           <h1>Inbox</h1>
-          <p>Conversations from every connected LinkedIn account in one place. Replies are sorted by what they mean.</p>
+          <p>Conversations from every LinkedIn account and mailbox in one place. Replies are sorted by what they mean.</p>
         </div>
         <Button busy={busy === 'sync'} onClick={syncAll}>
           Sync now
@@ -45,11 +51,16 @@ export default function Inbox() {
             <div className="stack" style={{ padding: 12, gap: 8, borderBottom: '1px solid var(--line)' }}>
               <input type="search" placeholder="Search conversations" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search conversations" />
               <div className="row" style={{ flexWrap: 'nowrap' }}>
-                <select value={accountId} onChange={(e) => setAccountId(e.target.value)} aria-label="Account">
-                  <option value="">All accounts</option>
+                <select value={source} onChange={(e) => setSource(e.target.value)} aria-label="Account or mailbox">
+                  <option value="">All accounts and mailboxes</option>
                   {accounts.data?.map((a) => (
-                    <option key={a.id} value={a.id}>
+                    <option key={`a${a.id}`} value={`a${a.id}`}>
                       {a.name}
+                    </option>
+                  ))}
+                  {mailboxes.data?.map((m) => (
+                    <option key={`m${m.id}`} value={`m${m.id}`}>
+                      {m.name} (email)
                     </option>
                   ))}
                 </select>
@@ -69,24 +80,30 @@ export default function Inbox() {
             </div>
             {list.data && !list.data.length && (
               <p className="muted" style={{ padding: 16 }}>
-                {category || unreadOnly || q || accountId ? 'No conversations match these filters.' : 'No conversations yet. Messages your campaigns send, and replies, show up here.'}
+                {category || unreadOnly || q || source ? 'No conversations match these filters.' : 'No conversations yet. Messages your campaigns send, and replies, show up here.'}
               </p>
             )}
             {list.data?.map((c) => (
               <button key={c.id} className={`inbox-item ${openId === c.id ? 'active' : ''} ${c.unread ? 'unread' : ''}`} onClick={() => setOpenId(c.id)}>
                 <div className="spread">
-                  <span className="cell-title">{c.name || 'Unknown'}</span>
+                  <span className="cell-title row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+                    <span className="muted" title={c.channel === 'email' ? 'Email' : 'LinkedIn'} aria-label={c.channel === 'email' ? 'Email' : 'LinkedIn'}>
+                      <Icon name={c.channel === 'email' ? 'email' : 'message'} size={12} />
+                    </span>
+                    {c.name || c.participantAddress || 'Unknown'}
+                  </span>
                   <span className="muted" style={{ fontSize: 12 }}>
                     {timeAgo(c.lastMessageAt)}
                   </span>
                 </div>
+                {c.subject && <div className="cell-sub" style={{ fontWeight: 600 }}>{c.subject}</div>}
                 <div className="cell-sub">
                   {c.lastDirection === 'out' && 'You: '}
                   {c.lastMessage}
                 </div>
                 <div className="spread" style={{ marginTop: 4 }}>
                   <span className="cell-sub" style={{ fontSize: 11.5 }}>
-                    {c.accountName}
+                    {c.accountName ?? c.mailboxName}
                     {c.campaignName && ` · ${c.campaignName}`}
                   </span>
                   {c.category && <Pill status={c.category}>{CATEGORY_LABELS[c.category]}</Pill>}
@@ -150,7 +167,15 @@ function Thread({ id, onChange }: { id: number; onChange: () => void }) {
     <div className="thread">
       <div className="thread-head stack" style={{ gap: 8 }}>
         <div className="spread">
-          <strong>{c.name}</strong>
+          <div>
+            <strong>{c.name || c.participantAddress}</strong>
+            {c.channel === 'email' && (
+              <div className="cell-sub">
+                {c.subject && <>{c.subject} · </>}
+                {c.participantAddress} via {c.mailboxName ?? 'a removed mailbox'}
+              </div>
+            )}
+          </div>
           {c.profileUrl && (
             <a href={c.profileUrl} target="_blank" rel="noreferrer">
               View profile
@@ -222,7 +247,7 @@ function Thread({ id, onChange }: { id: number; onChange: () => void }) {
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Write a reply… (Ctrl+Enter to send)"
+          placeholder={c.channel === 'email' ? 'Write an email reply, sent in this thread… (Ctrl+Enter to send)' : 'Write a reply… (Ctrl+Enter to send)'}
           aria-label="Reply"
           rows={2}
           onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && text.trim() && send()}

@@ -10,6 +10,7 @@ export interface JobPayloads {
   'leads.import': { importId: number };
   'ai.personalize': { campaignLeadId: number };
   'ai.classify': { messageId: number };
+  'email.sync': { mailboxId: number };
 }
 
 export type JobType = keyof JobPayloads & string;
