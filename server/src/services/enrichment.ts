@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { assertCredits } from '../billing/limits.js';
 import { HOUR, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -90,6 +91,12 @@ export interface WaterfallResult {
   transient: Error | null;
 }
 
+// Hosted plans include a number of enrichment credits a month; simulated providers are free. Over quota, the
+// call is an error like a vendor's empty balance (the lookup carries on with what it has).
+function chargeable(ctx: Ctx, workspaceId: number, p: { simulated: boolean }) {
+  if (!p.simulated) assertCredits(ctx, workspaceId, 'enrichmentCreditsMonthly');
+}
+
 // Rate limits end the whole lookup: the job retries it later (no attempt used up), from the first finder again.
 function rethrowIfRateLimited(e: unknown) {
   if (e instanceof ProviderError && e.code === 'RATE_LIMIT') throw e;
@@ -104,6 +111,7 @@ const errorText = (e: unknown) => (e instanceof ProviderError ? e.message : 'une
 
 async function verifyWith(ctx: Ctx, workspaceId: number, verifier: EmailVerifier, email: string) {
   try {
+    chargeable(ctx, workspaceId, verifier);
     const r = await verifier.verify(email);
     usage(ctx, workspaceId, 'email_verifier', verifier, 'verifier.verify', r.credits ?? 1);
     return { status: r.status, reason: r.reason, error: null as unknown };
@@ -139,6 +147,7 @@ export async function findEmailWaterfall(ctx: Ctx, workspaceId: number, lead: Le
     const label = providerLabel('email_finder', finder.providerId);
     let found: Awaited<ReturnType<EmailFinder['find']>>;
     try {
+      chargeable(ctx, workspaceId, finder);
       found = await finder.find(input);
       usage(ctx, workspaceId, 'email_finder', finder, 'finder.find', found?.credits ?? 0);
     } catch (e) {
@@ -258,6 +267,7 @@ async function computeEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions): Pro
     const enricher = ctx.providers.get(ws, 'enrichment')!;
     const label = providerLabel('enrichment', enricher.providerId);
     try {
+      chargeable(ctx, ws, enricher);
       const email = (patch.email as string | undefined) ?? lead.email;
       const r = await enricher.enrich({ firstName: lead.first_name, lastName: lead.last_name, company: lead.company, title: lead.title, email, profileUrl: lead.profile_url, domain: lead.company_domain ?? undefined });
       usage(ctx, ws, 'enrichment', enricher, 'enrich.person', r?.credits ?? (r ? 1 : 0));

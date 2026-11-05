@@ -788,4 +788,33 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX crm_sync_log_integration ON crm_sync_log(integration_id, created_at);
   CREATE INDEX crm_links_integration ON crm_links(integration_id);
   `,
+  // [M13] g5-billing: one subscription per billing root (a standalone or agency workspace; client workspaces
+  // bill through their agency), and the Stripe events already handled, so redelivered events are ignored.
+  `
+  CREATE TABLE subscriptions (
+    workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    stripe_customer_id TEXT,
+    stripe_subscription_id TEXT,
+    plan_id TEXT,
+    -- none | trialing | active | past_due | unpaid | canceled | incomplete | incomplete_expired | paused
+    status TEXT NOT NULL DEFAULT 'none',
+    current_period_end INTEGER,
+    cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+    -- Stripe's event time (seconds) of the last status change, so events that arrive late are ignored
+    last_event_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX subscriptions_customer ON subscriptions(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;
+  CREATE TABLE stripe_events (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    received_at INTEGER NOT NULL
+  );
+  `,
+  // [M13] g5-billing (review): the open Checkout session, expired before another one starts so two can't both
+  // be paid, and a second live subscription seen for the workspace, so the owner is told to cancel one.
+  `
+  ALTER TABLE subscriptions ADD COLUMN checkout_session_id TEXT;
+  ALTER TABLE subscriptions ADD COLUMN extra_subscription_id TEXT;
+  `,
 ];

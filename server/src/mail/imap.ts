@@ -3,6 +3,7 @@ import { DAY, HOUR, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { hashUnit, pick } from '../providers/hash.js';
 import { MailError } from '../services/email.js';
+import { pinMailServer } from '../services/hosts.js';
 import type { EmailMessageRow, MailboxRow } from '../types.js';
 import { emailDomain, isSimulated, serverSettings, type ServerSettings } from './mailboxes.js';
 
@@ -58,7 +59,9 @@ export const splitReferences = (refs: string | null | undefined) => (refs ?? '')
 export const imapflowFactory: ImapFactory = (cfg) => {
   const connect = async () => {
     const client = new ImapFlow({
-      host: cfg.host,
+      host: cfg.address ?? cfg.host,
+      // The certificate is checked against the name, not the address we connect to.
+      servername: cfg.address ? cfg.host : undefined,
       port: cfg.port,
       secure: cfg.secure,
       // Without TLS from the start, insist on STARTTLS: imapflow would otherwise send LOGIN in clear text
@@ -289,5 +292,17 @@ export function simulatedImap(ctx: Ctx, mb: MailboxRow): ImapClient {
 export function imapFor(ctx: Ctx, mb: MailboxRow): ImapClient | null {
   if (isSimulated(mb)) return simulatedImap(ctx, mb);
   const cfg = serverSettings(ctx, mb.imap_enc);
-  return cfg ? ctx.imap(cfg) : null;
+  if (!cfg) return null;
+  // The host is checked (hosted installs) and resolved right before each connection.
+  const client = async () => ctx.imap(await pinMailServer(ctx, cfg));
+  return {
+    async test() {
+      try {
+        return await (await client()).test();
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+    },
+    fetchSince: async (lastUid, uidValidity, opts) => (await client()).fetchSince(lastUid, uidValidity, opts),
+  };
 }

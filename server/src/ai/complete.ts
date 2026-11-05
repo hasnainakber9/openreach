@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import { assertCredits } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import type { AiProvider, AiRequest, AiResult } from '../providers/ai/types.js';
 import { ProviderError } from '../providers/http.js';
@@ -18,6 +19,8 @@ export function aiProvider(ctx: Ctx, workspaceId: number): AiProvider {
 // Every AI call goes through here, so token usage is recorded per workspace (failed calls too).
 export async function completeAi(ctx: Ctx, workspaceId: number, req: AiRequest, provider = aiProvider(ctx, workspaceId)): Promise<AiOutput> {
   const usage = { workspaceId, kind: 'ai', provider: provider.providerId, operation: `ai.${req.purpose}` };
+  // Hosted plans include a number of AI calls a month; the simulated provider is free.
+  if (!provider.simulated) assertCredits(ctx, workspaceId, 'aiCreditsMonthly');
   try {
     const out = await provider.complete(req);
     recordUsage(ctx, { ...usage, inputTokens: out.inputTokens, outputTokens: out.outputTokens });

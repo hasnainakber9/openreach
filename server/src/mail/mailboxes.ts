@@ -1,3 +1,4 @@
+import { withinPlan } from '../billing/limits.js';
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -17,6 +18,8 @@ export interface ServerSettings {
   secure: boolean;
   user: string;
   pass: string;
+  // Set only right before connecting (pinMailServer), never saved.
+  address?: string;
 }
 
 export interface MailboxPreset {
@@ -322,6 +325,11 @@ export function ensureLegacyMailboxes(ctx: Ctx) {
   for (const a of accounts) {
     const smtp = json<SmtpConfig | null>(ctx.sealer.open(a.smtp_enc), null);
     if (!smtp?.host) continue;
+    // Hosted installs: no mailbox past the plan's limit (the account's SMTP then stays unused; see the engine).
+    if (!withinPlan(ctx, a.workspace_id, 'mailboxes')) {
+      console.warn(`[mail] Account ${a.id}'s SMTP settings were not turned into a mailbox: workspace ${a.workspace_id}'s plan has no mailbox left`);
+      continue;
+    }
     const from = parseFrom(smtp.from || smtp.user);
     const limit = Number(json<Record<string, number>>(a.limits, {}).email ?? DEFAULT_LIMITS.email);
     const now = ctx.clock.now();

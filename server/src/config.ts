@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { loadPlans, type Plan } from './billing/plans.js';
 
 export interface Config {
   port: number;
@@ -27,6 +28,10 @@ export interface Config {
   mailFrom?: string;
   trustProxy: TrustProxy;
   customDomains?: string[];
+  // Hosted billing: off unless the Stripe key is set (self-hosted installs stay unlimited).
+  stripeSecretKey?: string;
+  stripeWebhookSecret?: string;
+  plans?: Plan[];
 }
 
 // false: ignore X-Forwarded-*. A number: trust that many proxy hops in front of the app. A list: trust
@@ -70,7 +75,16 @@ export function loadConfig(env = process.env): Config {
     // Hostnames (or *.suffix patterns) workspaces may claim as custom domains. Unset: any, unless signup
     // is open, where strangers could squat domains; then none.
     customDomains: env.CUSTOM_DOMAINS?.split(',').map((d) => d.trim().toLowerCase().replace(/\.$/, '')).filter(Boolean),
+    ...billingConfig(env),
   };
+}
+
+// Plans are checked at startup, so a typo stops the server instead of locking every workspace out.
+function billingConfig(env: Record<string, string | undefined>): Pick<Config, 'stripeSecretKey' | 'stripeWebhookSecret' | 'plans'> {
+  const stripeSecretKey = env.STRIPE_SECRET_KEY?.trim() || undefined;
+  const plans = loadPlans(env);
+  if (stripeSecretKey && !plans.length) throw new Error('STRIPE_SECRET_KEY is set but no plans are defined. Set BILLING_PLANS or BILLING_PLANS_FILE.');
+  return { stripeSecretKey, stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET?.trim() || undefined, plans };
 }
 
 // 'true' means the one proxy in front of us. Trusting every hop would let a client pick its own IP (the

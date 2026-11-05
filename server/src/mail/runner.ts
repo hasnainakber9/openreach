@@ -9,6 +9,7 @@ import { leadVars, render } from '../engine/template.js';
 import { assignVariant } from '../engine/variants.js';
 import { logActivity, type ActivityInput } from '../services/activity.js';
 import { mailError } from '../services/email.js';
+import { pinMailServer } from '../services/hosts.js';
 import { suppressionReason } from '../services/suppression.js';
 import type { CampaignLeadRow, CampaignLeadState, CampaignRow, EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
 import { composeEmail, newMessageId, replySubject, type ThreadRef } from './compose.js';
@@ -243,7 +244,8 @@ export class MailRunner {
     });
 
     try {
-      const r = await ctx.mailer.send(smtpTransport(ctx, mb), msg);
+      const transport = smtpTransport(ctx, mb);
+      const r = await ctx.mailer.send(transport && (await pinMailServer(ctx, transport)), msg);
       ctx.db.tx(() => {
         const conv = recordConversation(ctx, mb, lead, thread, msg.subject, messageId, body);
         ctx.db.update('email_messages', rowId, {

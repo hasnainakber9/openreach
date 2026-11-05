@@ -19,6 +19,7 @@
     "fastify": "^5.12.7",
     "imapflow": "^2.10.2",
     "nodemailer": "^10.3.1",
+    "stripe": "^23.1.0",
     "zod": "^3.25.76"
   },
   "optionalDependencies": {

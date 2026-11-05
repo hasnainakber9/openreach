@@ -1,4 +1,4 @@
-import { Resolver } from 'node:dns/promises';
+import { lookup as osLookup, Resolver } from 'node:dns/promises';
 
 // Checks a sending domain's DNS: MX (can receive replies and bounces), SPF (which servers may send for
 // it), DKIM (signing key published) and DMARC (policy). Each check says pass/warn/fail with what to fix.
@@ -7,11 +7,13 @@ import { Resolver } from 'node:dns/promises';
 export interface DnsResolver {
   resolveMx(domain: string): Promise<{ exchange: string; priority: number }[]>;
   resolveTxt(domain: string): Promise<string[][]>;
+  // Every address a host name resolves to, the way a connection would resolve it (hosts file included).
+  lookup(host: string): Promise<{ address: string; family: number }[]>;
 }
 
 export function systemResolver(): DnsResolver {
   const r = new Resolver({ timeout: 5000, tries: 2 });
-  return { resolveMx: (d) => r.resolveMx(d), resolveTxt: (d) => r.resolveTxt(d) };
+  return { resolveMx: (d) => r.resolveMx(d), resolveTxt: (d) => r.resolveTxt(d), lookup: (h) => osLookup(h, { all: true }) };
 }
 
 export type CheckStatus = 'pass' | 'warn' | 'fail';

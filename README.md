@@ -179,6 +179,8 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 | `SMTP_URL` / `MAIL_FROM` | | The installation's own mail server for invites, e.g. `smtps://user:pass@smtp.example.com:465` (`smtp://` uses STARTTLS), and the sender address. Separate from users' mailboxes. Without it (or without `PUBLIC_URL`), invite links are only shown to copy. |
 | `TRUST_PROXY` | `false` | Behind a reverse proxy, so the client IP (sign-in throttling) and the host (custom-domain branding) come from `X-Forwarded-*` headers. `true` trusts the one proxy directly in front of the app; a number trusts that many proxy hops; a comma-separated list of proxy addresses or CIDR ranges (for example `10.0.0.0/8,loopback`) trusts exactly those. Use the smallest setting that covers your proxies: a client could otherwise pick its own IP and dodge the sign-in throttle. |
 | `CUSTOM_DOMAINS` | | Comma-separated hostnames, or `*.example.com` patterns, that agencies may use as custom domains. Unset: any domain, except when `ALLOW_SIGNUP=true`, where custom domains are off until you list them. |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | | Hosted billing (see below). Unset: billing is off and nothing is limited. |
+| `BILLING_PLANS` / `BILLING_PLANS_FILE` | | The plans, as inline JSON or the path of a JSON file. Required when `STRIPE_SECRET_KEY` is set; checked at startup. |
 
 Inbound SMS and WhatsApp need `PUBLIC_URL`: Twilio signs each webhook request for that exact URL, and OpenReach refuses requests whose signature doesn't match. The Twilio card under **Settings → Integrations** shows the URL to paste into your number's *A message comes in* webhook.
 
@@ -187,6 +189,23 @@ Inbound SMS and WhatsApp need `PUBLIC_URL`: Twilio signs each webhook request fo
 A custom domain (for example `app.youragency.com`) only selects the branding shown on that host, including the sign-in page; it is the same app and the same accounts. To use one, point the domain's DNS at your server, add it to your reverse proxy with a TLS certificate (Caddy, nginx, Traefik or your host's dashboard), and set `TRUST_PROXY=true` if the proxy forwards the original host in `X-Forwarded-Host`. Links in emails (invites, unsubscribe, tracking) always use `PUBLIC_URL`.
 
 Only the agency owner sets the domain (for the agency and for each client). The server's own host (`PUBLIC_URL`) and local names such as `localhost` are never accepted, and someone signed in to another workspace keeps their own branding on a domain that isn't theirs. With open signup, list the domains you have set up in `CUSTOM_DOMAINS`, so a stranger can't claim one first.
+
+### Plans and billing (hosted installs)
+
+Self-hosted installs need none of this: without `STRIPE_SECRET_KEY` nothing is limited and there is no Billing page. If you host OpenReach for other people, set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `PUBLIC_URL` and your plans:
+
+```json
+[
+  { "id": "free", "name": "Free", "default": true, "limits": { "linkedinAccounts": 1, "mailboxes": 1, "seats": 1, "clientWorkspaces": 0, "aiCreditsMonthly": 50, "enrichmentCreditsMonthly": 0 } },
+  { "id": "pro", "name": "Pro", "priceId": "price_123", "limits": { "linkedinAccounts": 5, "mailboxes": 10, "seats": 5, "clientWorkspaces": 3, "aiCreditsMonthly": 2000, "enrichmentCreditsMonthly": 500 } }
+]
+```
+
+`priceId` is a recurring price in your Stripe account; a missing or `null` limit means unlimited. The `default` plan (at most one, and the only one that may have no price) applies to workspaces without a paid subscription, including ones whose payment failed or that canceled; nothing is deleted or paused, but nothing new can be added past its limits. Without a default plan, people must subscribe before adding accounts. Limits count an agency together with all its client workspaces; seats count people with write access (read-only clients are free) and pending invites. An AI credit is one call to a real AI provider; enrichment credits are what the finder, verifier and enrichment vendors report. Simulated providers are free.
+
+The workspace owner (the agency's owner, for clients) sees **Billing** in the sidebar: plan, usage and **Choose** buttons that open Stripe Checkout, and **Manage billing** for Stripe's Customer Portal (change plan, card, cancel; turn the portal on in your Stripe dashboard). In Stripe, add a webhook endpoint for `PUBLIC_URL/api/public/stripe/webhook` with the events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.payment_failed`, and put its signing secret in `STRIPE_WEBHOOK_SECRET`. Unsigned or wrongly signed requests are refused.
+
+With billing on, OpenReach treats the server as shared: hosts that people enter (an OpenAI-compatible base URL, mailbox SMTP and IMAP servers) must be public, so names that resolve to loopback, private, link-local or cloud metadata addresses are refused, and campaign email goes through mailboxes only (SMTP settings on a LinkedIn account can't be set).
 
 ## API and webhooks
 

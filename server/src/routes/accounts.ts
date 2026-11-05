@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { assertWithinPlan, billingEnabled } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { DriverError } from '../drivers/types.js';
@@ -79,6 +80,9 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
 
   const columns = (b: Partial<z.infer<typeof accountBody>>, existing?: AccountRow) => {
     const out: Record<string, any> = {};
+    // Hosted installs: email goes through mailboxes only, which the plan counts and whose hosts are checked.
+    // Account-level SMTP (from before mailboxes) would bypass both; clearing it is still allowed.
+    if (b.smtp && billingEnabled(ctx)) throw new HttpError(400, 'smtp: Add a mailbox under Mailboxes instead. SMTP settings on an account are not available on this server');
     if (b.name !== undefined) out.name = b.name;
     if (b.driver !== undefined) out.driver = b.driver;
     if (b.liAt) {
@@ -116,6 +120,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     requireWriter(req);
     const body = parse(accountBody, req.body);
     if (body.driver === 'playwright' && !body.liAt) throw new HttpError(400, 'A LinkedIn session cookie (li_at) is required');
+    assertWithinPlan(ctx, user(req).workspace_id, 'linkedinAccounts');
     const id = ctx.db.insert('accounts', { workspace_id: user(req).workspace_id, created_at: ctx.clock.now(), ...columns(body) });
     return serializeAccount(ctx, ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [id])!);
   });

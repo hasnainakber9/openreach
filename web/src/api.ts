@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public details?: unknown) {
     super(message);
   }
 }
+
+// A hosted plan's limit (HTTP 402). The app shell turns these into an upgrade prompt wherever they happen.
+export interface PlanLimitDetails {
+  code: 'plan_limit';
+  limit: LimitKey;
+  allowed: number;
+  used: number;
+}
+export const PLAN_LIMIT_EVENT = 'openreach:plan-limit';
+export const isPlanLimit = (e: unknown): e is ApiError & { details: PlanLimitDetails } =>
+  e instanceof ApiError && e.status === 402 && (e.details as PlanLimitDetails | undefined)?.code === 'plan_limit';
 
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   const res = await fetch(path, {
@@ -16,7 +27,9 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
   const data = res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text();
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/api/auth/')) window.dispatchEvent(new Event('openreach:signed-out'));
-    throw new ApiError(res.status, (data && data.error) || res.statusText);
+    const err = new ApiError(res.status, (data && data.error) || res.statusText, data?.details);
+    if (isPlanLimit(err)) window.dispatchEvent(new CustomEvent(PLAN_LIMIT_EVENT, { detail: err.message }));
+    throw err;
   }
   return data as T;
 }
@@ -822,4 +835,39 @@ export interface InviteInfo {
   signedIn: boolean;
   expiresAt: number;
   branding: Branding;
+}
+
+// ---- Billing (hosted installs) ----
+
+export type LimitKey = 'linkedinAccounts' | 'mailboxes' | 'seats' | 'clientWorkspaces' | 'aiCreditsMonthly' | 'enrichmentCreditsMonthly';
+// null = unlimited.
+export type PlanLimits = Record<LimitKey, number | null>;
+
+export interface BillingPlan {
+  id: string;
+  name: string;
+  // Applies without an active subscription.
+  default: boolean;
+  // Has a Stripe price (the free default plan has none).
+  purchasable: boolean;
+  limits: PlanLimits;
+}
+
+// GET /api/billing
+export interface BillingInfo {
+  enabled: boolean;
+  workspaceName: string;
+  plan: { id: string; name: string } | null;
+  subscribedPlanId: string | null;
+  status: 'none' | 'trialing' | 'active' | 'past_due' | 'unpaid' | 'canceled' | 'incomplete' | 'incomplete_expired' | 'paused';
+  currentPeriodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
+  hasCustomer: boolean;
+  canCheckout: boolean;
+  // Stripe reported a second live subscription for this workspace (both are billed).
+  duplicateSubscription: boolean;
+  webhookConfigured: boolean;
+  publicUrlConfigured: boolean;
+  plans: BillingPlan[];
+  usage: Record<LimitKey, { used: number; allowed: number | null }>;
 }

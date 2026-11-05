@@ -1,3 +1,4 @@
+import { stripeClient, type StripeLike } from './billing/stripe.js';
 import type { Clock } from './clock.js';
 import type { Config } from './config.js';
 import { registerCrmTriggers } from './crm/triggers.js';
@@ -30,6 +31,8 @@ export interface Ctx {
   // DNS lookups for the deliverability check, and the IMAP client factory; tests inject fakes.
   dns: DnsResolver;
   imap: ImapFactory;
+  // Hosted billing; null (billing off, nothing limited) unless STRIPE_SECRET_KEY is set. Tests pass a stub.
+  stripe: StripeLike | null;
 }
 
 export function buildContext(config: Config, clock: Clock, overrides: Partial<Ctx> = {}): Ctx {
@@ -52,6 +55,7 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
   // The queue and resolver read ctx lazily, so later overrides (tests) still apply.
   ctx.jobs ??= new JobQueue(ctx);
   ctx.providers ??= new ProviderResolver(ctx);
+  if (!('stripe' in overrides)) ctx.stripe = config.stripeSecretKey ? stripeClient(ctx, config.stripeSecretKey) : null;
   registerProviders();
   registerHandlers(ctx);
   // CRM sync listens to outgoing events and queues crm.sync jobs.

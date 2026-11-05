@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { assertWithinPlan, seatsNeeded } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { HttpError, idParam, notFound, parse, requireAdmin } from '../http.js';
 import { resolveBranding } from '../services/branding.js';
@@ -29,6 +30,8 @@ export function inviteRoutes(app: FastifyInstance, ctx: Ctx) {
     // Members, and agency admins who already reach this client through the agency.
     const existing = ctx.db.get<{ id: number }>('SELECT id FROM users WHERE lower(email) = lower(?)', [body.email]);
     if (existing && roleIn(ctx, existing.id, u.workspace_id)) throw new HttpError(409, 'That person is already a member of this workspace');
+    // A pending invite holds its seat, so accepting it later never goes over the plan.
+    if (body.role !== 'client') assertWithinPlan(ctx, u.workspace_id, 'seats', seatsNeeded(ctx, u.workspace_id, { email: body.email }));
     const inv = createInvite(ctx, { workspaceId: u.workspace_id, email: body.email, role: body.role, invitedBy: u.id });
     return { id: inv.id, link: inv.link, emailed: inv.emailed };
   });

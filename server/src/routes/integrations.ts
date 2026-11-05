@@ -3,8 +3,9 @@ import { z } from 'zod';
 import type { Ctx } from '../context.js';
 import { HttpError, idParam, notFound, parse, requireAdmin, user } from '../http.js';
 import { ProviderError } from '../providers/http.js';
-import { PROVIDER_KINDS, providerDefs } from '../providers/registry.js';
+import { PROVIDER_KINDS, providerDef, providerDefs, type ProviderKind } from '../providers/registry.js';
 import { createIntegration, integrationCreate, integrationPatch, loadIntegration, serializeIntegration, updateIntegration, type IntegrationRow } from '../providers/store.js';
+import { hostProblem, urlHost } from '../services/hosts.js';
 import { monthlyUsage, monthOf } from '../services/usage.js';
 
 const TEST_TIMEOUT_MS = 15_000;
@@ -30,15 +31,27 @@ export function integrationRoutes(app: FastifyInstance, ctx: Ctx) {
       .map((r) => serializeIntegration(ctx, r));
   });
 
+  // Hosted installs: URLs the tenant chose must point at public hosts (the saved ones were checked already).
+  const checkHosts = async (kind: ProviderKind, provider: string, settings: Record<string, unknown> | undefined) => {
+    for (const key of providerDef(kind, provider)?.hostSettings ?? []) {
+      const host = urlHost(settings?.[key]);
+      const problem = host && (await hostProblem(ctx, host));
+      if (problem) throw new HttpError(400, `settings.${key}: ${problem}`);
+    }
+  };
+
   app.post('/api/integrations', async (req) => {
     const admin = requireAdmin(req);
     const body = parse(integrationCreate, req.body);
+    await checkHosts(body.kind, body.provider, body.settings);
     return serializeIntegration(ctx, createIntegration(ctx, admin.workspace_id, body));
   });
 
   app.patch('/api/integrations/:id', async (req) => {
     const row = load(req);
-    return serializeIntegration(ctx, updateIntegration(ctx, row, parse(integrationPatch, req.body)));
+    const patch = parse(integrationPatch, req.body);
+    await checkHosts(row.kind, row.provider, patch.settings);
+    return serializeIntegration(ctx, updateIntegration(ctx, row, patch));
   });
 
   app.delete('/api/integrations/:id', async (req) => {

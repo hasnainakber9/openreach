@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { previewAiVars } from '../ai/personalize.js';
 import { LENGTHS, TONES, WRITER_CHANNELS } from '../ai/prompts.js';
 import { writeDrafts } from '../ai/writer.js';
+import { PlanLimitError } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { AiVariableSchema } from '../engine/sequence.js';
 import { HttpError, idParam, notFound, parse, requireWriter } from '../http.js';
@@ -58,11 +59,12 @@ export function aiRoutes(app: FastifyInstance, ctx: Ctx) {
   const throttle = aiThrottle(ctx);
   const leadOf = (workspaceId: number, id: number) => ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ? AND workspace_id = ?', [id, workspaceId]) ?? notFound('Lead');
   const campaignOf = (workspaceId: number, id: number) => ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ? AND workspace_id = ?', [id, workspaceId]) ?? notFound('Campaign');
-  // External service failures are a 422 with the provider's (already scrubbed) message.
+  // External service failures are a 422 with the provider's (already scrubbed) message; used-up plan credits a 402.
   const external = async <T>(fn: () => Promise<T>): Promise<T> => {
     try {
       return await fn();
     } catch (e) {
+      if (e instanceof PlanLimitError) throw new HttpError(402, e.message, e.details);
       if (e instanceof ProviderError) throw new HttpError(422, e.message);
       throw e;
     }

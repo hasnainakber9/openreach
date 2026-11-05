@@ -494,6 +494,7 @@ describe('deliverability check', () => {
       if (txt[d]) return txt[d];
       throw Object.assign(new Error('nodata'), { code: 'ENODATA' });
     },
+    lookup: async () => [],
   });
   const status = (r: Awaited<ReturnType<typeof checkDomain>>) => Object.fromEntries(r.checks.map((c) => [c.id, c.status]));
 
@@ -544,6 +545,7 @@ describe('deliverability check', () => {
       resolveTxt: async () => {
         throw Object.assign(new Error('timeout'), { code: 'ETIMEOUT' });
       },
+      lookup: async () => [],
     };
     const r = await checkDomain(broken, 'slow.dev');
     expect(status(r)).toEqual({ mx: 'warn', spf: 'warn', dkim: 'warn', dmarc: 'warn' });
@@ -642,6 +644,7 @@ describe('mailbox API', () => {
     const api = await makeApi();
     await api.register();
     api.w.ctx.dns = {
+      ...api.w.ctx.dns,
       resolveMx: async () => [{ exchange: 'mx.sender.dev', priority: 5 }],
       resolveTxt: async (d) => (d === 'sender.dev' ? [['v=spf1 -all']] : d === '_dmarc.sender.dev' ? [['v=DMARC1; p=quarantine']] : []),
     };

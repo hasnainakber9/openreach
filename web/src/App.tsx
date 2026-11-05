@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { api, syncClock, useApi, type Branding, type Role, type TaskCounts, type WorkspaceItem } from './api';
+import { api, PLAN_LIMIT_EVENT, syncClock, useApi, type Branding, type Role, type TaskCounts, type WorkspaceItem } from './api';
 import { DEFAULT_BRANDING, refreshBranding, useBranding } from './branding';
 import { BrandMark, Button, ErrorNote, Field, useToast } from './components/ui';
 import { canWrite, MeContext, type Me } from './session';
 import Accounts from './pages/Accounts';
 import Agency from './pages/Agency';
+import Billing from './pages/Billing';
 import CampaignDetail from './pages/CampaignDetail';
 import Campaigns from './pages/Campaigns';
 import Dashboard from './pages/Dashboard';
@@ -41,6 +42,8 @@ const NAV: NavItem[] = [
   { to: '/accounts', label: 'LinkedIn accounts', roles: WRITERS },
   { to: '/mailboxes', label: 'Mailboxes', roles: WRITERS },
   { to: '/agency', label: 'Agency', feature: 'agency' },
+  // Hosted installs, for the owner of the paying workspace.
+  { to: '/billing', label: 'Billing', feature: 'billing' },
   { to: '/settings', label: 'Settings', roles: WRITERS },
 ];
 
@@ -116,6 +119,7 @@ function Shell({ me, branding, onMe }: { me: Me; branding: Branding; onMe: (me: 
         </div>
       </aside>
       <main className="main">
+        <PlanLimitPrompt me={me} />
         <Routes>
           <Route path="/" element={<Dashboard me={me} />} />
           <Route path="/campaigns" element={<Campaigns me={me} />} />
@@ -132,11 +136,28 @@ function Shell({ me, branding, onMe }: { me: Me; branding: Branding; onMe: (me: 
             </>
           )}
           {me.features.agency && <Route path="/agency" element={<Agency me={me} onMe={onMe} />} />}
+          {me.features.billing && <Route path="/billing" element={<Billing />} />}
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </main>
     </div>
   );
+}
+
+// A plan limit (402) from any request becomes one toast: an upgrade link for whoever manages billing,
+// otherwise who to ask.
+function PlanLimitPrompt({ me }: { me: Me }) {
+  const toast = useToast();
+  useEffect(() => {
+    const show = (e: Event) => {
+      const text = (e as CustomEvent<string>).detail;
+      if (me.features.billing) toast(text, 'error', { to: '/billing', label: 'Upgrade' });
+      else toast(`${text} Ask the owner of ${me.agency?.name ?? 'the workspace'} to upgrade.`, 'error');
+    };
+    window.addEventListener(PLAN_LIMIT_EVENT, show);
+    return () => window.removeEventListener(PLAN_LIMIT_EVENT, show);
+  }, [me, toast]);
+  return null;
 }
 
 // Lists the workspaces the user can reach; switching reloads the whole app inside the other one.

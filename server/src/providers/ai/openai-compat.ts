@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { checkHost, HostCheckError } from '../../services/hosts.js';
 import { httpJson, ProviderError } from '../http.js';
 import type { ProviderDef } from '../registry.js';
 import type { AiProvider, AiRequest } from './types.js';
@@ -34,21 +35,34 @@ export const openaiCompatAi: ProviderDef<'ai'> = {
   ],
   credentials: z.object({ apiKey: z.string().trim().min(1).max(400).optional() }),
   settings: z.object({ baseUrl: baseUrlSchema, writerModel: modelName, classifierModel: modelName.optional() }),
+  hostSettings: ['baseUrl'],
   create(ctx, cfg): AiProvider {
     const apiKey: string | undefined = cfg.credentials.apiKey;
     const base: string = cfg.settings.baseUrl;
     const headers = apiKey ? { authorization: `Bearer ${apiKey}` } : undefined;
     const common = { headers, secrets: [apiKey], integrationId: cfg.integrationId };
+    // Hosted installs: checked again before every request (it was checked when saved, but DNS can change).
+    // fetch resolves the name once more on its own, so an answer that changes in between is not caught here.
+    const guard = async () => {
+      try {
+        await checkHost(ctx, new URL(base).hostname);
+      } catch (e) {
+        if (e instanceof HostCheckError) throw new ProviderError(e.code === 'BLOCKED' ? 'BAD_REQUEST' : 'UNAVAILABLE', e.message, { integrationId: cfg.integrationId });
+        throw e;
+      }
+    };
     return {
       providerId: 'openai_compat',
       simulated: false,
       async test() {
+        await guard();
         const r = await httpJson<{ data?: { id: string }[] }>(ctx, `${base}/models`, { ...common, timeoutMs: 10_000 });
         const ids = (r?.data ?? []).map((m) => m.id);
         const missing = ids.length && !ids.includes(cfg.settings.writerModel) ? ` The model "${cfg.settings.writerModel}" is not in its list, so check the name.` : '';
         return { ok: true, message: `Connected to ${new URL(base).host}.${missing}` };
       },
       async complete(req: AiRequest) {
+        await guard();
         const model: string = req.tier === 'classifier' ? (cfg.settings.classifierModel ?? cfg.settings.writerModel) : cfg.settings.writerModel;
         const r = await httpJson<any>(ctx, `${base}/chat/completions`, {
           ...common,

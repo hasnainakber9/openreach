@@ -17,6 +17,8 @@ export interface SmtpTransport {
   secure: boolean;
   user: string;
   pass: string;
+  // The address checked by pinMailServer (hosted installs) to connect to; `host` still names the server for TLS.
+  address?: string;
 }
 
 export interface OutgoingEmail {
@@ -56,8 +58,10 @@ const TIMEOUTS = { connectionTimeout: 15_000, greetingTimeout: 15_000, socketTim
 
 function transportFor(t: SmtpTransport) {
   return nodemailer.createTransport({
-    host: t.host,
+    host: t.address ?? t.host,
     port: t.port,
+    // The certificate is checked against the name, not the address we connect to.
+    ...(t.address ? { tls: { servername: t.host } } : {}),
     secure: t.secure,
     // Port 587 and the like must upgrade to TLS; never send a password in clear text.
     requireTLS: !t.secure,

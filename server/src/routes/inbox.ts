@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { REPLY_CATEGORIES, SUGGESTED_STAGE, isReplyCategory } from '../ai/categories.js';
 import { applyCategory } from '../ai/classify.js';
 import { suggestReplies } from '../ai/replies.js';
+import { PlanLimitError } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { recordOutbound } from '../engine/engine.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
@@ -13,6 +14,7 @@ import { fromLine, isReservedAddress, isSimulated, mailboxNeedsAttention, smtpTr
 import { logActivity } from '../services/activity.js';
 import { stageOf } from '../services/pipeline.js';
 import { mailError } from '../services/email.js';
+import { pinMailServer } from '../services/hosts.js';
 import type { AccountRow, EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
 import { aiThrottle } from './ai.js';
 import { SMS_MAX } from '../engine/sequence.js';
@@ -132,6 +134,7 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
     try {
       return await suggestReplies(ctx, u.workspace_id, c.id, { count: body.count, instruction: body.instruction || undefined });
     } catch (e) {
+      if (e instanceof PlanLimitError) throw new HttpError(402, e.message, e.details);
       if (e instanceof ProviderError) throw new HttpError(422, e.message);
       throw e;
     }
@@ -206,7 +209,7 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
     const msg = composeEmail({ from: fromLine(mb), fromEmail: mb.from_email, replyTo: mb.reply_to, to, subject: c.subject ?? '', body: text, signature: mb.signature, messageId, thread, footer: false });
     let status: string;
     try {
-      status = (await ctx.mailer.send(transport, msg)).status;
+      status = (await ctx.mailer.send(transport && (await pinMailServer(ctx, transport)), msg)).status;
     } catch (e) {
       const err = mailError(e);
       if (err.code === 'AUTH') mailboxNeedsAttention(ctx, mb, `SMTP login refused: ${err.message}`);

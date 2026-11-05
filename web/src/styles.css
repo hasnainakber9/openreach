@@ -810,6 +810,44 @@ th.num {
   background: var(--critical);
   color: #fff;
 }
+.toast-link {
+  margin-left: 10px;
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+/* ---------- Billing ---------- */
+.billing-usage {
+  margin-top: 12px;
+}
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plan-card.current {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.plan-card h3,
+.plan-card p {
+  margin: 0;
+}
+.plan-limits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+.plan-limits li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
 
 /* ---------- Auth ---------- */
 .auth {

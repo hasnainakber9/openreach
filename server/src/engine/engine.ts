@@ -1,4 +1,5 @@
 import { AI_RECHECK, aiNamesIn, nodeTexts, prefetchAi, resolveAiVars } from '../ai/personalize.js';
+import { billingEnabled } from '../billing/limits.js';
 import { DAY, HOUR, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -392,8 +393,9 @@ export class Engine {
     try {
       if (node.type === 'email') {
         if (!lead.email) return advance('skipped', 'no email address'), false;
-        // Legacy path (campaigns without mailboxes): the account's own SMTP settings, if any.
-        const raw = ctx.sealer.open(a.smtp_enc);
+        // Legacy path (campaigns without mailboxes): the account's own SMTP settings, if any. Never on a hosted
+        // installation, where only mailboxes (counted by the plan, hosts checked) send.
+        const raw = billingEnabled(ctx) ? null : ctx.sealer.open(a.smtp_enc);
         const smtp = raw ? (JSON.parse(raw) as SmtpConfig) : null;
         // Addresses made up by the simulated finder never go out through a real server.
         if (smtp && lead.email_source === 'simulated') return advance('skipped', 'address made up by the simulated email finder: never sent from a real mailbox'), false;

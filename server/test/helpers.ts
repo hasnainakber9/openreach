@@ -77,6 +77,9 @@ export function makeWorld(sim: Partial<SimulatorOptions> = {}, account: Record<s
     resolveTxt: async () => {
       throw Object.assign(new Error('DNS lookups in tests'), { code: 'ETEST' });
     },
+    lookup: async () => {
+      throw Object.assign(new Error('DNS lookups in tests'), { code: 'ETEST' });
+    },
   };
   ctx.imap = () => fakeImap(() => {
     throw new MailError('TRANSIENT', 'IMAP in tests');

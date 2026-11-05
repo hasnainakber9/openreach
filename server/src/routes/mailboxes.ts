@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { assertWithinPlan } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { isValidTimezone } from '../engine/limits.js';
 import { HttpError, idParam, notFound, parse, requireAdmin, requireWriter, user } from '../http.js';
@@ -18,6 +19,7 @@ import {
   smtpTransport,
   type ServerSettings,
 } from '../mail/mailboxes.js';
+import { hostProblem, pinMailServer } from '../services/hosts.js';
 import type { MailboxRow } from '../types.js';
 
 const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM');
@@ -134,10 +136,21 @@ export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
     return serializeMailbox(ctx, load(req));
   });
 
+  // Hosted installs: mail servers on the server's own network are refused (checked again before each connection).
+  const checkServers = async (b: Partial<MailboxBody>) => {
+    for (const label of ['smtp', 'imap'] as const) {
+      const s = b[label];
+      const problem = s && (await hostProblem(ctx, s.host));
+      if (problem) throw new HttpError(400, `${label}: ${problem}`);
+    }
+  };
+
   app.post('/api/mailboxes', async (req) => {
     const u = requireAdmin(req);
     const body = parse(mailboxBody, req.body);
     if (body.provider === 'smtp' && !body.smtp) throw new HttpError(400, 'smtp: Add the SMTP server settings');
+    await checkServers(body);
+    assertWithinPlan(ctx, u.workspace_id, 'mailboxes');
     const id = ctx.db.insert('mailboxes', { workspace_id: u.workspace_id, created_at: ctx.clock.now(), status: 'active', ...columns(body) });
     return reload(id);
   });
@@ -146,6 +159,7 @@ export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
     requireAdmin(req);
     const mb = load(req);
     const body = parse(mailboxBody.partial(), req.body);
+    await checkServers(body);
     ctx.db.update('mailboxes', mb.id, columns(body, mb));
     return reload(mb.id);
   });
@@ -168,7 +182,12 @@ export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
     const mb = load(req);
     if (isSimulated(mb)) return { smtp: { ok: true, message: 'Simulated mailbox: nothing is delivered' }, imap: await imapFor(ctx, mb)!.test() };
     const transport = smtpTransport(ctx, mb);
-    const smtp = transport ? await ctx.mailer.verify(transport) : { ok: false, message: 'No SMTP settings' };
+    const smtp = transport
+      ? await pinMailServer(ctx, transport).then(
+          (t) => ctx.mailer.verify(t),
+          (e: Error) => ({ ok: false, message: e.message }),
+        )
+      : { ok: false, message: 'No SMTP settings' };
     const imapClient = imapFor(ctx, mb);
     const imap = imapClient ? await imapClient.test() : { ok: false, message: 'No IMAP settings: replies and bounces are not detected' };
     return { smtp, imap };

@@ -61,6 +61,8 @@ export interface ProviderDef<K extends ProviderKind = ProviderKind> {
   // Settings that pick which vendor account the credentials talk to (with the credentials themselves,
   // changing one means "another account": ids saved from the old one are dropped).
   accountSettings?: string[];
+  // Settings holding a URL the tenant chose; on a hosted installation their hosts must be public (services/hosts.ts).
+  hostSettings?: string[];
   create(ctx: Ctx, cfg: ProviderConfig): KindInstance<K>;
 }
 

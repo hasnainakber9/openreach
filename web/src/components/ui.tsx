@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { isPlanLimit } from '../api';
 
 export function Button({
   variant = 'default',
@@ -283,14 +285,15 @@ export function Empty({ title, children, action }: { title: string; children?: R
   );
 }
 
-export function Meter({ used, limit, label }: { used: number; limit: number; label: string }) {
+// `limit` null = unlimited (no bar fill). `period` ends the tooltip ("today", "this month").
+export function Meter({ used, limit, label, period = 'today' }: { used: number; limit: number | null; label: string; period?: string }) {
   const ratio = limit ? Math.min(1, used / limit) : 0;
   return (
-    <div className="meter" title={`${label}: ${used} of ${limit} today`}>
+    <div className="meter" title={limit === null ? `${label}: ${used}, unlimited` : `${label}: ${used} of ${limit}${period ? ` ${period}` : ''}`}>
       <div className="meter-head">
         <span>{label}</span>
         <span className="num">
-          {used}/{limit}
+          {used}/{limit ?? '∞'}
         </span>
       </div>
       <div className="meter-track">
@@ -369,16 +372,18 @@ export function Pager({ page, pageSize, total, onPage }: { page: number; pageSiz
 
 // ---- Toasts -----------------------------------------------------------------
 
-type Toast = { id: number; text: string; tone: 'ok' | 'error' };
-const ToastCtx = createContext<(text: string, tone?: Toast['tone']) => void>(() => {});
+// `link`: an in-app follow-up, e.g. "Upgrade" on a plan limit.
+type ToastLink = { to: string; label: string };
+type Toast = { id: number; text: string; tone: 'ok' | 'error'; link?: ToastLink };
+const ToastCtx = createContext<(text: string, tone?: Toast['tone'], link?: ToastLink) => void>(() => {});
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const seq = useRef(0);
-  const push = useCallback((text: string, tone: Toast['tone'] = 'ok') => {
+  const push = useCallback((text: string, tone: Toast['tone'] = 'ok', link?: ToastLink) => {
     const id = ++seq.current;
-    setToasts((t) => [...t, { id, text, tone }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === 'error' ? 6000 : 3500);
+    setToasts((t) => [...t, { id, text, tone, link }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), link ? 10000 : tone === 'error' ? 6000 : 3500);
   }, []);
   return (
     <ToastCtx.Provider value={push}>
@@ -387,6 +392,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((t) => (
           <div key={t.id} className={`toast toast-${t.tone}`}>
             {t.text}
+            {t.link && (
+              <Link className="toast-link" to={t.link.to} onClick={() => setToasts((all) => all.filter((x) => x.id !== t.id))}>
+                {t.link.label}
+              </Link>
+            )}
           </div>
         ))}
       </div>
@@ -408,7 +418,8 @@ export function useAction() {
         if (success) toast(success);
         return r;
       } catch (e) {
-        toast((e as Error).message, 'error');
+        // Plan limits get their own toast with an upgrade link (PlanLimitPrompt in the app shell).
+        if (!isPlanLimit(e)) toast((e as Error).message, 'error');
         return undefined;
       } finally {
         setBusy(null);

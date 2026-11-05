@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { assertWithinPlan, billingEnabled, billingRoot, seatsNeeded } from '../billing/limits.js';
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { timingSafeEqual } from 'node:crypto';
@@ -47,6 +48,8 @@ export function meOf(ctx: Ctx, u: SessionUser) {
   // Feature flags for optional areas of the UI (billing, agency); absent = off.
   const features: Record<string, boolean> = {};
   if (agency) features.agency = true;
+  // Hosted installs only, and only for the owner of the workspace that pays (the agency, for its clients).
+  if (billingEnabled(ctx) && directRole(ctx, u.id, billingRoot(ctx, w.id)) === 'owner') features.billing = true;
   return {
     user: {
       id: u.id,
@@ -144,6 +147,8 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
     const admin = requireAdmin(req);
     const body = parse(credentials.extend({ name: z.string().min(1).max(100), role: z.enum(['admin', 'member', 'client']).default('member') }), req.body);
     if (ctx.db.get('SELECT 1 FROM users WHERE email = ?', [body.email])) throw new HttpError(409, 'That email is already registered. Invite them instead.');
+    // Clients (read-only) don't take a seat.
+    if (body.role !== 'client') assertWithinPlan(ctx, admin.workspace_id, 'seats');
     const id = ctx.db.tx(() => {
       const id = ctx.db.insert('users', { workspace_id: admin.workspace_id, email: body.email, name: body.name, password_hash: hashPassword(body.password), role: body.role, created_at: Date.now() });
       addMembership(ctx, id, admin.workspace_id, body.role);
@@ -159,6 +164,7 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
     const current = directRole(ctx, id, admin.workspace_id) ?? notFoundUser();
     if ((current === 'owner' || role === 'owner') && admin.role !== 'owner') throw new HttpError(403, 'Only owners can make or change owners');
     if (current === 'owner' && role !== 'owner' && ownerCount(ctx, admin.workspace_id) <= 1) throw new HttpError(409, 'A workspace needs at least one owner. Make someone else an owner first.');
+    if (current === 'client' && role !== 'client') assertWithinPlan(ctx, admin.workspace_id, 'seats', seatsNeeded(ctx, admin.workspace_id, { userId: id }));
     ctx.db.tx(() => {
       ctx.db.run('UPDATE memberships SET role = ? WHERE user_id = ? AND workspace_id = ?', [role, id, admin.workspace_id]);
       // Made a client here, or no longer an agency admin: their leads and tasks are let go.
