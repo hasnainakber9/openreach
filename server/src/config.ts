@@ -8,6 +8,8 @@ export interface Config {
   host: string;
   dataDir: string;
   dbPath: string;
+  // postgres://... switches from the SQLite file at dbPath to Postgres.
+  databaseUrl?: string;
   appSecret: string;
   demoSpeed: number;
   allowSignup: boolean;
@@ -39,6 +41,7 @@ export interface Config {
 export type TrustProxy = false | number | string[];
 
 export function loadConfig(env = process.env): Config {
+  if (env.DATABASE_URL?.trim() && !/^postgres(ql)?:\/\//i.test(env.DATABASE_URL.trim())) throw new Error('DATABASE_URL must be a postgres:// or postgresql:// URL (leave it unset for SQLite).');
   const dataDir = resolve(env.DATA_DIR ?? './data');
   mkdirSync(dataDir, { recursive: true });
   return {
@@ -46,6 +49,7 @@ export function loadConfig(env = process.env): Config {
     host: env.HOST ?? '0.0.0.0',
     dataDir,
     dbPath: env.DB_PATH ?? join(dataDir, 'openreach.db'),
+    databaseUrl: env.DATABASE_URL?.trim() || undefined,
     appSecret: env.APP_SECRET ?? localSecret(dataDir),
     demoSpeed: Number(env.DEMO_SPEED ?? 1),
     allowSignup: env.ALLOW_SIGNUP === 'true',

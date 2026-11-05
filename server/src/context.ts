@@ -2,7 +2,7 @@ import { stripeClient, type StripeLike } from './billing/stripe.js';
 import type { Clock } from './clock.js';
 import type { Config } from './config.js';
 import { registerCrmTriggers } from './crm/triggers.js';
-import { DB } from './db/db.js';
+import { openDatabase, type Database } from './db/database.js';
 import { DriverPool } from './drivers/pool.js';
 import { registerHandlers } from './jobs/handlers.js';
 import { JobQueue } from './jobs/queue.js';
@@ -16,7 +16,7 @@ import { smtpMailer, type Mailer } from './services/email.js';
 import { Webhooks } from './services/webhooks.js';
 
 export interface Ctx {
-  db: DB;
+  db: Database;
   clock: Clock;
   config: Config;
   sealer: Sealer;
@@ -33,10 +33,13 @@ export interface Ctx {
   imap: ImapFactory;
   // Hosted billing; null (billing off, nothing limited) unless STRIPE_SECRET_KEY is set. Tests pass a stub.
   stripe: StripeLike | null;
+  // Whether this instance runs the engine and holds the LinkedIn browser sessions. Always true on SQLite;
+  // with Postgres only the leader does (index.ts), and the others send LinkedIn calls to it (callLinkedIn).
+  isLeader: () => boolean;
 }
 
 export function buildContext(config: Config, clock: Clock, overrides: Partial<Ctx> = {}): Ctx {
-  const db = overrides.db ?? new DB(config.dbPath);
+  const db = overrides.db ?? openDatabase(config);
   const sealer = new Sealer(config.appSecret);
   const ctx = {
     db,
@@ -50,6 +53,7 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
     fetch: (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => globalThis.fetch(input, init),
     dns: systemResolver(),
     imap: imapflowFactory,
+    isLeader: () => true,
     ...overrides,
   } as Ctx;
   // The queue and resolver read ctx lazily, so later overrides (tests) still apply.

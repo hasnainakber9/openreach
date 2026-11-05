@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { assertWithinPlan } from '../billing/limits.js';
+import { assertWithinPlan, withPlanLock } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { HttpError, idParam, notFound, parse, requireAdmin, requireOwner, user } from '../http.js';
 import { BrandingInput, brandingSettings, customDomainProblem, DEFAULT_BRANDING, resolveBranding, saveBranding, workspaceForHost } from '../services/branding.js';
@@ -64,8 +64,11 @@ export function agencyRoutes(app: FastifyInstance, ctx: Ctx) {
   app.post('/api/agency/clients', async (req) => {
     const agency = requireAgency(req);
     const { name } = parse(z.object({ name: clientName }), req.body);
-    assertWithinPlan(ctx, agency.id, 'clientWorkspaces');
-    return { id: createClientWorkspace(ctx, agency.id, name) };
+    const id = withPlanLock(ctx, agency.id, () => {
+      assertWithinPlan(ctx, agency.id, 'clientWorkspaces');
+      return createClientWorkspace(ctx, agency.id, name);
+    });
+    return { id };
   });
 
   app.patch('/api/agency/clients/:id', async (req) => {

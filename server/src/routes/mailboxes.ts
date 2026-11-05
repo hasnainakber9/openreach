@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertWithinPlan } from '../billing/limits.js';
+import { assertWithinPlan, withPlanLock } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { isValidTimezone } from '../engine/limits.js';
 import { HttpError, idParam, notFound, parse, requireAdmin, requireWriter, user } from '../http.js';
@@ -150,8 +150,10 @@ export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
     const body = parse(mailboxBody, req.body);
     if (body.provider === 'smtp' && !body.smtp) throw new HttpError(400, 'smtp: Add the SMTP server settings');
     await checkServers(body);
-    assertWithinPlan(ctx, u.workspace_id, 'mailboxes');
-    const id = ctx.db.insert('mailboxes', { workspace_id: u.workspace_id, created_at: ctx.clock.now(), status: 'active', ...columns(body) });
+    const id = withPlanLock(ctx, u.workspace_id, () => {
+      assertWithinPlan(ctx, u.workspace_id, 'mailboxes');
+      return ctx.db.insert('mailboxes', { workspace_id: u.workspace_id, created_at: ctx.clock.now(), status: 'active', ...columns(body) });
+    });
     return reload(id);
   });
 

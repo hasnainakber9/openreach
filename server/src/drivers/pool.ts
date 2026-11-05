@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import type { Clock } from '../clock.js';
 import type { Config } from '../config.js';
-import type { DB } from '../db/db.js';
+import type { Database } from '../db/database.js';
 import type { Sealer } from '../services/crypto.js';
 import type { AccountRow } from '../types.js';
 import { PlaywrightLinkedInDriver } from './playwright/linkedin.js';
@@ -27,7 +27,7 @@ export class DriverPool {
   factory: ((a: AccountRow) => LinkedInDriver) | null = null;
 
   constructor(
-    private db: DB,
+    private db: Database,
     private clock: Clock,
     private config: Config,
     private sealer: Sealer,
@@ -79,6 +79,7 @@ export class DriverPool {
   }
 
   startIdleReaper() {
+    if (this.timer) clearInterval(this.timer);
     this.timer = setInterval(() => {
       for (const [id, e] of this.entries) {
         if (Date.now() - e.lastUsed > IDLE_CLOSE_MS) void this.drop(id);
@@ -87,8 +88,14 @@ export class DriverPool {
     this.timer.unref();
   }
 
+  // Closes every browser (each after the call it is busy with); the idle reaper keeps running.
+  async closeSessions() {
+    await Promise.all([...this.entries.keys()].map((id) => this.drop(id)));
+  }
+
   async closeAll() {
     if (this.timer) clearInterval(this.timer);
-    await Promise.all([...this.entries.keys()].map((id) => this.drop(id)));
+    this.timer = null;
+    await this.closeSessions();
   }
 }

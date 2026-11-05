@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Clock } from '../clock.js';
 import { DAY, HOUR } from '../clock.js';
-import type { DB } from '../db/db.js';
+import type { Database } from '../db/database.js';
 import {
   DriverError,
   profileUrl,
@@ -121,7 +121,7 @@ export class SimulatorDriver implements LinkedInDriver {
   private o: SimulatorOptions;
 
   constructor(
-    private db: DB,
+    private db: Database,
     private accountId: number,
     private accountName: string,
     private clock: Clock,

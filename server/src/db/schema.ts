@@ -817,4 +817,16 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE subscriptions ADD COLUMN checkout_session_id TEXT;
   ALTER TABLE subscriptions ADD COLUMN extra_subscription_id TEXT;
   `,
+  // postgres (review): state that lived in one process's memory moves to the database, so several instances
+  // sharing Postgres see it: failed sign-ins per email+IP, the workspace's checkout being started, and which
+  // LinkedIn account is busy with an engine run (an instance taking over from a lost leader must wait for it).
+  `
+  CREATE TABLE login_failures (
+    throttle_key TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  ALTER TABLE subscriptions ADD COLUMN checkout_starting_until INTEGER;
+  ALTER TABLE accounts ADD COLUMN busy_until INTEGER;
+  `,
 ];

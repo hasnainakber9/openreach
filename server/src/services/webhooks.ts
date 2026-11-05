@@ -1,4 +1,4 @@
-import type { DB } from '../db/db.js';
+import type { Database } from '../db/database.js';
 import { json } from '../db/db.js';
 import { sign } from './crypto.js';
 
@@ -35,7 +35,7 @@ export class Webhooks {
   deliver = true;
   private subscribers: EventSubscriber[] = [];
 
-  constructor(private db: DB) {}
+  constructor(private db: Database) {}
 
   // In-process listeners (for example CRM sync). They should only enqueue jobs, never do slow work inline.
   subscribe(fn: EventSubscriber) {

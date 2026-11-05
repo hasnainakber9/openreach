@@ -128,7 +128,7 @@ describe('job queue', () => {
     expect(job(w, second).status).toBe('queued');
   });
 
-  it('re-queues orphaned running jobs on the first tick after a restart', async () => {
+  it('re-queues orphaned running jobs after a restart: at once on SQLite, once their leases end on Postgres', async () => {
     const w = makeWorld();
     const now = w.ctx.clock.now();
     const orphan = w.ctx.db.insert('jobs', { workspace_id: w.workspaceId, type: 'test.echo', payload: '{"value":1}', status: 'running', attempts: 1, run_at: now, locked_until: now + HOUR, created_at: now, updated_at: now });
@@ -137,6 +137,13 @@ describe('job queue', () => {
     let ran = 0;
     restarted.register('test.echo', async () => void ran++);
     await restarted.tick();
+    if (w.ctx.db.dialect === 'postgres') {
+      // Another instance (a leader that lost its lock) may still be running them.
+      expect(ran).toBe(0);
+      expect(job(w, orphan)).toMatchObject({ status: 'running', attempts: 1 });
+      w.ctx.clock.advance(HOUR + MINUTE);
+      await restarted.tick();
+    }
     expect(ran).toBe(1);
     expect(job(w, orphan)).toMatchObject({ status: 'done', attempts: 2 });
     expect(job(w, spent)).toMatchObject({ status: 'failed', last_error: 'Interrupted before it finished' });
@@ -223,6 +230,47 @@ describe('job queue', () => {
     await retry;
     expect(job(w, id)).toMatchObject({ status: 'done', result: '"second"' });
     expect(signals[1].aborted).toBe(true); // finished runs release their signal too
+  });
+
+  it('ignores the late finish of a run whose job was taken back and claimed again', async () => {
+    const w = makeWorld();
+    const gate = deferred();
+    w.ctx.jobs.register('test.block', async () => {
+      await gate.promise;
+      return 'stale';
+    });
+    const id = w.ctx.jobs.enqueue('test.block', { n: 1 }, { workspaceId: w.workspaceId });
+    const first = w.ctx.jobs.tick();
+    await settle();
+    // Another instance re-queued the expired lease and claimed it again (attempts 2) while this run hung.
+    w.ctx.db.run('UPDATE jobs SET attempts = 2 WHERE id = ?', [id]);
+    gate.resolve();
+    await first;
+    expect(job(w, id)).toMatchObject({ status: 'running', attempts: 2, result: null });
+  });
+
+  it('stops its runs and takes no new job once the gate closes (leadership lost), leaving their leases alone', async () => {
+    const w = makeWorld();
+    const signals: AbortSignal[] = [];
+    w.ctx.jobs.register('test.block', (_j, h) => {
+      signals.push(h.signal);
+      return new Promise(() => {}); // a handler that never finishes by itself
+    });
+    const id = w.ctx.jobs.enqueue('test.block', { n: 1 }, { workspaceId: w.workspaceId });
+    const running = w.ctx.jobs.tick();
+    await settle();
+    const lease = job(w, id).locked_until;
+    let leader = true;
+    w.ctx.jobs.gate = () => leader;
+    leader = false;
+    w.ctx.jobs.stopAll();
+    await running;
+    expect(signals[0].aborted).toBe(true);
+    expect(job(w, id)).toMatchObject({ status: 'running', attempts: 1, locked_until: lease });
+    const next = w.ctx.jobs.enqueue('test.block', { n: 2 }, { workspaceId: w.workspaceId });
+    await w.ctx.jobs.tick();
+    expect(job(w, next).status).toBe('queued');
+    expect(signals).toHaveLength(1);
   });
 
   it('never runs more than JOB_CONCURRENCY jobs, even when ticks overlap', async () => {

@@ -10,6 +10,8 @@ import { directRole, workspaceRow } from '../services/memberships.js';
 // client workspaces bill through their agency), plus Stripe's webhook.
 
 export const STRIPE_WEBHOOK_PATH = '/api/public/stripe/webhook';
+// Longer than the Stripe calls of one checkout start can take (each times out well before).
+const CHECKOUT_CLAIM_MS = 2 * 60_000;
 
 export function billingRoutes(app: FastifyInstance, ctx: Ctx) {
   // Only an owner of the paying workspace. Owning a client workspace (directly or through the agency's
@@ -39,8 +41,20 @@ export function billingRoutes(app: FastifyInstance, ctx: Ctx) {
     ctx.db.run('UPDATE subscriptions SET stripe_customer_id = ?, updated_at = ? WHERE workspace_id = ? AND stripe_customer_id IS NULL', [c.id, ctx.clock.now(), root]);
     return subscriptionOf(ctx, root)!.stripe_customer_id!;
   };
-  // One checkout start at a time per workspace (two in parallel would each leave a payable page).
-  const starting = new Set<number>();
+  // One checkout start at a time per workspace (two in parallel would each leave a payable page). Claimed in
+  // the database, so it holds across instances sharing Postgres; the expiry frees a claim a crash left behind.
+  const claimCheckout = (root: number) => {
+    const now = Date.now();
+    ensureRow(ctx, root);
+    return (
+      ctx.db.run('UPDATE subscriptions SET checkout_starting_until = ? WHERE workspace_id = ? AND (checkout_starting_until IS NULL OR checkout_starting_until < ?)', [
+        now + CHECKOUT_CLAIM_MS,
+        root,
+        now,
+      ]).changes > 0
+    );
+  };
+  const releaseCheckout = (root: number) => void ctx.db.run('UPDATE subscriptions SET checkout_starting_until = NULL WHERE workspace_id = ?', [root]);
 
   app.get('/api/billing', async (req) => {
     const { root } = requireRootOwner(req);
@@ -77,8 +91,7 @@ export function billingRoutes(app: FastifyInstance, ctx: Ctx) {
     if (!plan.priceId) throw new HttpError(400, `${plan.name} is free and needs no checkout`);
     const successUrl = returnUrl('success');
     const cancelUrl = returnUrl('canceled');
-    if (starting.has(root)) throw new HttpError(409, 'A checkout is already starting. Try again in a moment.');
-    starting.add(root);
+    if (!claimCheckout(root)) throw new HttpError(409, 'A checkout is already starting. Try again in a moment.');
     try {
       const sub = subscriptionOf(ctx, root);
       if (sub && LIVE_STATUSES.includes(sub.status)) throw new HttpError(409, 'You already have a subscription. Use "Manage billing" to change plans.');
@@ -95,7 +108,7 @@ export function billingRoutes(app: FastifyInstance, ctx: Ctx) {
       if (!session.url) throw new HttpError(422, 'Stripe did not return a checkout page');
       return { url: session.url };
     } finally {
-      starting.delete(root);
+      releaseCheckout(root);
     }
   });
 

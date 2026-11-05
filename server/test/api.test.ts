@@ -112,11 +112,21 @@ describe('HTTP API', () => {
     expect((await call('POST', '/api/auth/register', { ...base, setupToken: 's3cret-token' })).status).toBe(200);
   });
 
-  it('throttles repeated failed logins', async () => {
-    const { call } = await setup();
+  it('throttles repeated failed logins, counting them in the database so every instance sees them', async () => {
+    const { call, w } = await setup();
     await call('POST', '/api/auth/register', { name: 'Ana', email: 'ana@example.com', password: 'correct-horse' });
-    for (let i = 0; i < 10; i++) expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'wrong' })).status).toBe(401);
+    for (let i = 0; i < 10; i++) expect((await call('POST', '/api/auth/login', { email: 'ANA@example.com', password: 'wrong' })).status).toBe(401);
+    expect(w.ctx.db.all('SELECT throttle_key, failures FROM login_failures')).toEqual([{ throttle_key: 'ana@example.com|127.0.0.1', failures: 10 }]);
     expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'correct-horse' })).status).toBe(429);
+    // A second app on the same database (another instance) is locked out too.
+    const other = await buildApp(w.ctx);
+    expect((await other.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'ana@example.com', password: 'correct-horse' } })).statusCode).toBe(429);
+    // The window ends: failures start again from one, and a success clears them.
+    w.ctx.db.run('UPDATE login_failures SET expires_at = ?', [Date.now() - 1]);
+    expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'wrong' })).status).toBe(401);
+    expect(w.ctx.db.get('SELECT failures FROM login_failures')).toEqual({ failures: 1 });
+    expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'correct-horse' })).status).toBe(200);
+    expect(w.ctx.db.get('SELECT COUNT(*) AS n FROM login_failures')).toEqual({ n: 0 });
   });
 
   it('maps common CSV headers', () => {

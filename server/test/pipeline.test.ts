@@ -228,7 +228,7 @@ describe('pipeline API', () => {
     expect(r.body).toMatchObject({ moved: true, stage: { slug: 'won' } });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ from: { slug: 'new' }, to: { slug: 'won' }, source: 'manual' });
-    expect(api.w.ctx.db.get('SELECT source, user_id AS userId FROM lead_stage_history WHERE lead_id = ?', [leadIds[0]])).toEqual({ source: 'manual', userId: owner.id });
+    expect(api.w.ctx.db.get('SELECT source, user_id AS "userId" FROM lead_stage_history WHERE lead_id = ?', [leadIds[0]])).toEqual({ source: 'manual', userId: owner.id });
     const detail = await api.call('GET', `/api/leads/${leadIds[0]}`);
     expect(detail.body).toMatchObject({ stage: { slug: 'won' }, stageManual: true });
     const counts = (await api.call('GET', '/api/pipeline/stages')).body as any[];

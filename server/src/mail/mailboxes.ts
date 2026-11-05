@@ -1,4 +1,4 @@
-import { withinPlan } from '../billing/limits.js';
+import { withinPlan, withPlanLock } from '../billing/limits.js';
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -325,15 +325,15 @@ export function ensureLegacyMailboxes(ctx: Ctx) {
   for (const a of accounts) {
     const smtp = json<SmtpConfig | null>(ctx.sealer.open(a.smtp_enc), null);
     if (!smtp?.host) continue;
-    // Hosted installs: no mailbox past the plan's limit (the account's SMTP then stays unused; see the engine).
-    if (!withinPlan(ctx, a.workspace_id, 'mailboxes')) {
-      console.warn(`[mail] Account ${a.id}'s SMTP settings were not turned into a mailbox: workspace ${a.workspace_id}'s plan has no mailbox left`);
-      continue;
-    }
     const from = parseFrom(smtp.from || smtp.user);
     const limit = Number(json<Record<string, number>>(a.limits, {}).email ?? DEFAULT_LIMITS.email);
     const now = ctx.clock.now();
-    ctx.db.tx(() => {
+    withPlanLock(ctx, a.workspace_id, () => {
+      // Hosted installs: no mailbox past the plan's limit (the account's SMTP then stays unused; see the engine).
+      if (!withinPlan(ctx, a.workspace_id, 'mailboxes')) {
+        console.warn(`[mail] Account ${a.id}'s SMTP settings were not turned into a mailbox: workspace ${a.workspace_id}'s plan has no mailbox left`);
+        return;
+      }
       const row = ctx.db.get<{ id: number }>(
         `INSERT INTO mailboxes (workspace_id, name, provider, preset, from_name, from_email, smtp_enc, status, timezone, work_days, work_start, work_end,
            daily_limit, warmup, gap_min_sec, gap_max_sec, legacy_account_id, created_at)

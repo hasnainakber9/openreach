@@ -1,12 +1,13 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { Database, Params, Row } from './database.js';
 import { MIGRATIONS } from './schema.js';
 
-export type Params = Record<string, SQLInputValue> | SQLInputValue[];
-export type Row = Record<string, any>;
+export type { Database, Params, Row } from './database.js';
 
-export class DB {
+// SQLite through node:sqlite: the default database.
+export class DB implements Database {
   readonly dialect = 'sqlite' as const;
   readonly raw: DatabaseSync;
   private depth = 0;
@@ -94,6 +95,17 @@ export class DB {
     if (this.depth > 0) this.pending.push(fn);
     else fn();
   }
+
+  // One process owns a SQLite file, so it is always the leader.
+  tryLock(_key: number) {
+    return true;
+  }
+
+  holdsLock(_key: number) {
+    return true;
+  }
+
+  txLock(_key: number) {}
 
   close() {
     this.raw.close();

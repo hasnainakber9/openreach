@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertWithinPlan, seatsNeeded } from '../billing/limits.js';
+import { assertWithinPlan, seatsNeeded, withPlanLock } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { HttpError, idParam, notFound, parse, requireAdmin } from '../http.js';
 import { resolveBranding } from '../services/branding.js';
@@ -31,8 +31,10 @@ export function inviteRoutes(app: FastifyInstance, ctx: Ctx) {
     const existing = ctx.db.get<{ id: number }>('SELECT id FROM users WHERE lower(email) = lower(?)', [body.email]);
     if (existing && roleIn(ctx, existing.id, u.workspace_id)) throw new HttpError(409, 'That person is already a member of this workspace');
     // A pending invite holds its seat, so accepting it later never goes over the plan.
-    if (body.role !== 'client') assertWithinPlan(ctx, u.workspace_id, 'seats', seatsNeeded(ctx, u.workspace_id, { email: body.email }));
-    const inv = createInvite(ctx, { workspaceId: u.workspace_id, email: body.email, role: body.role, invitedBy: u.id });
+    const inv = withPlanLock(ctx, u.workspace_id, () => {
+      if (body.role !== 'client') assertWithinPlan(ctx, u.workspace_id, 'seats', seatsNeeded(ctx, u.workspace_id, { email: body.email }));
+      return createInvite(ctx, { workspaceId: u.workspace_id, email: body.email, role: body.role, invitedBy: u.id });
+    });
     return { id: inv.id, link: inv.link, emailed: inv.emailed };
   });
 
@@ -76,12 +78,12 @@ export function inviteRoutes(app: FastifyInstance, ctx: Ctx) {
     if (existing && session?.id !== existing.id) {
       // Same brake as sign-in: the invite link must not become a way to guess someone's password.
       const key = throttleKey(inv.email, req.ip);
-      checkThrottle(key);
+      checkThrottle(ctx, key);
       if (!body.password || !verifyPassword(body.password, existing.password_hash)) {
-        recordFailure(key);
+        recordFailure(ctx, key);
         throw new HttpError(401, 'Wrong password for that account');
       }
-      clearFailures(key);
+      clearFailures(ctx, key);
     }
     if (!existing) {
       if (!body.name) throw new HttpError(400, 'Enter your name');

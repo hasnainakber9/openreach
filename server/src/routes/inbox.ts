@@ -5,17 +5,17 @@ import { applyCategory } from '../ai/classify.js';
 import { suggestReplies } from '../ai/replies.js';
 import { PlanLimitError } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
-import { recordOutbound } from '../engine/engine.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
 import { ProviderError } from '../providers/http.js';
 import { composeEmail, newMessageId } from '../mail/compose.js';
 import { splitReferences } from '../mail/imap.js';
 import { fromLine, isReservedAddress, isSimulated, mailboxNeedsAttention, smtpTransport } from '../mail/mailboxes.js';
 import { logActivity } from '../services/activity.js';
+import { callLinkedIn } from '../services/linkedin-calls.js';
 import { stageOf } from '../services/pipeline.js';
 import { mailError } from '../services/email.js';
 import { pinMailServer } from '../services/hosts.js';
-import type { AccountRow, EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
+import type { EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
 import { aiThrottle } from './ai.js';
 import { SMS_MAX } from '../engine/sequence.js';
 import { recordPhoneMessage } from '../messaging/runner.js';
@@ -146,22 +146,7 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
     const { text } = parse(z.object({ text: z.string().trim().min(1).max(8000) }), req.body);
     if (c.channel === 'email') return replyByEmail(c, text);
     if (c.channel === 'sms' || c.channel === 'whatsapp') return replyByPhone(c, c.channel, text);
-    const a = ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [c.account_id]);
-    if (!a) throw new HttpError(409, 'This conversation has no LinkedIn account to reply from');
-    if (a.status === 'needs_login') throw new HttpError(409, 'This LinkedIn account needs a fresh session cookie before it can send');
-    try {
-      await ctx.drivers.use(a, (d) => d.sendMessage(c.participant_url, text));
-    } catch (e) {
-      throw new HttpError(422, `LinkedIn did not accept the message: ${(e as Error).message}`);
-    }
-    const lead = c.lead_id ? ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [c.lead_id]) : undefined;
-    if (lead) recordOutbound(ctx, a, lead, text);
-    else {
-      ctx.db.insert('messages', { conversation_id: c.id, external_id: `local:${Date.now()}`, direction: 'out', body: text, sent_at: ctx.clock.now() });
-      ctx.db.run('UPDATE conversations SET last_message_at = ? WHERE id = ?', [ctx.clock.now(), c.id]);
-    }
-    logActivity(ctx, { workspaceId: a.workspace_id, accountId: a.id, leadId: c.lead_id, type: 'message', detail: text, timezone: a.timezone });
-    return { ok: true };
+    return callLinkedIn(ctx, c.workspace_id, { op: 'reply', conversationId: c.id, text });
   });
 
   // Texts back through the workspace's SMS provider, right away; it counts toward the channel's daily limit.

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { assertWithinPlan, billingEnabled, billingRoot, seatsNeeded } from '../billing/limits.js';
+import { assertWithinPlan, billingEnabled, billingRoot, seatsNeeded, withPlanLock } from '../billing/limits.js';
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { timingSafeEqual } from 'node:crypto';
@@ -13,20 +13,27 @@ import { HttpError, idParam, parse, requireAdmin, user, type Role, type SessionU
 export const SESSION_COOKIE = 'or_session';
 const SESSION_DAYS = 30;
 
-// Simple in-memory brake on password guessing: 10 failures per email+IP per 15 minutes. Shared by
-// sign-in and invite acceptance (an existing user accepting with their password).
-const failures = new Map<string, { n: number; until: number }>();
+// A brake on password guessing: 10 failures per email+IP per 15 minutes. Shared by sign-in and invite
+// acceptance (an existing user accepting with their password). Kept in the database, so instances sharing
+// Postgres count the same failures.
 const FAIL_WINDOW = 15 * 60_000;
+const MAX_FAILURES = 10;
 export const throttleKey = (email: string, ip: string) => `${email.toLowerCase()}|${ip}`;
-export function checkThrottle(key: string) {
-  const f = failures.get(key);
-  if (f && f.n >= 10 && f.until > Date.now()) throw new HttpError(429, 'Too many failed attempts. Try again in 15 minutes.');
+export function checkThrottle(ctx: Ctx, key: string) {
+  const f = ctx.db.get<{ failures: number }>('SELECT failures FROM login_failures WHERE throttle_key = ? AND expires_at > ?', [key, Date.now()]);
+  if (f && f.failures >= MAX_FAILURES) throw new HttpError(429, 'Too many failed attempts. Try again in 15 minutes.');
 }
-export function recordFailure(key: string) {
-  const f = failures.get(key);
-  failures.set(key, { n: (f && f.until > Date.now() ? f.n : 0) + 1, until: Date.now() + FAIL_WINDOW });
+export function recordFailure(ctx: Ctx, key: string) {
+  const now = Date.now();
+  // One statement, so failures recorded at the same moment by two instances both count.
+  ctx.db.run(
+    `INSERT INTO login_failures (throttle_key, failures, expires_at) VALUES (?, 1, ?)
+     ON CONFLICT (throttle_key) DO UPDATE SET failures = CASE WHEN login_failures.expires_at > ? THEN login_failures.failures + 1 ELSE 1 END, expires_at = excluded.expires_at`,
+    [key, now + FAIL_WINDOW, now],
+  );
+  ctx.db.run('DELETE FROM login_failures WHERE expires_at <= ?', [now]);
 }
-export const clearFailures = (key: string) => void failures.delete(key);
+export const clearFailures = (ctx: Ctx, key: string) => void ctx.db.run('DELETE FROM login_failures WHERE throttle_key = ?', [key]);
 
 const credentials = z.object({ email: z.string().email(), password: z.string().min(8, 'Password must be at least 8 characters') });
 
@@ -82,7 +89,7 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
       const expected = Buffer.from(ctx.config.setupToken);
       if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new HttpError(403, 'Wrong setup token. Use the SETUP_TOKEN value from your server settings.');
     }
-    if (ctx.db.get('SELECT 1 FROM users WHERE email = ?', [body.email])) throw new HttpError(409, 'That email is already registered');
+    if (ctx.db.get('SELECT 1 FROM users WHERE lower(email) = lower(?)', [body.email])) throw new HttpError(409, 'That email is already registered');
     const id = ctx.db.tx(() => {
       const ws = ctx.db.insert('workspaces', { name: body.workspace, created_at: Date.now() });
       ensureStages(ctx, ws);
@@ -96,13 +103,13 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
   app.post('/api/auth/login', async (req, reply) => {
     const body = parse(z.object({ email: z.string(), password: z.string() }), req.body);
     const key = throttleKey(body.email, req.ip);
-    checkThrottle(key);
-    const u = ctx.db.get<{ id: number; password_hash: string }>('SELECT id, password_hash FROM users WHERE email = ?', [body.email]);
+    checkThrottle(ctx, key);
+    const u = ctx.db.get<{ id: number; password_hash: string }>('SELECT id, password_hash FROM users WHERE lower(email) = lower(?)', [body.email]);
     if (!u || !verifyPassword(body.password, u.password_hash)) {
-      recordFailure(key);
+      recordFailure(ctx, key);
       throw new HttpError(401, 'Wrong email or password');
     }
-    clearFailures(key);
+    clearFailures(ctx, key);
     ensureLegacyMembership(ctx, u.id);
     const me = startSession(ctx, reply, u.id);
     if (!me) {
@@ -146,10 +153,10 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
   app.post('/api/team', async (req) => {
     const admin = requireAdmin(req);
     const body = parse(credentials.extend({ name: z.string().min(1).max(100), role: z.enum(['admin', 'member', 'client']).default('member') }), req.body);
-    if (ctx.db.get('SELECT 1 FROM users WHERE email = ?', [body.email])) throw new HttpError(409, 'That email is already registered. Invite them instead.');
+    if (ctx.db.get('SELECT 1 FROM users WHERE lower(email) = lower(?)', [body.email])) throw new HttpError(409, 'That email is already registered. Invite them instead.');
     // Clients (read-only) don't take a seat.
-    if (body.role !== 'client') assertWithinPlan(ctx, admin.workspace_id, 'seats');
-    const id = ctx.db.tx(() => {
+    const id = withPlanLock(ctx, admin.workspace_id, () => {
+      if (body.role !== 'client') assertWithinPlan(ctx, admin.workspace_id, 'seats');
       const id = ctx.db.insert('users', { workspace_id: admin.workspace_id, email: body.email, name: body.name, password_hash: hashPassword(body.password), role: body.role, created_at: Date.now() });
       addMembership(ctx, id, admin.workspace_id, body.role);
       return id;
@@ -164,8 +171,8 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
     const current = directRole(ctx, id, admin.workspace_id) ?? notFoundUser();
     if ((current === 'owner' || role === 'owner') && admin.role !== 'owner') throw new HttpError(403, 'Only owners can make or change owners');
     if (current === 'owner' && role !== 'owner' && ownerCount(ctx, admin.workspace_id) <= 1) throw new HttpError(409, 'A workspace needs at least one owner. Make someone else an owner first.');
-    if (current === 'client' && role !== 'client') assertWithinPlan(ctx, admin.workspace_id, 'seats', seatsNeeded(ctx, admin.workspace_id, { userId: id }));
-    ctx.db.tx(() => {
+    withPlanLock(ctx, admin.workspace_id, () => {
+      if (current === 'client' && role !== 'client') assertWithinPlan(ctx, admin.workspace_id, 'seats', seatsNeeded(ctx, admin.workspace_id, { userId: id }));
       ctx.db.run('UPDATE memberships SET role = ? WHERE user_id = ? AND workspace_id = ?', [role, id, admin.workspace_id]);
       // Made a client here, or no longer an agency admin: their leads and tasks are let go.
       releaseAssignments(ctx, id, admin.workspace_id);

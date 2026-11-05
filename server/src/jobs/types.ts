@@ -1,5 +1,6 @@
 import type { CrmSyncPayload } from '../crm/triggers.js';
 import type { EnrichJobPayload } from '../services/enrichment.js';
+import type { LinkedInCall } from '../services/linkedin-calls.js';
 
 // Payload of every job type, keyed by type. Each step adds its keys here (and wires the handler
 // in handlers.ts), for example:
@@ -18,6 +19,8 @@ export interface JobPayloads {
   // tokenEnc: the invite token sealed with APP_SECRET (only its hash is in the invites table).
   'invite.email': { inviteId: number; tokenEnc: string };
   'crm.sync': CrmSyncPayload;
+  // Check, Sync now or an inbox reply asked of a standby instance, run by the one holding LinkedIn sessions.
+  'linkedin.call': LinkedInCall;
 }
 
 export type JobType = keyof JobPayloads & string;

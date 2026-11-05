@@ -52,8 +52,8 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
     const extra = q.campaignId ? 'AND a.campaign_id = $camp' : '';
     if (q.campaignId) p.camp = q.campaignId;
     return ctx.db.all(
-      `SELECT a.id, a.type, a.status, a.detail, a.node_id AS nodeId, a.variant, a.created_at AS createdAt, a.lead_id AS leadId, a.campaign_id AS campaignId,
-              l.first_name || ' ' || l.last_name AS leadName, l.profile_url AS profileUrl, c.name AS campaignName, ac.name AS accountName
+      `SELECT a.id, a.type, a.status, a.detail, a.node_id AS "nodeId", a.variant, a.created_at AS "createdAt", a.lead_id AS "leadId", a.campaign_id AS "campaignId",
+              l.first_name || ' ' || l.last_name AS "leadName", l.profile_url AS "profileUrl", c.name AS "campaignName", ac.name AS "accountName"
        FROM activity a LEFT JOIN leads l ON l.id = a.lead_id LEFT JOIN campaigns c ON c.id = a.campaign_id LEFT JOIN accounts ac ON ac.id = a.account_id
        WHERE a.workspace_id = $ws ${extra} ORDER BY a.id DESC LIMIT ${q.limit}`,
       p,
@@ -64,7 +64,7 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
   const blacklistBody = z.object({ kind: z.enum(['profile', 'company', 'keyword', 'email_domain']), values: z.array(z.string().trim().min(1).max(300)).min(1).max(5000) });
 
   app.get('/api/blacklist', async (req) => {
-    return ctx.db.all('SELECT id, kind, value, created_at AS createdAt FROM blacklist WHERE workspace_id = ? ORDER BY id DESC', [user(req).workspace_id]);
+    return ctx.db.all('SELECT id, kind, value, created_at AS "createdAt" FROM blacklist WHERE workspace_id = ? ORDER BY id DESC', [user(req).workspace_id]);
   });
 
   app.post('/api/blacklist', async (req) => {
@@ -73,7 +73,7 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
     ctx.db.tx(() => {
       for (const raw of body.values) {
         const value = body.kind === 'profile' ? (publicIdFromUrl(raw) ?? raw) : raw.toLowerCase();
-        added += ctx.db.run('INSERT OR IGNORE INTO blacklist (workspace_id, kind, value, created_at) VALUES (?, ?, ?, ?)', [user(req).workspace_id, body.kind, value, ctx.clock.now()]).changes;
+        added += ctx.db.run('INSERT INTO blacklist (workspace_id, kind, value, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING', [user(req).workspace_id, body.kind, value, ctx.clock.now()]).changes;
       }
     });
     return { added };
@@ -137,7 +137,7 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
   // ---- Webhooks --------------------------------------------------------------
   app.get('/api/webhooks', async (req) => {
     return ctx.db
-      .all<any>('SELECT id, url, events, secret, active, last_status AS lastStatus, created_at AS createdAt FROM webhooks WHERE workspace_id = ? ORDER BY id', [user(req).workspace_id])
+      .all<any>('SELECT id, url, events, secret, active, last_status AS "lastStatus", created_at AS "createdAt" FROM webhooks WHERE workspace_id = ? ORDER BY id', [user(req).workspace_id])
       // Only admins can see signing secrets.
       .map((h) => ({ ...h, secret: isAdmin(user(req)) ? h.secret : null, events: json(h.events, []), active: !!h.active }));
   });

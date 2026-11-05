@@ -17,6 +17,10 @@ export class RetryLater extends Error {
 // Throw from a handler to fail at once, with no retry (bad config, missing row).
 export class PermanentError extends Error {}
 
+// This instance stopped running jobs (it lost the leader lock). The row is left as it is: the new leader
+// takes it back once its lease runs out, so it never runs again while this run might still be going.
+class Interrupted extends Error {}
+
 export interface JobInfo<T> {
   id: number;
   workspaceId: number | null;
@@ -80,6 +84,9 @@ const DEFAULT_TIMEOUT = 10 * MINUTE;
 const BACKOFF_BASE = 30_000;
 const BACKOFF_MAX = 6 * HOUR;
 const RESULT_MAX_CHARS = 4000;
+// A run only settles its own claim: once its row was re-queued and claimed again (attempts went up), a late
+// finish from the old run changes nothing.
+const THIS_RUN = "id = ? AND status = 'running' AND attempts = ?";
 
 // A durable queue in the `jobs` table, worked by the engine process (Engine.tick calls tick()).
 // Handlers must be idempotent (a job can run twice after a crash) and re-load rows with the job's workspace id.
@@ -87,8 +94,13 @@ export class JobQueue {
   private handlers = new Map<string, HandlerDef>();
   // Jobs running in this process. This (not the tick) bounds concurrency, since production ticks overlap.
   private inFlight = new Map<number, string>();
+  // Stops a run in this process (when this instance stops being the leader).
+  private stoppers = new Map<number, () => void>();
   private recovered = false;
   private lastCleanup = 0;
+  // False while this instance may not take jobs (multi-instance Postgres: it is not the leader). Checked
+  // before every claim, not only when a tick starts.
+  gate: () => boolean = () => true;
 
   constructor(private ctx: Ctx) {}
 
@@ -131,11 +143,12 @@ export class JobQueue {
 
   // Starts due jobs up to the free concurrency and resolves when the jobs it started have settled.
   async tick(): Promise<void> {
+    if (!this.gate()) return;
     const now = this.ctx.clock.now();
     this.recover(now);
     this.cleanup(now);
     const started: Promise<void>[] = [];
-    while (this.inFlight.size < this.ctx.config.jobConcurrency) {
+    while (this.inFlight.size < this.ctx.config.jobConcurrency && this.gate()) {
       const types = this.eligibleTypes();
       if (!types.length) break;
       const row = this.claim(types, now);
@@ -200,11 +213,15 @@ export class JobQueue {
     return [...this.handlers].filter(([t, d]) => (running.get(t) ?? 0) < d.concurrency).map(([t]) => t);
   }
 
-  // One statement, so two workers can never claim the same job. (Postgres adds FOR UPDATE SKIP LOCKED here.)
+  // One statement, so two workers can never claim the same job. On Postgres the row lock is skipped by
+  // a concurrent claim (which takes the next job instead of waiting), and the status re-check makes a
+  // claim that lost the race return nothing rather than run the job twice.
   private claim(types: string[], now: number): JobRow | undefined {
+    const skipLocked = this.ctx.db.dialect === 'postgres' ? ' FOR UPDATE SKIP LOCKED' : '';
     const row = this.ctx.db.get<JobRow>(
       `UPDATE jobs SET status = 'running', attempts = attempts + 1, locked_until = ?, updated_at = ?
-       WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_at <= ? AND type IN (${types.map(() => '?').join(',')}) ORDER BY run_at, id LIMIT 1)
+       WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_at <= ? AND type IN (${types.map(() => '?').join(',')}) ORDER BY run_at, id LIMIT 1${skipLocked})
+         AND status = 'queued'
        RETURNING *`,
       [now + DEFAULT_TIMEOUT, now, now, ...types],
     );
@@ -226,6 +243,10 @@ export class JobQueue {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expire!: (e: Error) => void;
     const timedOut = new Promise<never>((_, reject) => (expire = reject));
+    this.stoppers.set(row.id, () => {
+      expire(new Interrupted('This instance stopped running jobs'));
+      abort.abort();
+    });
     const arm = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -241,7 +262,7 @@ export class JobQueue {
         if (abort.signal.aborted) return;
         arm();
         const now = ctx.clock.now();
-        ctx.db.run("UPDATE jobs SET progress = ?, locked_until = ?, updated_at = ? WHERE id = ? AND status = 'running'", [JSON.stringify({ done, total: total ?? null }), now + def.timeoutMs, now, row.id]);
+        ctx.db.run(`UPDATE jobs SET progress = ?, locked_until = ?, updated_at = ? WHERE ${THIS_RUN}`, [JSON.stringify({ done, total: total ?? null }), now + def.timeoutMs, now, row.id, row.attempts]);
       },
     };
     arm();
@@ -250,19 +271,27 @@ export class JobQueue {
       const result = await Promise.race([def.fn({ id: row.id, workspaceId: row.workspace_id, payload: json(row.payload, {}), attempts: row.attempts }, helpers), timedOut]);
       const text = result === undefined ? null : JSON.stringify(result);
       const now = ctx.clock.now();
-      ctx.db.run("UPDATE jobs SET status = 'done', result = ?, last_error = NULL, locked_until = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'", [
+      ctx.db.run(`UPDATE jobs SET status = 'done', result = ?, last_error = NULL, locked_until = NULL, finished_at = ?, updated_at = ? WHERE ${THIS_RUN}`, [
         text && text.length <= RESULT_MAX_CHARS ? text : null,
         now,
         now,
         row.id,
+        row.attempts,
       ]);
     } catch (e) {
-      this.settleFailure(row, e);
+      if (!(e instanceof Interrupted)) this.settleFailure(row, e);
     } finally {
       clearTimeout(timer);
       abort.abort(); // the run is over either way
       this.inFlight.delete(row.id);
+      this.stoppers.delete(row.id);
     }
+  }
+
+  // Leadership lost: every run in this process stops (handlers see their signal abort) and is no longer
+  // tracked here; the gate keeps new ones from starting. Their rows keep their leases (see Interrupted).
+  stopAll() {
+    for (const stop of [...this.stoppers.values()]) stop();
   }
 
   private settleFailure(row: JobRow, thrown: unknown) {
@@ -280,30 +309,33 @@ export class JobQueue {
     const now = ctx.clock.now();
     const message = (err.message || err.name || 'Job failed').slice(0, 500);
     if (err instanceof RetryLater) {
-      ctx.db.run("UPDATE jobs SET status = 'queued', attempts = attempts - 1, run_at = ?, last_error = ?, locked_until = NULL, updated_at = ? WHERE id = ? AND status = 'running'", [
+      ctx.db.run(`UPDATE jobs SET status = 'queued', attempts = attempts - 1, run_at = ?, last_error = ?, locked_until = NULL, updated_at = ? WHERE ${THIS_RUN}`, [
         now + Math.max(0, err.delayMs),
         message,
         now,
         row.id,
+        row.attempts,
       ]);
     } else if (err instanceof PermanentError || row.attempts >= row.max_attempts) {
-      ctx.db.run("UPDATE jobs SET status = 'failed', last_error = ?, locked_until = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'", [message, now, now, row.id]);
+      ctx.db.run(`UPDATE jobs SET status = 'failed', last_error = ?, locked_until = NULL, finished_at = ?, updated_at = ? WHERE ${THIS_RUN}`, [message, now, now, row.id, row.attempts]);
     } else {
-      ctx.db.run("UPDATE jobs SET status = 'queued', run_at = ?, last_error = ?, locked_until = NULL, updated_at = ? WHERE id = ? AND status = 'running'", [
+      ctx.db.run(`UPDATE jobs SET status = 'queued', run_at = ?, last_error = ?, locked_until = NULL, updated_at = ? WHERE ${THIS_RUN}`, [
         now + Math.round(this.backoffMs(row.attempts)),
         message,
         now,
         row.id,
+        row.attempts,
       ]);
     }
   }
 
-  // The first tick after start re-queues every `running` job: with one worker process they are all
-  // orphans of a crash or restart. Later ticks only re-queue expired locks of jobs not running here
-  // (that only matters with several instances on Postgres).
+  // On SQLite the first tick after start re-queues every `running` job: one process owns the file, so they
+  // are all orphans of a crash or restart. On Postgres another instance (a leader that lost its lock but is
+  // still running) may be working on them, so there, as on every later tick, only expired leases of jobs not
+  // running here are re-queued.
   private recover(now: number) {
-    const requeue = "status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'queued' END, last_error = 'Interrupted before it finished', locked_until = NULL, updated_at = ?, finished_at = CASE WHEN attempts >= max_attempts THEN ? ELSE NULL END";
-    if (!this.recovered) {
+    const requeue = "status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'queued' END, last_error = 'Interrupted before it finished', locked_until = NULL, updated_at = ?, finished_at = CASE WHEN attempts >= max_attempts THEN CAST(? AS BIGINT) ELSE NULL END";
+    if (!this.recovered && this.ctx.db.dialect === 'sqlite') {
       this.recovered = true;
       this.ctx.db.run(`UPDATE jobs SET ${requeue} WHERE status = 'running'`, [now, now]);
       return;

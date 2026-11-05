@@ -23,6 +23,8 @@ export interface AccountRow {
   linkedin_url: string | null;
   next_action_at: number;
   last_sync_at: number;
+  // Wall-clock end of the engine run holding the account (see Engine.runAccount), else null.
+  busy_until: number | null;
   created_at: number;
 }
 

@@ -31,6 +31,7 @@ OpenReach is an independent project. It is not affiliated with LinkedIn or with 
 | **Integrations** | Signed webhooks (`lead.connected`, `lead.replied`, `lead.classified`, `lead.stage_changed`, `lead.enriched`, `lead.finished`, ...) for Zapier, Make, n8n or your CRM. CSV export of any list or campaign. **Settings → Integrations** holds per-workspace provider settings (AI, email finding and verification, enrichment, CRM, SMS) with encrypted keys and a *Test connection* button. Until you add one, a built-in simulator stands in, so every feature works offline with made-up data that never reaches anyone (CRM sync only runs once you add a CRM). |
 | **CRM sync (HubSpot, Pipedrive)** | Add HubSpot (private app access token) or Pipedrive (API token and company domain) under **Settings → Integrations**, or the simulated CRM to try it. Leads are created or updated as contacts, matched by email or by a LinkedIn URL property you name, with a field mapping you choose (our field → CRM property). Replies, chosen stage moves and, if you like, sent messages, accepted invitations and finished campaigns are added as notes, each only once; reaching a stage you pick (for example *Interested*) opens one deal per lead. Syncs run in the background with retries and respect the CRM's rate limits; the sync log on the same page shows every call with its errors and a *Retry* button, and the lead drawer links to the CRM records and has *Push to CRM*. |
 | **Blacklist** | By profile, company, keyword or email domain. Checked when leads are added and again before every action. |
+| **SQLite or Postgres** | SQLite in one file by default, with nothing to set up. Set `DATABASE_URL` to use Postgres instead, so several app instances can share one database: one of them runs the campaign engine and background jobs, the others serve the app and take over if it stops. |
 
 ## Quick start
 
@@ -59,6 +60,7 @@ The seed creates two simulated LinkedIn accounts, 60 leads and a running campaig
 ```bash
 npm run dev        # API on :8787 (auto-reload) + Vite on :5173 with /api proxied
 npm test           # engine, API and unit tests (vitest)
+TEST_DATABASE_URL=postgres://user:pass@localhost:5432/openreach_test npm run test:pg -w server   # the same suite on Postgres
 npm run typecheck
 ```
 
@@ -88,6 +90,8 @@ docker compose up -d
 The app listens on port 8787. Put it behind HTTPS (Caddy, nginx or your platform's proxy) before entering real LinkedIn cookies. Data lives in the `openreach-data` volume.
 
 To build from source instead, run `docker build -t openreach .`.
+
+**Postgres instead of SQLite (optional).** `docker-compose.yml` has a `postgres` service behind a profile. Uncomment `DATABASE_URL` (and `depends_on`) under `openreach`, set a password in both places, then run `docker compose --profile postgres up -d`. On Render, create a Render Postgres database and set the service's `DATABASE_URL` to its internal connection string (see the comments in `render.yaml`); the disk is then only needed for browser profiles.
 
 ## Connecting a real LinkedIn account
 
@@ -130,7 +134,7 @@ server/
   src/mail/         mailboxes, email composing, the mail runner, IMAP replies/bounces, deliverability, links
   src/messaging/    the SMS/WhatsApp runner and the signed Twilio webhook (STOP/START, replies)
   src/routes/       REST API (Fastify)
-  src/db/           SQLite schema and migrations
+  src/db/           migrations, the SQLite wrapper and the optional Postgres adapter (translate.ts maps the SQL)
 ```
 
 - Every lead in a campaign has a position in the sequence tree and a `next_run_at` time. Waits and conditions only read the database, so they advance immediately at any hour. Actions wait for their account to be inside working hours, under its limits and past its randomized cool-off from the previous action.
@@ -162,6 +166,7 @@ The browser driver finds elements by accessible names (for example *“Invite Ja
 |---|---|---|
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | |
 | `DATA_DIR` | `./data` | SQLite database, browser profiles, generated secret |
+| `DATABASE_URL` | | `postgres://user:password@host:5432/db` to use Postgres instead of SQLite (tables are created on first start; add `?sslmode=require` for hosted databases that need TLS). Several instances may share it: the one holding a database lock runs the campaign engine, the jobs and every LinkedIn browser session; the others serve the API (sending *Check*, *Sync now* and LinkedIn inbox replies to it as jobs and waiting for the answer) and take over within 30 seconds if it goes away. Sign-in throttling, checkout starts and plan limits are kept in the database, so they hold across instances. Existing SQLite data is not copied over. |
 | `APP_SECRET` | generated into `DATA_DIR/app-secret` | Key for encrypting session cookies, SMTP passwords and integration API keys. Back it up: changing it makes saved sessions unreadable. |
 | `SETUP_TOKEN` | | If set, creating the first (owner) account requires this value. **Set it on any public server**, or whoever opens the URL first owns the installation. |
 | `ALLOW_SIGNUP` | `false` | Let anyone create a new workspace after the first user |
@@ -235,7 +240,7 @@ To verify a delivery, compute `sha256=` + HMAC-SHA256(body, secret) and compare 
 - LinkedIn only shows coarse message timestamps, so inbox messages are time-stamped when they are first synced.
 - The HubSpot and Pipedrive integrations follow the vendors' public API docs and are tested against fakes, not the live services. Sync is one way (OpenReach → CRM): edits made in the CRM don't come back. Contacts are matched by email, else by the LinkedIn URL property you map; with neither, the lead's first sync creates a new contact. Notes are delivered at least once: a crash between the CRM call and saving its id can repeat that note. CRM syncs run one at a time per server, so a large push takes a while. Pipedrive persons get no organization, and HubSpot record links need the account id (Hub ID) in the integration's settings.
 - Agency mode has one level: an agency and its clients (a client can't have clients of its own). A client's people see only that client; agency members (not owners or admins) don't reach clients unless they're added to them. Deleting a client deletes all its data and logins that belong to no other workspace. White-label branding changes the app's name, logo, color and support link; emails from users' mailboxes are untouched, and invite emails use the agency's product name.
-- SQLite and an in-process scheduler (with a database-backed job queue for background work) suit one server running dozens of accounts. Beyond that you'd want Postgres.
+- SQLite and an in-process scheduler (with a database-backed job queue for background work) suit one server running dozens of accounts. With `DATABASE_URL`, Postgres holds the data and several instances can serve the API, but the campaign engine, jobs and LinkedIn sessions still run in one instance at a time (the others stand by). After a handover the new leader waits for work the old one may still be finishing: an account it was running (up to 15 minutes) and jobs until their leases end (10 minutes by default), so a leader that lost its database connection but kept running never works the same account or job alongside it. The Postgres adapter keeps the app's synchronous database calls, so each query waits for its round trip (well under a millisecond to a nearby database); keep the database close to the app. There is no tool to move an existing SQLite database to Postgres.
 
 ## License
 

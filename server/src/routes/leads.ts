@@ -111,8 +111,8 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
 
   app.get('/api/lists', async (req) => {
     return ctx.db.all(
-      `SELECT l.id, l.name, l.created_at AS createdAt, COUNT(ld.id) AS leads,
-              SUM(ld.connection_status = 'connected') AS connected
+      `SELECT l.id, l.name, l.created_at AS "createdAt", COUNT(ld.id) AS leads,
+              SUM(CASE WHEN ld.connection_status = 'connected' THEN 1 WHEN ld.id IS NULL THEN NULL ELSE 0 END) AS connected
        FROM lead_lists l LEFT JOIN leads ld ON ld.list_id = l.id
        WHERE l.workspace_id = ? GROUP BY l.id ORDER BY l.id DESC`,
       [user(req).workspace_id],
@@ -224,10 +224,10 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     const { id } = parse(idParam, req.params);
     const l = ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ? AND workspace_id = ?', [id, user(req).workspace_id]) ?? notFound('Lead');
     const campaigns = ctx.db.all(
-      'SELECT c.id, c.name, cl.state, cl.node_id AS nodeId, cl.node_type AS nodeType, cl.next_run_at AS nextRunAt, cl.last_error AS lastError FROM campaign_leads cl JOIN campaigns c ON c.id = cl.campaign_id WHERE cl.lead_id = ?',
+      'SELECT c.id, c.name, cl.state, cl.node_id AS "nodeId", cl.node_type AS "nodeType", cl.next_run_at AS "nextRunAt", cl.last_error AS "lastError" FROM campaign_leads cl JOIN campaigns c ON c.id = cl.campaign_id WHERE cl.lead_id = ?',
       [id],
     );
-    const activity = ctx.db.all('SELECT id, type, status, detail, variant, created_at AS createdAt, campaign_id AS campaignId FROM activity WHERE lead_id = ? ORDER BY id DESC LIMIT 200', [id]);
+    const activity = ctx.db.all('SELECT id, type, status, detail, variant, created_at AS "createdAt", campaign_id AS "campaignId" FROM activity WHERE lead_id = ? ORDER BY id DESC LIMIT 200', [id]);
     const owner = l.owner_id ? ctx.db.get<{ id: number; name: string }>('SELECT u.id, u.name FROM users u JOIN memberships m ON m.user_id = u.id AND m.workspace_id = ? WHERE u.id = ?', [l.workspace_id, l.owner_id]) : undefined;
     return { ...serializeLead(l, listStages(ctx, l.workspace_id)), owner: owner ?? null, campaigns, activity };
   });

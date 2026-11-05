@@ -17,7 +17,7 @@ const password = process.env.SEED_PASSWORD ?? 'demo-password';
 
 const ctx = buildContext(loadConfig(), realClock);
 const { db } = ctx;
-if (db.get('SELECT 1 FROM users WHERE email = ?', [email])) {
+if (db.get('SELECT 1 FROM users WHERE lower(email) = lower(?)', [email])) {
   console.log(`${email} already exists; nothing to do.`);
   process.exit(0);
 }

@@ -9,6 +9,7 @@
     "start": "node --disable-warning=ExperimentalWarning dist/index.js",
     "seed": "tsx src/seed.ts",
     "test": "vitest run",
+    "test:pg": "node -e \"if (!/^postgres(ql)?:/.test(process.env.TEST_DATABASE_URL || '')) { console.error('Set TEST_DATABASE_URL=postgres://user:pass@host:5432/db (a database the tests may create schemas in).'); process.exit(1); }\" && vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "fastify": "^5.12.7",
     "imapflow": "^2.10.2",
     "nodemailer": "^10.3.1",
+    "pg": "^8.16.3",
     "stripe": "^23.1.0",
     "zod": "^3.25.76"
   },
@@ -28,6 +30,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/nodemailer": "^8.0.2",
+    "@types/pg": "^8.15.5",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"

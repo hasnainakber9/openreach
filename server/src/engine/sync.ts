@@ -101,7 +101,7 @@ export function storeThread(ctx: Ctx, a: AccountRow, t: InboxThread): number {
       if (!newest || m.sentAt >= newest.sentAt) newest = { id, body: m.body, sentAt: m.sentAt };
     }
   }
-  if (latest) ctx.db.run('UPDATE conversations SET last_message_at = MAX(last_message_at, ?) WHERE id = ?', [latest, conv.id]);
+  if (latest) ctx.db.run('UPDATE conversations SET last_message_at = CASE WHEN last_message_at > ? THEN last_message_at ELSE ? END WHERE id = ?', [latest, latest, conv.id]);
   if (inbound) ctx.db.run('UPDATE conversations SET unread = 1 WHERE id = ?', [conv.id]);
 
   if (inbound && lead) {

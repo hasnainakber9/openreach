@@ -32,6 +32,8 @@ const FREE_STEPS_PER_TICK = 2000;
 const ACTION_CANDIDATES = 20;
 // How long a lead is held for the account acting on it.
 const ACTION_LEASE = 10 * MINUTE;
+// How long (wall clock) an account is held by one engine run at most; released when the run ends.
+const ACCOUNT_LEASE = 15 * 60_000;
 // What LinkedIn accepts once variables are filled in (InMail subject/body, message); longer text is shortened.
 const RENDERED_MAX = { message: 8000, inmailSubject: 200, inmailBody: 1900, emailSubject: 300 };
 
@@ -42,6 +44,8 @@ class StopAccount extends Error {}
 export class Engine {
   private busy = new Set<number>();
   private timer: NodeJS.Timeout | null = null;
+  private running = new Set<Promise<void>>();
+  private gate: () => boolean = () => true;
   private capacity: CapacityCache = new Map();
   // Email steps of campaigns that have mailboxes (they don't wait for a LinkedIn account).
   readonly mail: MailRunner;
@@ -53,13 +57,30 @@ export class Engine {
     this.messaging = new MessagingRunner(ctx, this);
   }
 
-  start() {
-    this.timer = setInterval(() => void this.tick().catch((e) => console.error('[engine] tick failed', e)), this.ctx.config.tickMs);
+  // `gate` (multi-instance Postgres): ticks, LinkedIn calls and job claims only happen while this instance
+  // still holds the leader lock.
+  start(gate: () => boolean = () => true) {
+    this.gate = gate;
+    this.ctx.jobs.gate = gate;
+    // One process owns a SQLite file: account leases left by a crash are nobody's.
+    if (this.ctx.db.dialect === 'sqlite') this.ctx.db.run('UPDATE accounts SET busy_until = NULL WHERE busy_until IS NOT NULL');
+    this.timer = setInterval(() => {
+      if (!gate()) return;
+      const t: Promise<void> = this.tick()
+        .catch((e) => console.error('[engine] tick failed', e))
+        .finally(() => this.running.delete(t));
+      this.running.add(t);
+    }, this.ctx.config.tickMs);
   }
 
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  // Resolves once the ticks started by start() have finished.
+  async idle() {
+    await Promise.all([...this.running]);
   }
 
   // Runs one pass: free steps (waits, conditions) for every campaign, then every active account
@@ -88,24 +109,54 @@ export class Engine {
     ]);
   }
 
-  async runAccount(a: AccountRow) {
+  async runAccount(snapshot: AccountRow) {
     const { ctx } = this;
     const now = ctx.clock.now();
-    const working = isWorkingTime(now, schedule(a));
+    // The tick's snapshot rules out idle accounts without a write.
+    if (!this.due(snapshot, now)) return;
+    // The account is leased for the run (the `busy` set only covers this process): an instance that took over
+    // from a leader that lost its lock but is still finishing a run waits for it, and then reads the account
+    // as that run left it (next_action_at, last_sync_at), so the account's delays and limits hold.
+    const until = Date.now() + ACCOUNT_LEASE;
+    const a = ctx.db.get<AccountRow>("UPDATE accounts SET busy_until = ? WHERE id = ? AND status = 'active' AND (busy_until IS NULL OR busy_until < ?) RETURNING *", [
+      until,
+      snapshot.id,
+      Date.now(),
+    ]);
+    if (!a) return;
+    try {
+      await this.work(a, now);
+    } finally {
+      ctx.db.run('UPDATE accounts SET busy_until = NULL WHERE id = ? AND busy_until = ?', [a.id, until]);
+    }
+  }
 
-    if (working && now - a.last_sync_at >= ctx.config.syncIntervalMin * MINUTE) {
+  private due(a: AccountRow, now: number) {
+    return isWorkingTime(now, schedule(a)) && (this.syncDue(a, now) || a.next_action_at <= now);
+  }
+
+  private syncDue(a: AccountRow, now: number) {
+    return now - a.last_sync_at >= this.ctx.config.syncIntervalMin * MINUTE;
+  }
+
+  private async work(a: AccountRow, now: number) {
+    const { ctx } = this;
+    if (!this.due(a, now)) return;
+    // The gate is checked again before every LinkedIn call: leadership can be lost in the middle of a run.
+    if (this.syncDue(a, now) && this.gate()) {
       ctx.db.run('UPDATE accounts SET last_sync_at = ? WHERE id = ?', [now, a.id]);
       await this.guarded(a, () => syncAccount(ctx, a));
       // Accepted invites wake their leads; move them on before picking this pass's action.
       this.advanceFreeSteps();
     }
 
-    if (!working || a.next_action_at > now) return;
+    if (a.next_action_at > now) return;
     // A lead still waiting for its AI text is parked for a moment and the next candidate gets the
     // turn, so a slow AI provider never idles the sender.
     for (let tries = 0; tries < ACTION_CANDIDATES; tries++) {
+      if (!this.gate()) return;
       const job = this.nextActionJob(a);
-      if (!job) return;
+      if (!job || !this.gate()) return;
       const acted = await this.guarded(a, () => this.runAction(a, job));
       if (acted === 'ai_wait') continue;
       if (acted) {

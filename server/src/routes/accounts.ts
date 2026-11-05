@@ -1,13 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertWithinPlan, billingEnabled } from '../billing/limits.js';
+import { assertWithinPlan, billingEnabled, withPlanLock } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { DriverError } from '../drivers/types.js';
 import { accountLimits, schedule, usage } from '../engine/engine.js';
 import { isValidTimezone, isWorkingTime, nextWorkingTime } from '../engine/limits.js';
-import { syncAccount } from '../engine/sync.js';
 import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
+import { callLinkedIn } from '../services/linkedin-calls.js';
 import { releaseUnstartedLeads, retireAccount } from '../services/rotation.js';
 import type { AccountRow } from '../types.js';
 
@@ -120,8 +119,11 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     requireWriter(req);
     const body = parse(accountBody, req.body);
     if (body.driver === 'playwright' && !body.liAt) throw new HttpError(400, 'A LinkedIn session cookie (li_at) is required');
-    assertWithinPlan(ctx, user(req).workspace_id, 'linkedinAccounts');
-    const id = ctx.db.insert('accounts', { workspace_id: user(req).workspace_id, created_at: ctx.clock.now(), ...columns(body) });
+    const ws = user(req).workspace_id;
+    const id = withPlanLock(ctx, ws, () => {
+      assertWithinPlan(ctx, ws, 'linkedinAccounts');
+      return ctx.db.insert('accounts', { workspace_id: ws, created_at: ctx.clock.now(), ...columns(body) });
+    });
     return serializeAccount(ctx, ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [id])!);
   });
 
@@ -165,31 +167,15 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     return { ok: true };
   });
 
-  // Opens LinkedIn with the saved session and records whose account it is.
+  // Opens LinkedIn with the saved session and records whose account it is (on the instance that holds the
+  // LinkedIn sessions, see callLinkedIn).
   app.post('/api/accounts/:id/check', async (req) => {
     const a = load(req);
-    try {
-      const info = await ctx.drivers.use(a, (d) => d.checkSession());
-      ctx.db.run("UPDATE accounts SET linkedin_name = ?, linkedin_url = ?, status = CASE WHEN status = 'paused' THEN 'paused' ELSE 'active' END, status_message = NULL WHERE id = ?", [info.name, info.profileUrl, a.id]);
-      return { ok: true, ...info };
-    } catch (e) {
-      const msg = (e as Error).message;
-      if (e instanceof DriverError && (e.code === 'SESSION_EXPIRED' || e.code === 'CHECKPOINT')) {
-        ctx.db.run("UPDATE accounts SET status = 'needs_login', status_message = ? WHERE id = ?", [msg, a.id]);
-        releaseUnstartedLeads(ctx, a.id);
-      }
-      throw new HttpError(422, msg);
-    }
+    return callLinkedIn(ctx, a.workspace_id, { op: 'check', accountId: a.id });
   });
 
   app.post('/api/accounts/:id/sync', async (req) => {
     const a = load(req);
-    try {
-      const r = await syncAccount(ctx, a);
-      ctx.db.run('UPDATE accounts SET last_sync_at = ? WHERE id = ?', [ctx.clock.now(), a.id]);
-      return r;
-    } catch (e) {
-      throw new HttpError(422, (e as Error).message);
-    }
+    return callLinkedIn(ctx, a.workspace_id, { op: 'sync', accountId: a.id });
   });
 }

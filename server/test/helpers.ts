@@ -1,8 +1,12 @@
+import { randomBytes } from 'node:crypto';
+import { afterAll, afterEach, beforeEach } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { ManualClock, MINUTE } from '../src/clock.js';
 import type { Config } from '../src/config.js';
 import { buildContext, type Ctx } from '../src/context.js';
+import type { Database } from '../src/db/database.js';
 import { DB } from '../src/db/db.js';
+import { PgDatabase, type PgOptions } from '../src/db/postgres.js';
 import { Engine } from '../src/engine/engine.js';
 import type { Sequence } from '../src/engine/sequence.js';
 import type { SimulatorOptions } from '../src/drivers/simulator.js';
@@ -24,6 +28,52 @@ export function seededRandom(seed = 42) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+// With TEST_DATABASE_URL=postgres://... every world gets its own fresh schema in that database
+// (dropped after the test, or after the file for worlds made outside a test); otherwise SQLite in memory.
+export const TEST_PG_URL = process.env.TEST_DATABASE_URL?.trim() || undefined;
+const pgOpen: { db: PgDatabase; perTest: boolean }[] = [];
+let inTest = false;
+const closePg = (all: boolean) => {
+  for (let i = pgOpen.length - 1; i >= 0; i--) {
+    if (!all && !pgOpen[i].perTest) continue;
+    try {
+      pgOpen[i].db.close();
+    } catch {
+      // already closed by the test
+    }
+    pgOpen.splice(i, 1);
+  }
+};
+if (TEST_PG_URL) {
+  beforeEach(() => {
+    inTest = true;
+  });
+  afterEach(async () => {
+    inTest = false;
+    closePg(false);
+    await pgYield();
+  });
+  afterAll(() => closePg(true));
+}
+
+// Postgres calls block the thread; awaiting this lets vitest's own messages through (its RPC gives up after
+// 60 s without an event-loop turn, and promise-only awaits never give it one).
+export const pgYield = () => (TEST_PG_URL ? new Promise<void>((r) => setImmediate(r)) : Promise.resolve());
+
+export const testSchema = () => `t_${process.pid}_${randomBytes(5).toString('hex')}`;
+
+// Another connection to a test database (Postgres tests that need two): same schema, closed with the test.
+export function openPg(opts: PgOptions): PgDatabase {
+  const db = new PgDatabase(TEST_PG_URL!, opts);
+  pgOpen.push({ db, perTest: inTest });
+  return db;
+}
+
+export function testDb(): Database {
+  if (!TEST_PG_URL) return new DB(':memory:');
+  return openPg({ schema: testSchema(), createSchema: true, dropSchemaOnClose: true });
 }
 
 export function testConfig(): Config {
@@ -62,7 +112,7 @@ export interface World {
 export function makeWorld(sim: Partial<SimulatorOptions> = {}, account: Record<string, any> = {}): World {
   const clock = new ManualClock(MONDAY_8AM);
   const random = seededRandom(7);
-  const ctx = buildContext(testConfig(), clock, { db: new DB(':memory:'), random }) as World['ctx'];
+  const ctx = buildContext(testConfig(), clock, { db: testDb(), random }) as World['ctx'];
   ctx.webhooks.deliver = false;
   // Tests never touch the network; a test that needs HTTP passes fakeFetch().
   ctx.fetch = async () => {
@@ -157,6 +207,7 @@ export async function runFor(w: World, ms: number, step = 2 * MINUTE) {
   while (w.ctx.clock.now() < end) {
     w.ctx.clock.advance(step);
     await w.engine.tick();
+    await pgYield();
   }
 }
 
@@ -215,6 +266,7 @@ export function fakeImap(inbox: (lastUid: number) => InboundEmail[], validity = 
 // Runs every due background job (and jobs they make due) until none are left.
 export async function drainJobs(w: World) {
   await w.ctx.jobs.drain();
+  await pgYield();
 }
 
 export interface FakeRoute {
@@ -248,6 +300,7 @@ export async function makeApi(w: World = makeWorld()) {
   const app = await buildApp(w.ctx);
   let current = '';
   const call = async (method: string, url: string, payload?: unknown, as?: { cookie: string }) => {
+    await pgYield();
     const res = await app.inject({ method: method as any, url, payload: payload as any, headers: (as?.cookie ?? current) ? { cookie: as?.cookie ?? current } : {} });
     const set = res.headers['set-cookie'];
     if (set && !as) current = (Array.isArray(set) ? set[0] : set).split(';')[0];

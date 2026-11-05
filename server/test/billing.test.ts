@@ -296,6 +296,25 @@ describe('Stripe checkout and portal', () => {
     w.ctx.config.publicUrl = undefined;
     expect((await api.call('POST', '/api/billing/portal')).body.error).toMatch(/PUBLIC_URL/);
   });
+
+  it('lets one checkout start at a time per workspace, across instances sharing the database', async () => {
+    const w = makeWorld();
+    const stripe = enableBilling(w);
+    const api = await makeApi(w);
+    const owner = await api.register('Acme');
+    // Another instance is starting one (its claim is in the database, not in this process).
+    w.ctx.db.run('INSERT INTO subscriptions (workspace_id, checkout_starting_until, updated_at) VALUES (?, ?, ?)', [owner.workspaceId, Date.now() + 60_000, 1]);
+    const busy = await api.call('POST', '/api/billing/checkout', { planId: 'pro' });
+    expect(busy.status).toBe(409);
+    expect(busy.body.error).toMatch(/already starting/);
+    expect(stripe.calls.checkout).toHaveLength(0);
+    // A claim left by a crash runs out; a finished start releases its own.
+    w.ctx.db.run('UPDATE subscriptions SET checkout_starting_until = ? WHERE workspace_id = ?', [Date.now() - 1, owner.workspaceId]);
+    expect((await api.call('POST', '/api/billing/checkout', { planId: 'pro' })).status).toBe(200);
+    expect(subscriptionOf(w.ctx, owner.workspaceId)!.checkout_starting_until).toBeNull();
+    expect((await api.call('POST', '/api/billing/checkout', { planId: 'pro' })).status).toBe(200);
+    expect(stripe.calls.checkout).toHaveLength(2);
+  });
 });
 
 describe('Stripe webhook', () => {

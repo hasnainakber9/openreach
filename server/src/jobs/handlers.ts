@@ -6,6 +6,7 @@ import { EMAIL_SYNC_JOB_OPTIONS, emailSyncJob } from '../mail/inbound.js';
 import { ENRICH_JOB_OPTIONS, enrichLeadJob } from '../services/enrichment.js';
 import { IMPORT_JOB_OPTIONS, importJob } from '../services/imports.js';
 import { INVITE_JOB_OPTIONS, inviteEmailJob } from '../services/invites.js';
+import { LINKEDIN_CALL_JOB_OPTIONS, linkedInCallJob } from '../services/linkedin-calls.js';
 
 // The one place job handlers are wired, called once from buildContext. Each step registers its
 // types here, e.g. ctx.jobs.register('enrich.lead', enrichLeadJob, { concurrency: 2 }).
@@ -18,4 +19,5 @@ export function registerHandlers(ctx: Ctx) {
   ctx.jobs.register('enrich.lead', enrichLeadJob, ENRICH_JOB_OPTIONS);
   ctx.jobs.register('invite.email', inviteEmailJob, INVITE_JOB_OPTIONS);
   ctx.jobs.register('crm.sync', crmSyncJob, CRM_JOB_OPTIONS);
+  ctx.jobs.register('linkedin.call', linkedInCallJob, LINKEDIN_CALL_JOB_OPTIONS);
 }

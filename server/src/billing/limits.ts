@@ -21,6 +21,7 @@ export interface SubscriptionRow {
   updated_at: number;
   checkout_session_id: string | null;
   extra_subscription_id: string | null;
+  checkout_starting_until: number | null;
 }
 
 // Statuses that give the subscribed plan's limits. Anything else (past_due, unpaid, canceled, ...) falls back
@@ -148,6 +149,19 @@ function check(ctx: Ctx, workspaceId: number, key: LimitKey, adding: number): { 
       ? `Your plan includes ${allowed} ${noun} a month and they are used up. Upgrade or wait until next month.`
       : `Your plan allows ${allowed} ${noun}. Upgrade to add more.`;
   return { message, details: { code: 'plan_limit', limit: key, allowed, used } };
+}
+
+// Advisory lock keys of billing roots, clear of the leader lock's key.
+const PLAN_LOCK_BASE = 0x504c * 2 ** 32;
+
+// Runs a limit check and the insert it guards as one transaction. Instances sharing Postgres could otherwise
+// both pass the check and both insert; the lock on the billing root makes them take turns, and counts read
+// after it see the other's committed rows. SQLite runs one transaction at a time anyway.
+export function withPlanLock<T>(ctx: Ctx, workspaceId: number, fn: () => T): T {
+  return ctx.db.tx(() => {
+    if (billingEnabled(ctx)) ctx.db.txLock(PLAN_LOCK_BASE + billingRoot(ctx, workspaceId));
+    return fn();
+  });
 }
 
 // For code that skips instead of failing (startup conversions).
