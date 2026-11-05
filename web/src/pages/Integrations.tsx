@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { api, serverNow, useApi, type EnrichmentSettings, type FieldSpec, type Integration, type KindStatus, type ProviderDef, type ProviderKind, type UsageRow } from '../api';
 import type { Me } from '../App';
 import { Button, ConfirmButton, ErrorNote, Field, Modal, Pill, ProviderBadge, SecretField, Toggle, useAction, useToast } from '../components/ui';
 import { KIND_HELP, KIND_LABELS, KIND_ORDER, timeAgo, USAGE_OPERATION_LABELS } from '../format';
+import { CrmLogCard, CrmSyncCard } from './CrmSync';
 
 type Editing = { kind: ProviderKind; integration?: Integration };
 
@@ -16,6 +17,7 @@ export default function Integrations({ me }: { me: Me }) {
   const [editing, setEditing] = useState<Editing | null>(null);
   const reload = async () => void (await Promise.all([status.reload(), list.reload()]));
   const kinds = KIND_ORDER.filter((k) => providers.data?.some((p) => p.kind === k));
+  const crms = (list.data ?? []).filter((i) => i.kind === 'crm').sort((a, b) => a.priority - b.priority || a.id - b.id);
 
   return (
     <div className="stack">
@@ -29,16 +31,20 @@ export default function Integrations({ me }: { me: Me }) {
       </div>
       <ErrorNote error={providers.error ?? status.error ?? list.error} />
       {kinds.map((kind) => (
-        <KindCard
-          key={kind}
-          kind={kind}
-          admin={admin}
-          status={status.data?.[kind]}
-          defs={providers.data!.filter((p) => p.kind === kind)}
-          items={(list.data ?? []).filter((i) => i.kind === kind).sort((a, b) => a.priority - b.priority || a.id - b.id)}
-          onEdit={setEditing}
-          onChange={reload}
-        />
+        <Fragment key={kind}>
+          <KindCard
+            kind={kind}
+            admin={admin}
+            status={status.data?.[kind]}
+            defs={providers.data!.filter((p) => p.kind === kind)}
+            items={(list.data ?? []).filter((i) => i.kind === kind).sort((a, b) => a.priority - b.priority || a.id - b.id)}
+            onEdit={setEditing}
+            onChange={reload}
+          />
+          {/* Right under the CRM card: what each CRM receives, and the log of every sync. */}
+          {kind === 'crm' && admin && crms.map((c) => <CrmSyncCard key={`${c.id}:${c.updatedAt}`} integration={c} onSaved={reload} />)}
+          {kind === 'crm' && admin && !!crms.length && <CrmLogCard crms={crms} />}
+        </Fragment>
       ))}
       <EnrichmentSettingsCard admin={admin} />
       {admin && <UsageCard />}

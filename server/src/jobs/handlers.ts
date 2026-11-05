@@ -1,6 +1,7 @@
 import { classifyJob, CLASSIFY_JOB_OPTIONS } from '../ai/classify.js';
 import { AI_JOB_OPTIONS, personalizeJob } from '../ai/personalize.js';
 import type { Ctx } from '../context.js';
+import { CRM_JOB_OPTIONS, crmSyncJob } from '../crm/sync.js';
 import { EMAIL_SYNC_JOB_OPTIONS, emailSyncJob } from '../mail/inbound.js';
 import { ENRICH_JOB_OPTIONS, enrichLeadJob } from '../services/enrichment.js';
 import { IMPORT_JOB_OPTIONS, importJob } from '../services/imports.js';
@@ -16,4 +17,5 @@ export function registerHandlers(ctx: Ctx) {
   ctx.jobs.register('email.sync', emailSyncJob, EMAIL_SYNC_JOB_OPTIONS);
   ctx.jobs.register('enrich.lead', enrichLeadJob, ENRICH_JOB_OPTIONS);
   ctx.jobs.register('invite.email', inviteEmailJob, INVITE_JOB_OPTIONS);
+  ctx.jobs.register('crm.sync', crmSyncJob, CRM_JOB_OPTIONS);
 }

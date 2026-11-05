@@ -744,4 +744,48 @@ export const MIGRATIONS: string[] = [
   );
   CREATE UNIQUE INDEX branding_domain ON branding(custom_domain) WHERE custom_domain IS NOT NULL;
   `,
+  // [M12] g5-crm: CRM records per lead (idempotent upserts), synced notes/deals, and the sync log. The log
+  // keeps the job's ref so a failed sync can be retried with the same dedupe key.
+  `
+  CREATE TABLE crm_links (
+    lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    integration_id INTEGER NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+    -- contact | deal
+    object_type TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    synced_at INTEGER NOT NULL,
+    PRIMARY KEY (lead_id, integration_id, object_type)
+  );
+  CREATE TABLE crm_items (
+    integration_id INTEGER NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+    -- message:<id> | activity:<id> | stage:<historyId> | finished:<campaignLeadId> | connected:<leadId>:<accountId>
+    item_key TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (integration_id, item_key)
+  );
+  CREATE TABLE crm_sync_log (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    integration_id INTEGER REFERENCES integrations(id) ON DELETE CASCADE,
+    lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+    job_id INTEGER,
+    event TEXT NOT NULL,
+    ref TEXT NOT NULL DEFAULT '',
+    -- upsert_contact | add_note | create_deal
+    operation TEXT NOT NULL,
+    -- ok | error | skipped
+    status TEXT NOT NULL,
+    external_id TEXT,
+    -- the error, or why an operation was skipped
+    error TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX crm_sync_log_ws ON crm_sync_log(workspace_id, created_at);
+  -- Foreign-key children: without these, deleting leads or an integration scans the whole log per row.
+  -- The lead index also serves the log's leadId filter and the "resolved" check.
+  CREATE INDEX crm_sync_log_lead ON crm_sync_log(lead_id);
+  CREATE INDEX crm_sync_log_integration ON crm_sync_log(integration_id, created_at);
+  CREATE INDEX crm_links_integration ON crm_links(integration_id);
+  `,
 ];

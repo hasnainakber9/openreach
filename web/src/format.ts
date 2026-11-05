@@ -83,6 +83,9 @@ export const USAGE_OPERATION_LABELS: Record<string, string> = {
   'ai.reply': 'Suggested replies',
   'sms.send': 'SMS sent',
   'whatsapp.send': 'WhatsApp sent',
+  'crm.upsert': 'CRM contact updates',
+  'crm.note': 'CRM notes',
+  'crm.deal': 'CRM deals',
 };
 
 export const CATEGORY_LABELS: Record<ReplyCategory, string> = {
@@ -149,4 +152,35 @@ export const KIND_HELP: Record<ProviderKind, string> = {
   enrichment: 'Adds company and contact details to leads.',
   crm: 'Pushes contacts, replies and deals to your CRM.',
   sms: 'Sends text and WhatsApp steps.',
+};
+
+// Our lead fields that can be copied into CRM properties, in display order.
+export const CRM_FIELD_LABELS: Record<string, string> = {
+  firstName: 'First name',
+  lastName: 'Last name',
+  fullName: 'Full name',
+  email: 'Email',
+  phone: 'Phone',
+  company: 'Company',
+  title: 'Job title',
+  headline: 'Headline',
+  location: 'Location',
+  profileUrl: 'LinkedIn URL',
+  companyDomain: 'Company domain',
+  stage: 'Pipeline stage',
+};
+
+export const CRM_EVENT_LABELS: Record<string, string> = {
+  reply: 'Reply',
+  stage: 'Stage change',
+  finished: 'Campaign finished',
+  connected: 'Invitation accepted',
+  message: 'Message sent',
+  manual: 'Pushed by hand',
+};
+
+export const CRM_OPERATION_LABELS: Record<string, string> = {
+  upsert_contact: 'Contact',
+  add_note: 'Note',
+  create_deal: 'Deal',
 };

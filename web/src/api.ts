@@ -703,6 +703,40 @@ export interface Integration {
   updatedAt: number;
 }
 
+// ---- CRM sync (HubSpot, Pipedrive, simulated) ----
+
+// Saved in the CRM integration's settings (next to the vendor's own fields).
+export interface CrmSettings {
+  triggers: { onReply: boolean; onStageChange: string[]; onCampaignFinished: boolean; onConnected: boolean; logMessages: boolean };
+  createDealOn: string[];
+  dealNameTemplate: string;
+  fieldMapping: Record<string, string>;
+}
+
+export interface CrmLogItem {
+  id: number;
+  integrationId: number | null;
+  integration: string | null;
+  provider: string | null;
+  leadId: number | null;
+  leadName: string | null;
+  event: string;
+  operation: 'upsert_contact' | 'add_note' | 'create_deal';
+  status: 'ok' | 'error' | 'skipped';
+  externalId: string | null;
+  message: string | null;
+  jobId: number | null;
+  jobStatus: Job['status'] | null;
+  // An error that a later attempt got past.
+  resolved: boolean;
+  createdAt: number;
+}
+
+export interface CrmLeadInfo {
+  crms: { id: number; label: string; provider: string; simulated: boolean }[];
+  links: { integrationId: number; integration: string; provider: string; objectType: 'contact' | 'deal'; externalId: string; url: string | null; syncedAt: number }[];
+}
+
 export interface Job {
   id: number;
   type: string;

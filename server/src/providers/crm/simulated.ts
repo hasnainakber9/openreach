@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { hashId } from '../hash.js';
 import { SIMULATOR_TEST, type ProviderDef } from '../registry.js';
-import type { CrmProvider } from './types.js';
+import { crmSettingsSchema, SIMULATED_MAPPING, type CrmProvider } from './types.js';
 
 // Never a fallback (see SIMULATED_FALLBACK): it only runs when someone adds it, to demo CRM sync.
-// Ids are derived from hashes; nothing is stored or sent anywhere.
+// Ids are derived from hashes; nothing is stored or sent anywhere (the sync log and lead links are ours).
 export const simulatedCrm: ProviderDef<'crm'> = {
   id: 'simulated',
   kind: 'crm',
@@ -13,7 +13,7 @@ export const simulatedCrm: ProviderDef<'crm'> = {
   simulated: true,
   fields: [],
   credentials: z.object({}),
-  settings: z.object({}),
+  settings: crmSettingsSchema(SIMULATED_MAPPING),
   create(_ctx, cfg): CrmProvider {
     return {
       providerId: 'simulated',

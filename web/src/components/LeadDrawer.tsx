@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, assignable, useApi, type EnrichOptions, type Lead, type Note, type Stage, type Tag, type TeamMember, type TimelineItem } from '../api';
+import { api, assignable, useApi, type CrmLeadInfo, type EnrichOptions, type Lead, type Note, type Stage, type Tag, type TeamMember, type TimelineItem } from '../api';
 import { ACTION_LABELS, CATEGORY_LABELS, CHANNEL_LABELS, dateTime, EMAIL_STATUS_LABELS, emailSourceLabel, ENRICHMENT_STATUS_LABELS, fullName, OUTCOME_LABELS, TASK_KIND_LABELS, timeAgo } from '../format';
-import { Button, ColorTag, Field, Modal, Pill, useAction } from './ui';
+import { Button, ColorTag, Field, Modal, Pill, ProviderBadge, useAction } from './ui';
 
 // Company facts an enrichment provider may add, in display order.
 const COMPANY_FACTS: Record<string, string> = { industry: 'Industry', companySize: 'Employees', website: 'Website', companyLinkedin: 'Company LinkedIn', foundedYear: 'Founded', seniority: 'Seniority' };
@@ -215,6 +215,7 @@ export default function LeadDrawer({ id, onClose, onChanged }: { id: number; onC
           </div>
         </section>
       )}
+      {!edit && <CrmPanel leadId={id} />}
       {!!l.campaigns.length && (
         <div>
           <h3 style={{ marginBottom: 6 }}>Campaigns</h3>
@@ -479,5 +480,67 @@ function TimelineRow({ item: i }: { item: TimelineItem }) {
         {body && <div style={{ whiteSpace: 'pre-wrap', color: 'var(--ink-2)', fontSize: 13 }}>{body}</div>}
       </div>
     </div>
+  );
+}
+
+// The lead's records in each connected CRM, and a button to send it there now. Hidden without a CRM.
+function CrmPanel({ leadId }: { leadId: number }) {
+  const info = useApi<CrmLeadInfo>(`/api/crm/leads/${leadId}`);
+  const [pushed, setPushed] = useState<number[]>([]);
+  const { busy, run } = useAction();
+  const d = info.data;
+  if (!d || (!d.crms.length && !d.links.length)) return null;
+  const push = (crm: CrmLeadInfo['crms'][number]) =>
+    run(
+      `crm${crm.id}`,
+      async () => {
+        await api('/api/crm/push', { body: { integrationId: crm.id, leadIds: [leadId] } });
+        setPushed((p) => [...p, crm.id]);
+        // The sync runs in the background; look again shortly for the new record.
+        setTimeout(() => void info.reload(), 3000);
+      },
+      `Sending to ${crm.label}`,
+    );
+  return (
+    <section aria-labelledby="lead-crm">
+      <h3 id="lead-crm" style={{ marginBottom: 6 }}>
+        CRM
+      </h3>
+      {d.links.length ? (
+        <dl className="facts">
+          {d.links.map((k) => (
+            <div key={`${k.integrationId}:${k.objectType}`}>
+              <dt>
+                {k.integration} {k.objectType}
+              </dt>
+              <dd>
+                {k.url ? (
+                  <a href={k.url} target="_blank" rel="noreferrer">
+                    {k.externalId}
+                  </a>
+                ) : (
+                  k.externalId
+                )}{' '}
+                <span className="muted">· synced {timeAgo(k.syncedAt)}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="muted" style={{ margin: 0 }}>
+          Not in a CRM yet.
+        </p>
+      )}
+      {!!d.crms.length && (
+        <div className="row" style={{ marginTop: 8 }}>
+          {d.crms.map((c) => (
+            <Button key={c.id} size="sm" busy={busy === `crm${c.id}`} disabled={pushed.includes(c.id)} onClick={() => push(c)}>
+              {pushed.includes(c.id) ? `Sent to ${c.label}` : `Push to ${c.label}`}
+              <ProviderBadge simulated={c.simulated} />
+            </Button>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

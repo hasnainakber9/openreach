@@ -1,3 +1,4 @@
+import type { CrmSyncPayload } from '../crm/triggers.js';
 import type { EnrichJobPayload } from '../services/enrichment.js';
 
 // Payload of every job type, keyed by type. Each step adds its keys here (and wires the handler
@@ -6,7 +7,7 @@ import type { EnrichJobPayload } from '../services/enrichment.js';
 //   'ai.personalize': { campaignLeadId: number }    g2-ai-writer
 //   'ai.classify': { messageId: number }            g2-ai-replies
 //   'enrich.lead': EnrichJobPayload                  g4-data
-//   'crm.sync': { integrationId: number; leadId: number; event: string; ref: string } g5-crm
+//   'crm.sync': CrmSyncPayload                       g5-crm
 // Tests add their own types with `declare module` augmentation.
 export interface JobPayloads {
   'leads.import': { importId: number };
@@ -16,6 +17,7 @@ export interface JobPayloads {
   'enrich.lead': EnrichJobPayload;
   // tokenEnc: the invite token sealed with APP_SECRET (only its hash is in the invites table).
   'invite.email': { inviteId: number; tokenEnc: string };
+  'crm.sync': CrmSyncPayload;
 }
 
 export type JobType = keyof JobPayloads & string;

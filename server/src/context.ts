@@ -1,5 +1,6 @@
 import type { Clock } from './clock.js';
 import type { Config } from './config.js';
+import { registerCrmTriggers } from './crm/triggers.js';
 import { DB } from './db/db.js';
 import { DriverPool } from './drivers/pool.js';
 import { registerHandlers } from './jobs/handlers.js';
@@ -53,6 +54,8 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
   ctx.providers ??= new ProviderResolver(ctx);
   registerProviders();
   registerHandlers(ctx);
+  // CRM sync listens to outgoing events and queues crm.sync jobs.
+  registerCrmTriggers(ctx);
   // Accounts' SMTP settings from before mailboxes become mailboxes (once; needs APP_SECRET, so not a migration).
   ensureLegacyMailboxes(ctx);
   return ctx;

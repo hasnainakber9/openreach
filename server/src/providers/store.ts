@@ -144,8 +144,26 @@ export function updateIntegration(ctx: Ctx, row: IntegrationRow, patch: z.infer<
   if (patch.enabled !== undefined) cols.enabled = patch.enabled ? 1 : 0;
   // New credentials or settings make the old test result meaningless.
   if (patch.credentials || patch.settings) Object.assign(cols, { last_status: null, last_message: null, last_checked_at: null });
-  ctx.db.update('integrations', row.id, cols);
+  ctx.db.tx(() => {
+    ctx.db.update('integrations', row.id, cols);
+    if (row.kind === 'crm' && accountChanged(def, row, settings, credentials, integrationCredentials(ctx, row))) forgetCrmRecords(ctx, row.id);
+  });
   return loadIntegration(ctx, row.workspace_id, row.id)!;
+}
+
+// A new token or account setting may point at another account, where our saved ids belong to other
+// people. A token rotated on the same account costs a search per lead (and maybe a second deal).
+function accountChanged(def: ProviderDef, row: IntegrationRow, settings: Record<string, unknown>, creds: Secrets, before: Secrets): boolean {
+  const old = parseSettings(def, row.settings) as Record<string, unknown>;
+  if ((def.accountSettings ?? []).some((k) => String(old[k] ?? '') !== String(settings[k] ?? ''))) return true;
+  const keys = new Set([...Object.keys(before), ...Object.keys(creds)]);
+  return [...keys].some((k) => (before[k] ?? '') !== (creds[k] ?? ''));
+}
+
+// Contacts are found again by search on the next sync; notes and deals start over in the new account.
+function forgetCrmRecords(ctx: Ctx, integrationId: number) {
+  ctx.db.run('DELETE FROM crm_links WHERE integration_id = ?', [integrationId]);
+  ctx.db.run('DELETE FROM crm_items WHERE integration_id = ?', [integrationId]);
 }
 
 export interface KindStatus {

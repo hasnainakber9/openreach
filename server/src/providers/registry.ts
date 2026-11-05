@@ -58,6 +58,9 @@ export interface ProviderDef<K extends ProviderKind = ProviderKind> {
   fields: FieldSpec[];
   credentials: z.ZodTypeAny; // secret fields only (sealed at rest)
   settings: z.ZodTypeAny; // non-secret fields
+  // Settings that pick which vendor account the credentials talk to (with the credentials themselves,
+  // changing one means "another account": ids saved from the old one are dropped).
+  accountSettings?: string[];
   create(ctx: Ctx, cfg: ProviderConfig): KindInstance<K>;
 }
 

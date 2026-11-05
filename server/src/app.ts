@@ -10,6 +10,7 @@ import { agencyRoutes } from './routes/agency.js';
 import { aiRoutes } from './routes/ai.js';
 import { authRoutes, SESSION_COOKIE, sessionUser } from './routes/auth.js';
 import { campaignRoutes } from './routes/campaigns.js';
+import { crmRoutes } from './routes/crm.js';
 import { enrichmentRoutes } from './routes/enrichment.js';
 import { inboxRoutes } from './routes/inbox.js';
 import { integrationRoutes } from './routes/integrations.js';
@@ -140,6 +141,7 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
   taskRoutes(app, ctx);
   pipelineRoutes(app, ctx);
   agencyRoutes(app, ctx);
+  crmRoutes(app, ctx);
   // Invite management, plus the public invite pages' API (token-identified, no session needed).
   inviteRoutes(app, ctx);
   // Inbound SMS/WhatsApp (no session; verified by Twilio's signature).

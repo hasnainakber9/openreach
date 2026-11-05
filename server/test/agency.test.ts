@@ -41,7 +41,8 @@ async function agencySetup() {
 
 describe('memberships', () => {
   it.skipIf(new DB(':memory:', { migrateTo: 1 }).dialect !== 'sqlite')('moves existing users into memberships without breaking their sessions', () => {
-    const db = new DB(':memory:', { migrateTo: MIGRATIONS.length - 1 });
+    // Just before the g5-agency entry (later steps append entries after it).
+    const db = new DB(':memory:', { migrateTo: MIGRATIONS.findIndex((m) => m.includes('CREATE TABLE memberships')) });
     const ws = db.insert('workspaces', { name: 'W', created_at: 1 });
     const owner = db.insert('users', { workspace_id: ws, email: 'o@example.com', name: 'O', password_hash: 'x', role: 'owner', created_at: 1 });
     const admin = db.insert('users', { workspace_id: ws, email: 'a@example.com', name: 'A', password_hash: 'x', role: 'admin', created_at: 1 });
