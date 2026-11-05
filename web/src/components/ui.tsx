@@ -71,6 +71,21 @@ export function Pill({ status, children }: { status: string; children?: ReactNod
   );
 }
 
+// A tag or pipeline stage in its own color. The color is a dot, so the text stays readable in both themes.
+export function ColorTag({ color, children, onRemove, removeLabel }: { color: string; children: ReactNode; onRemove?: () => void; removeLabel?: string }) {
+  return (
+    <span className="color-tag">
+      <span className="color-tag-dot" style={{ background: color }} aria-hidden />
+      {children}
+      {onRemove && (
+        <button type="button" className="color-tag-x" onClick={onRemove} aria-label={removeLabel ?? 'Remove'}>
+          ×
+        </button>
+      )}
+    </span>
+  );
+}
+
 export function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();

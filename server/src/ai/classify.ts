@@ -5,6 +5,7 @@ import type { JobHelpers, JobInfo } from '../jobs/queue.js';
 import { ProviderError } from '../providers/http.js';
 import { logActivity } from '../services/activity.js';
 import { publicLead } from '../services/leads.js';
+import { autoAdvance, stageForCategory } from '../services/pipeline.js';
 import { resolveReplyHolds } from '../services/replies.js';
 import { suppressLead } from '../services/suppression.js';
 import type { LeadRow } from '../types.js';
@@ -147,7 +148,7 @@ export function applyCategory(ctx: Ctx, o: CategoryInput) {
     });
   });
   ctx.webhooks.emit(o.workspaceId, 'lead.classified', {
-    lead: lead ? publicLead(lead) : null,
+    lead: lead ? publicLead(lead, ctx) : null,
     category: o.category,
     confidence: o.confidence,
     source: o.source,
@@ -157,6 +158,9 @@ export function applyCategory(ctx: Ctx, o: CategoryInput) {
   if (!lead) return;
   // Holds first, so a held lead ends as 'replied' like any stopped reply; suppression then stops the rest.
   if (latestForLead || restamped) resolveReplyHolds(ctx, lead.id);
+  // Interested / meeting booked (and, if the workspace wants it, not interested) move the pipeline forward.
+  const slug = latestForLead ? stageForCategory(ctx, o.workspaceId, o.category) : null;
+  if (slug) autoAdvance(ctx, lead.id, slug, `Reply ${o.source === 'manual' ? 'marked' : 'classified'} as ${CATEGORY_LABELS[o.category].toLowerCase()}`);
   // Only a sure opt-out suppresses, and only about the lead's latest reply: a late answer about an older
   // "not interested" must not drop someone whose newer reply says "let's talk". A category set by hand counts.
   if (isSuppressCategory(o.category) && o.confidence >= SUPPRESS_MIN_CONFIDENCE[o.category] && (o.source === 'manual' || latestForLead)) {

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, REPLY_CATEGORIES, useApi, type Account, type Conversation, type Mailbox, type ReplyCategory, type Thread as ThreadData } from '../api';
+import { api, REPLY_CATEGORIES, useApi, type Account, type Conversation, type Mailbox, type ReplyCategory, type Stage, type Thread as ThreadData } from '../api';
 import { Icon } from '../components/Icon';
 import { Button, Empty, Pill, ProviderBadge, useAction } from '../components/ui';
-import { CATEGORY_LABELS, CHANNEL_LABELS, dateTime, STAGE_LABELS, timeAgo } from '../format';
+import { CATEGORY_LABELS, CHANNEL_LABELS, dateTime, timeAgo } from '../format';
 
 export default function Inbox() {
   const accounts = useApi<Account[]>('/api/accounts');
@@ -127,6 +127,7 @@ export default function Inbox() {
 
 function Thread({ id, onChange }: { id: number; onChange: () => void }) {
   const t = useApi<ThreadData>(`/api/inbox/${id}`, 15_000);
+  const stages = useApi<Stage[]>('/api/pipeline/stages');
   const [text, setText] = useState('');
   const [suggest, setSuggest] = useState<{ suggestions: string[]; simulated: boolean } | null>(null);
   const [instruction, setInstruction] = useState('');
@@ -162,6 +163,17 @@ function Thread({ id, onChange }: { id: number; onChange: () => void }) {
         onChange();
       },
       category === 'unsubscribe' || category === 'not_interested' ? 'Category saved. This person is now on the do-not-contact list.' : 'Category saved',
+    );
+
+  // Classification already moves the stage forward; this is for moving it by hand.
+  const moveTo = (stageId: number) =>
+    run(
+      'stage',
+      async () => {
+        await api(`/api/leads/${t.data!.leadId}/stage`, { body: { stageId } });
+        await t.reload();
+      },
+      'Stage changed',
     );
 
   if (!t.data) return <div />;
@@ -207,10 +219,14 @@ function Thread({ id, onChange }: { id: number; onChange: () => void }) {
               </option>
             ))}
           </select>
-          {c.suggestedStage && (
-            <span className="muted" title="A hint from the reply's category. Pipeline stages are not built yet.">
-              Suggested stage: <strong>{STAGE_LABELS[c.suggestedStage]}</strong>
-            </span>
+          {c.leadId && c.stage && (
+            <select value={c.stage.id} onChange={(e) => moveTo(Number(e.target.value))} aria-label="Pipeline stage" disabled={busy === 'stage' || !stages.data}>
+              {(stages.data ?? [c.stage]).map((s) => (
+                <option key={s.id} value={s.id}>
+                  Stage: {s.name}
+                </option>
+              ))}
+            </select>
           )}
         </div>
       </div>

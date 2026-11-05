@@ -11,6 +11,7 @@ import { composeEmail, newMessageId } from '../mail/compose.js';
 import { splitReferences } from '../mail/imap.js';
 import { fromLine, isReservedAddress, isSimulated, mailboxNeedsAttention, smtpTransport } from '../mail/mailboxes.js';
 import { logActivity } from '../services/activity.js';
+import { stageOf } from '../services/pipeline.js';
 import { mailError } from '../services/email.js';
 import type { AccountRow, EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
 import { aiThrottle } from './ai.js';
@@ -81,6 +82,8 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
   const detail = (c: ConversationRow) => {
     const messages = ctx.db.all('SELECT id, direction, body, sent_at AS "sentAt", category, confidence FROM messages WHERE conversation_id = ? ORDER BY sent_at, id', [c.id]);
     const category = isReplyCategory(c.category) ? c.category : null;
+    const lead = c.lead_id ? ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ? AND workspace_id = ?', [c.lead_id, c.workspace_id]) : undefined;
+    const stage = lead ? stageOf(ctx, lead) : undefined;
     return {
       id: c.id,
       channel: c.channel,
@@ -95,8 +98,10 @@ export function inboxRoutes(app: FastifyInstance, ctx: Ctx) {
       category,
       categoryConfidence: c.category_confidence,
       categorySource: c.category_source,
-      // A hint only: pipeline stages arrive with g5-pipeline.
+      // The stage slug the category points to (the automation already moved the lead if it was behind).
       suggestedStage: (category && SUGGESTED_STAGE[category]) ?? null,
+      // The lead's pipeline stage; the thread header can change it.
+      stage: stage ? { id: stage.id, slug: stage.slug, name: stage.name, color: stage.color } : null,
       messages,
     };
   };

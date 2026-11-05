@@ -97,7 +97,6 @@ export const CATEGORY_LABELS: Record<ReplyCategory, string> = {
   other: 'Other',
 };
 
-export const STAGE_LABELS = { interested: 'Interested', meeting: 'Meeting', lost: 'Lost' } as const;
 
 export const IMPORT_KIND_LABELS: Record<ImportKind, string> = {
   search: 'Search',

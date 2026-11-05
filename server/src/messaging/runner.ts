@@ -153,20 +153,23 @@ export class MessagingRunner {
     let variant: string | null = null;
     const advance = (status: 'ok' | 'skipped', detail?: string) => {
       ctx.db.tx(() => {
+        // Queued first, so receivers hear about the send before the stage change it causes (both after commit).
+        if (status === 'ok') {
+          ctx.db.afterCommit(() =>
+            ctx.webhooks.emit(campaign.workspace_id, 'action.performed', {
+              type: channel,
+              detail,
+              ...(variant ? { nodeId: step.id, variant } : {}),
+              campaign: { id: campaign.id, name: campaign.name },
+              lead: publicLead(ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id])!, ctx),
+            }),
+          );
+        }
         for (const d of aiSkipNotes) logActivity(ctx, { ...base, type: 'ai_personalize', status: 'skipped', detail: d });
         logActivity(ctx, { ...base, status, detail });
         const moved = host.moveTo(campaign, job, step.next);
         if (moved.state === 'active') host.walk(campaign, moved);
       });
-      if (status === 'ok') {
-        ctx.webhooks.emit(campaign.workspace_id, 'action.performed', {
-          type: channel,
-          detail,
-          ...(variant ? { nodeId: step.id, variant } : {}),
-          campaign: { id: campaign.id, name: campaign.name },
-          lead: publicLead(ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id])!),
-        });
-      }
     };
 
     if (settings.stopOnReply && lead.replied_at && !host.replyGate(campaign, job, lead)) return 'next';

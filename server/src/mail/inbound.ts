@@ -184,7 +184,7 @@ function recordBounce(ctx: Ctx, mb: MailboxRow, e: InboundEmail, messageId: stri
     }
     logActivity(ctx, { workspaceId: mb.workspace_id, mailboxId: mb.id, campaignId: original.campaign_id, leadId: original.lead_id, type: 'email_bounce', status: 'failed', detail: `${original.to_email}: ${reason}`, timezone: mb.timezone, nodeId: original.node_id, variant: original.variant });
   });
-  if (lead) ctx.webhooks.emit(mb.workspace_id, 'lead.email_bounced', { lead: publicLead(ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id])!), email: original.to_email, reason });
+  if (lead) ctx.webhooks.emit(mb.workspace_id, 'lead.email_bounced', { lead: publicLead(ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id])!, ctx), email: original.to_email, reason });
 }
 
 // Job handler: reads new INBOX mail for one mailbox. Idempotent (messages are deduplicated by Message-ID).

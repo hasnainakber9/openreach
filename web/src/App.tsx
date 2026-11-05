@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard';
 import Inbox from './pages/Inbox';
 import Leads from './pages/Leads';
 import Mailboxes from './pages/Mailboxes';
+import Pipeline from './pages/Pipeline';
 import Settings from './pages/Settings';
 import Tasks, { taskCountsPath } from './pages/Tasks';
 
@@ -37,6 +38,7 @@ const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/campaigns', label: 'Campaigns' },
   { to: '/leads', label: 'Leads' },
+  { to: '/pipeline', label: 'Pipeline' },
   { to: '/tasks', label: 'Tasks', badge: 'tasks' },
   { to: '/inbox', label: 'Inbox', badge: 'inbox' },
   { to: '/accounts', label: 'LinkedIn accounts' },
@@ -107,6 +109,7 @@ function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
           <Route path="/campaigns" element={<Campaigns />} />
           <Route path="/campaigns/:id" element={<CampaignDetail />} />
           <Route path="/leads" element={<Leads />} />
+          <Route path="/pipeline" element={<Pipeline me={me} />} />
           <Route path="/tasks" element={<Tasks me={me} />} />
           <Route path="/inbox" element={<Inbox />} />
           <Route path="/accounts" element={<Accounts />} />

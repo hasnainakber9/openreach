@@ -304,7 +304,7 @@ export class Engine {
       const lead = this.lead(job.lead_id);
       this.ctx.webhooks.emit(campaign.workspace_id, state === 'done' ? 'lead.finished' : 'lead.failed', {
         campaign: { id: campaign.id, name: campaign.name },
-        lead: publicLead(lead),
+        lead: publicLead(lead, this.ctx),
         ...(error ? { error } : {}),
       });
     }
@@ -363,6 +363,19 @@ export class Engine {
     }
     const advance = (status: 'ok' | 'skipped', detail?: string) => {
       ctx.db.tx(() => {
+        // Queued first, so receivers hear about the send before the stage change it causes (both after commit).
+        if (status === 'ok') {
+          ctx.db.afterCommit(() =>
+            ctx.webhooks.emit(a.workspace_id, 'action.performed', {
+              type: node.type,
+              detail,
+              ...(variant ? { nodeId: node.id, variant } : {}),
+              campaign: { id: campaign.id, name: campaign.name },
+              lead: publicLead(this.lead(lead.id), ctx),
+              account: { id: a.id, name: a.name },
+            }),
+          );
+        }
         // Logged once, with the step's outcome: a retried or held step would repeat them otherwise.
         for (const d of aiSkipNotes) logActivity(ctx, { ...base, type: 'ai_personalize', status: 'skipped', detail: d });
         logActivity(ctx, { ...base, status, detail });
@@ -374,16 +387,6 @@ export class Engine {
         const moved = this.moveTo(campaign, job, node.next);
         if (moved.state === 'active') this.walk(campaign, moved);
       });
-      if (status === 'ok') {
-        ctx.webhooks.emit(a.workspace_id, 'action.performed', {
-          type: node.type,
-          detail,
-          ...(variant ? { nodeId: node.id, variant } : {}),
-          campaign: { id: campaign.id, name: campaign.name },
-          lead: publicLead(this.lead(lead.id)),
-          account: { id: a.id, name: a.name },
-        });
-      }
     };
 
     try {

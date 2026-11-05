@@ -10,6 +10,7 @@ export class DB {
   readonly dialect = 'sqlite' as const;
   readonly raw: DatabaseSync;
   private depth = 0;
+  private pending: (() => void)[] = [];
 
   // `migrateTo` (tests only) stops after the entries with index < migrateTo; a later migrate() runs the rest.
   constructor(path: string, opts: { migrateTo?: number } = {}) {
@@ -61,16 +62,37 @@ export class DB {
     if (this.depth > 0) return fn();
     this.depth++;
     this.raw.exec('BEGIN IMMEDIATE');
+    let out: T;
     try {
-      const out = fn();
+      out = fn();
       this.raw.exec('COMMIT');
-      return out;
     } catch (e) {
+      this.pending = [];
       this.raw.exec('ROLLBACK');
       throw e;
     } finally {
       this.depth--;
     }
+    // Run outside the transaction, so a callback may start its own.
+    const due = this.pending;
+    this.pending = [];
+    let failed: { e: unknown } | null = null;
+    for (const f of due) {
+      try {
+        f();
+      } catch (e) {
+        failed ??= { e };
+      }
+    }
+    if (failed) throw failed.e;
+    return out;
+  }
+
+  // Runs fn once the current transaction commits (dropped if it rolls back), or right away outside one.
+  // For effects that leave the process, like webhooks: nobody should hear about a change that was undone.
+  afterCommit(fn: () => void) {
+    if (this.depth > 0) this.pending.push(fn);
+    else fn();
   }
 
   close() {

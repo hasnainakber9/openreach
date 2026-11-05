@@ -364,9 +364,86 @@ export interface Lead {
   enrichedAt: number | null;
   // Open Profile members take InMail without a credit; null until a profile view tells.
   openProfile: boolean | null;
+  // Pipeline: the lead's stage (the first stage when it has none), whether a person set it, and its owner.
+  stageId: number | null;
+  stage: Pick<Stage, 'id' | 'slug' | 'name' | 'color' | 'kind'> | null;
+  stageChangedAt: number | null;
+  stageManual: boolean;
+  ownerId: number | null;
   createdAt: number;
   campaigns?: { id: number; name: string; state: string }[];
 }
+
+export type StageKind = 'open' | 'won' | 'lost';
+
+// A pipeline stage (GET /api/pipeline/stages adds `leads`). Automation finds the defaults by slug.
+export interface Stage {
+  id: number;
+  slug: string;
+  name: string;
+  color: string;
+  position: number;
+  kind: StageKind;
+  leads?: number;
+}
+
+export interface PipelineSettings {
+  autoLost: boolean;
+}
+
+export interface BoardCard {
+  id: number;
+  name: string;
+  company: string;
+  title: string;
+  headline: string;
+  tags: string[];
+  ownerId: number | null;
+  ownerName: string | null;
+  lastActivityAt: number | null;
+  stageChangedAt: number | null;
+  replyCategory: ReplyCategory | null;
+}
+
+export interface BoardColumn extends Omit<Stage, 'leads'> {
+  total: number;
+  leads: BoardCard[];
+}
+
+export interface Tag {
+  id: number;
+  name: string;
+  color: string;
+  leads: number;
+  createdAt: number;
+}
+
+export interface Note {
+  id: number;
+  leadId: number;
+  body: string;
+  userId: number | null;
+  authorName: string | null;
+  createdAt: number;
+  updatedAt: number;
+  canEdit: boolean;
+}
+
+export interface TeamMember {
+  id: number;
+  name: string;
+  email: string;
+  role: Role;
+}
+
+// GET /api/leads/:id/timeline: newest first; pass `nextBefore` back as `before` for the next page.
+export type TimelineItem = { id: number; at: number } & (
+  | { kind: 'activity'; type: string; status: string; detail: string | null; variant: string | null; campaignId: number | null; campaignName: string | null }
+  | { kind: 'message'; body: string; category: ReplyCategory | null; channel: string; conversationId: number }
+  | { kind: 'note'; body: string; userId: number | null; authorName: string | null; updatedAt: number }
+  | { kind: 'stage'; source: 'manual' | 'auto' | 'api'; reason: string | null; fromName: string | null; toName: string | null; toColor: string | null; userName: string | null }
+  | { kind: 'task'; taskKind: TaskKind; title: string; status: 'open' | 'done' | 'skipped'; outcome: CallOutcome | null; dueAt: number; completedAt: number | null; assigneeName: string | null }
+);
 
 export type EmailStatus = 'valid' | 'risky' | 'invalid' | 'unknown';
 export type EnrichmentStatus = 'queued' | 'done' | 'not_found' | 'failed';
@@ -484,8 +561,10 @@ export interface Thread {
   category: ReplyCategory | null;
   categoryConfidence: number | null;
   categorySource: 'ai' | 'manual' | null;
-  // A hint until pipeline stages exist.
+  // The stage slug the reply's category points to.
   suggestedStage: 'interested' | 'meeting' | 'lost' | null;
+  // The lead's pipeline stage (null for threads without a lead).
+  stage: Pick<Stage, 'id' | 'slug' | 'name' | 'color'> | null;
   messages: { id: number; direction: 'in' | 'out'; body: string; sentAt: number; category: ReplyCategory | null; confidence: number | null }[];
 }
 

@@ -45,7 +45,7 @@ export function suppressLead(ctx: Ctx, lead: LeadRow, reason: SuppressionReason,
     if (lead.phone) suppressIdentity(ctx, lead.workspace_id, 'phone', lead.phone, reason, source, lead.id);
     stopLeadEverywhere(ctx, lead.id, 'skipped', `Suppressed: ${reason}`);
   });
-  ctx.webhooks.emit(lead.workspace_id, 'lead.suppressed', { lead: publicLead(lead), reason, source });
+  ctx.webhooks.emit(lead.workspace_id, 'lead.suppressed', { lead: publicLead(lead, ctx), reason, source });
 }
 
 // Why this lead must not be contacted, or null. Checked when leads join a campaign and before every action.

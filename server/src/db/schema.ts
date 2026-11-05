@@ -623,4 +623,76 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX enrichment_runs_workspace ON enrichment_runs(workspace_id, id);
   `,
+  // [M10] g5-pipeline: pipeline stages with history, lead owners, tag metadata, lead notes. Backfills use
+  // leads.reply_category from M6.
+  `
+  CREATE TABLE pipeline_stages (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    -- new | contacted | replied | interested | meeting | won | lost | custom-xxxx (automation finds stages by slug)
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#64748b',
+    position INTEGER NOT NULL,
+    -- open | won | lost (automation never moves a lead out of won/lost)
+    kind TEXT NOT NULL DEFAULT 'open',
+    created_at INTEGER NOT NULL,
+    UNIQUE (workspace_id, slug)
+  );
+  INSERT INTO pipeline_stages (workspace_id, slug, name, color, position, kind, created_at) SELECT id, 'new', 'New', '#64748b', 0, 'open', created_at FROM workspaces;
+  INSERT INTO pipeline_stages (workspace_id, slug, name, color, position, kind, created_at) SELECT id, 'contacted', 'Contacted', '#3b82f6', 1, 'open', created_at FROM workspaces;
+  INSERT INTO pipeline_stages (workspace_id, slug, name, color, position, kind, created_at) SELECT id, 'replied', 'Replied', '#8b5cf6', 2, 'open', created_at FROM workspaces;
+  INSERT INTO pipeline_stages (workspace_id, slug, name, color, position, kind, created_at) SELECT id, 'interested', 'Interested', '#f59e0b', 3, 'open', created_at FROM workspaces;
+  INSERT INTO pipeline_stages (workspace_id, slug, name, color, position, kind, created_at) SELECT id, 'meeting', 'Meeting booked', '#10b981', 4, 'open', created_at FROM workspaces;
+  INSERT INTO pipeline_stages (workspace_id, slug, name, color, position, kind, created_at) SELECT id, 'won', 'Won', '#16a34a', 5, 'won', created_at FROM workspaces;
+  INSERT INTO pipeline_stages (workspace_id, slug, name, color, position, kind, created_at) SELECT id, 'lost', 'Lost', '#ef4444', 6, 'lost', created_at FROM workspaces;
+
+  -- NULL = the workspace's first stage
+  ALTER TABLE leads ADD COLUMN stage_id INTEGER REFERENCES pipeline_stages(id) ON DELETE SET NULL;
+  ALTER TABLE leads ADD COLUMN stage_changed_at INTEGER;
+  ALTER TABLE leads ADD COLUMN stage_manual INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE leads ADD COLUMN owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  CREATE INDEX leads_stage ON leads(workspace_id, stage_id);
+  UPDATE leads SET stage_id = (SELECT s.id FROM pipeline_stages s WHERE s.workspace_id = leads.workspace_id AND s.slug = 'meeting') WHERE reply_category = 'meeting_booked';
+  UPDATE leads SET stage_id = (SELECT s.id FROM pipeline_stages s WHERE s.workspace_id = leads.workspace_id AND s.slug = 'interested') WHERE stage_id IS NULL AND reply_category = 'interested';
+  UPDATE leads SET stage_id = (SELECT s.id FROM pipeline_stages s WHERE s.workspace_id = leads.workspace_id AND s.slug = 'replied') WHERE stage_id IS NULL AND replied_at IS NOT NULL;
+  UPDATE leads SET stage_id = (SELECT s.id FROM pipeline_stages s WHERE s.workspace_id = leads.workspace_id AND s.slug = 'contacted')
+    WHERE stage_id IS NULL AND EXISTS (SELECT 1 FROM activity a WHERE a.lead_id = leads.id AND a.status = 'ok' AND a.type IN ('connect', 'message', 'email', 'inmail', 'sms', 'whatsapp'));
+
+  CREATE TABLE lead_stage_history (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    -- No foreign keys: history outlives deleted stages.
+    from_stage_id INTEGER,
+    to_stage_id INTEGER,
+    -- manual | auto | api
+    source TEXT NOT NULL,
+    reason TEXT,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX lead_stage_history_lead ON lead_stage_history(lead_id, created_at);
+
+  -- Tag metadata. Lead membership stays in leads.tags (JSON array of names), which CSV import/export already use.
+  CREATE TABLE tags (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#64748b',
+    created_at INTEGER NOT NULL,
+    UNIQUE (workspace_id, name)
+  );
+
+  CREATE TABLE lead_notes (
+    id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX lead_notes_lead ON lead_notes(lead_id, created_at);
+  `,
 ];

@@ -1,14 +1,19 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api, useApi, type Suppression, type SuppressionKind } from '../api';
 import type { Me } from '../App';
 import { Button, ConfirmButton, Field, Modal, Pager, Tabs, useAction, useToast } from '../components/ui';
 import { timeAgo } from '../format';
 import Integrations from './Integrations';
+import PipelineSettings from './PipelineSettings';
 
-type Tab = 'team' | 'blacklist' | 'integrations' | 'profile';
+type Tab = 'team' | 'pipeline' | 'blacklist' | 'integrations' | 'profile';
+const TABS: Tab[] = ['team', 'pipeline', 'blacklist', 'integrations', 'profile'];
 
 export default function Settings({ me }: { me: Me }) {
-  const [tab, setTab] = useState<Tab>('team');
+  // ?tab= opens a tab directly (the Pipeline page links to its stages).
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState<Tab>(TABS.find((t) => t === params.get('tab')) ?? 'team');
   return (
     <>
       <div className="page-head">
@@ -22,12 +27,14 @@ export default function Settings({ me }: { me: Me }) {
         onChange={setTab}
         tabs={[
           { id: 'team', label: 'Team' },
+          { id: 'pipeline', label: 'Pipeline' },
           { id: 'blacklist', label: 'Blacklist' },
           { id: 'integrations', label: 'Integrations' },
           { id: 'profile', label: 'Your profile' },
         ]}
       />
       {tab === 'team' && <Team me={me} />}
+      {tab === 'pipeline' && <PipelineSettings me={me} />}
       {tab === 'blacklist' && (
         <div className="stack">
           <Blacklist />

@@ -14,6 +14,7 @@ import { integrationRoutes } from './routes/integrations.js';
 import { jobRoutes } from './routes/jobs.js';
 import { leadRoutes } from './routes/leads.js';
 import { mailboxRoutes } from './routes/mailboxes.js';
+import { pipelineRoutes } from './routes/pipeline.js';
 import { publicRoutes } from './routes/public.js';
 import { settingsRoutes } from './routes/settings.js';
 import { taskRoutes } from './routes/tasks.js';
@@ -74,6 +75,7 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
   aiRoutes(app, ctx);
   mailboxRoutes(app, ctx);
   taskRoutes(app, ctx);
+  pipelineRoutes(app, ctx);
   // Inbound SMS/WhatsApp (no session; verified by Twilio's signature).
   twilioRoutes(app, ctx);
   // Unsubscribe and tracking links (outside /api, no session); registered before the SPA fallback.

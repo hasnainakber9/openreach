@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, useApi, type Account, type Campaign, type EnrichmentRun, type EnrichmentSettings, type EnrichOptions, type ImportKind, type KindStatus, type Lead, type LeadImport, type LeadList, type ProviderKind } from '../api';
-import { Button, Empty, ErrorNote, Field, Modal, Pager, Pill, ProgressBar, Tabs, Toggle, useAction, useToast } from '../components/ui';
-import { ACTION_LABELS, dateTime, EMAIL_STATUS_LABELS, emailSourceLabel, ENRICHMENT_STATUS_LABELS, fullName, IMPORT_KIND_LABELS, timeAgo } from '../format';
+import { api, useApi, type Account, type Campaign, type EnrichmentRun, type EnrichmentSettings, type EnrichOptions, type ImportKind, type KindStatus, type Lead, type LeadImport, type LeadList, type ProviderKind, type Stage, type Tag, type TeamMember } from '../api';
+import LeadDrawer from '../components/LeadDrawer';
+import { Button, ColorTag, Empty, ErrorNote, Field, Modal, Pager, Pill, ProgressBar, Tabs, Toggle, useAction, useToast } from '../components/ui';
+import { EMAIL_STATUS_LABELS, emailSourceLabel, ENRICHMENT_STATUS_LABELS, fullName, IMPORT_KIND_LABELS, timeAgo } from '../format';
 
 export default function Leads() {
   const lists = useApi<LeadList[]>('/api/lists', 15_000);
@@ -12,6 +13,13 @@ export default function Leads() {
   const [status, setStatus] = useState('');
   const [emailStatus, setEmailStatus] = useState('');
   const [enrichment, setEnrichment] = useState('');
+  const [stageId, setStageId] = useState('');
+  const [tag, setTag] = useState('');
+  const [ownerId, setOwnerId] = useState('');
+  const [bulk, setBulk] = useState(false);
+  const stages = useApi<Stage[]>('/api/pipeline/stages');
+  const tags = useApi<Tag[]>('/api/tags');
+  const team = useApi<TeamMember[]>('/api/team');
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [importing, setImporting] = useState(false);
@@ -32,7 +40,12 @@ export default function Leads() {
   if (status) params.set('status', status);
   if (emailStatus) params.set('emailStatus', emailStatus);
   if (enrichment) params.set('enrichment', enrichment);
-  const filtered = !!(query || status || emailStatus || enrichment);
+  if (stageId) params.set('stageId', stageId);
+  if (tag) params.set('tag', tag);
+  if (ownerId) params.set('ownerId', ownerId);
+  const filtered = !!(query || status || emailStatus || enrichment || stageId || tag || ownerId);
+  const tagColor = (t: string) => tags.data?.find((x) => x.name.toLowerCase() === t.toLowerCase())?.color ?? '#64748b';
+  const ownerName = (id: number | null) => (id ? (team.data?.find((u) => u.id === id)?.name ?? null) : null);
   const leads = useApi<{ total: number; items: Lead[] }>(`/api/leads?${params}`, 20_000);
   const current = lists.data?.find((l) => l.id === listId);
 
@@ -110,6 +123,32 @@ export default function Leads() {
                   <option value="not_found">Nothing found</option>
                   <option value="failed">Lookup failed</option>
                 </select>
+                <select value={stageId} onChange={(e) => (setStageId(e.target.value), setPage(1))} style={{ width: 150 }} aria-label="Pipeline stage">
+                  <option value="">Any stage</option>
+                  {stages.data?.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+                <select value={tag} onChange={(e) => (setTag(e.target.value), setPage(1))} style={{ width: 140 }} aria-label="Tag">
+                  <option value="">Any tag</option>
+                  {tags.data?.map((t) => (
+                    <option key={t.id} value={t.name}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <select value={ownerId} onChange={(e) => (setOwnerId(e.target.value), setPage(1))} style={{ width: 140 }} aria-label="Owner">
+                  <option value="">Any owner</option>
+                  <option value="me">Mine</option>
+                  <option value="none">No owner</option>
+                  {team.data?.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="row">
                 {!!selected.size && (
@@ -117,6 +156,9 @@ export default function Leads() {
                     <span className="muted">{selected.size} selected</span>
                     <Button size="sm" onClick={() => setToCampaign(true)}>
                       Add to campaign
+                    </Button>
+                    <Button size="sm" onClick={() => setBulk(true)}>
+                      Stage, tags, owner
                     </Button>
                     <Button size="sm" onClick={() => setEnriching({ leadIds: [...selected] })}>
                       Find & verify emails
@@ -177,6 +219,7 @@ export default function Leads() {
                       <th>Company</th>
                       <th>Email</th>
                       <th>Connection</th>
+                      <th>Stage</th>
                       <th>Campaign</th>
                       <th>Added</th>
                     </tr>
@@ -199,6 +242,15 @@ export default function Leads() {
                         <td>
                           <div className="cell-title">{fullName(l)}</div>
                           <div className="cell-sub">{l.headline || l.title || l.profileUrl}</div>
+                          {!!l.tags.length && (
+                            <div className="row tag-row" style={{ marginTop: 4 }}>
+                              {l.tags.map((t) => (
+                                <ColorTag key={t} color={tagColor(t)}>
+                                  {t}
+                                </ColorTag>
+                              ))}
+                            </div>
+                          )}
                         </td>
                         <td>
                           {l.company || <span className="muted">—</span>}
@@ -215,6 +267,10 @@ export default function Leads() {
                               <Pill status={l.replyCategory && l.replyCategory !== 'other' ? l.replyCategory : 'replied'} />
                             </span>
                           )}
+                        </td>
+                        <td>
+                          {l.stage ? <ColorTag color={l.stage.color}>{l.stage.name}</ColorTag> : <span className="muted">—</span>}
+                          {ownerName(l.ownerId) && <div className="cell-sub">{ownerName(l.ownerId)}</div>}
                         </td>
                         <td>{l.campaigns?.length ? l.campaigns.map((c) => c.name).join(', ') : <span className="muted">—</span>}</td>
                         <td className="muted">{timeAgo(l.createdAt)}</td>
@@ -263,7 +319,20 @@ export default function Leads() {
         />
       )}
       {toCampaign && <AddToCampaign leadIds={[...selected]} onClose={() => setToCampaign(false)} onDone={() => (setToCampaign(false), setSelected(new Set()), leads.reload())} />}
-      {openLead && <LeadDrawer id={openLead} onClose={() => setOpenLead(null)} onChanged={() => leads.reload()} />}
+      {bulk && (
+        <BulkModal
+          leadIds={[...selected]}
+          stages={stages.data ?? []}
+          tags={tags.data ?? []}
+          team={team.data ?? []}
+          onClose={() => setBulk(false)}
+          onDone={() => {
+            setBulk(false);
+            void Promise.all([leads.reload(), tags.reload(), stages.reload()]);
+          }}
+        />
+      )}
+      {openLead && <LeadDrawer id={openLead} onClose={() => setOpenLead(null)} onChanged={() => void Promise.all([leads.reload(), tags.reload()])} />}
     </>
   );
 }
@@ -280,9 +349,6 @@ function EmailCell({ lead: l }: { lead: Lead }) {
     </div>
   );
 }
-
-// Company facts an enrichment provider may add, in display order.
-const COMPANY_FACTS: Record<string, string> = { industry: 'Industry', companySize: 'Employees', website: 'Website', companyLinkedin: 'Company LinkedIn', foundedYear: 'Founded', seniority: 'Seniority' };
 
 type EnrichTarget ={ leadIds: number[] } | { listId: number; name: string; count: number };
 
@@ -693,203 +759,85 @@ function AddToCampaign({ leadIds, onClose, onDone }: { leadIds: number[]; onClos
   );
 }
 
-function LeadDrawer({ id, onClose, onChanged }: { id: number; onClose: () => void; onChanged: () => void }) {
-  // Polls while a lookup started here is running.
-  const [watching, setWatching] = useState(false);
-  const lead = useApi<Lead & { activity: any[]; campaigns: any[] }>(`/api/leads/${id}`, watching ? 2000 : undefined);
-  const [edit, setEdit] = useState<Partial<Lead> | null>(null);
+// Bulk stage, tag and owner changes for the selected leads. Only the fields chosen here change.
+function BulkModal({ leadIds, stages, tags, team, onClose, onDone }: { leadIds: number[]; stages: Stage[]; tags: Tag[]; team: TeamMember[]; onClose: () => void; onDone: () => void }) {
+  const [stageId, setStageId] = useState('');
+  const [add, setAdd] = useState('');
+  const [remove, setRemove] = useState('');
+  const [owner, setOwner] = useState('');
+  const toast = useToast();
   const { busy, run } = useAction();
-  const l = lead.data;
-  const looking = l?.enrichmentStatus === 'queued';
-  useEffect(() => {
-    if (watching && l && !looking) {
-      setWatching(false);
-      onChanged();
-    }
-    // onChanged is a new function on every render of the page.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watching, looking, l]);
-  if (!l) return null;
-  const enrich = (key: string, o: Partial<EnrichOptions>) =>
-    run(key, async () => {
-      await api(`/api/leads/${id}/enrich`, { body: { find: false, verify: false, company: false, ...o } });
-      await lead.reload();
-      setWatching(true);
+  const ready = !!(stageId || add.trim() || remove || owner);
+  const apply = () =>
+    run('go', async () => {
+      const r = await api<{ updated: number }>('/api/leads/bulk', {
+        body: {
+          leadIds,
+          ...(stageId ? { stageId: Number(stageId) } : {}),
+          ...(add.trim() ? { addTags: [add.trim()] } : {}),
+          ...(remove ? { removeTags: [remove] } : {}),
+          ...(owner ? { ownerId: owner === 'none' ? null : Number(owner) } : {}),
+        },
+      });
+      toast(`Updated ${r.updated} of ${leadIds.length} lead${leadIds.length === 1 ? '' : 's'}`);
+      onDone();
     });
-  const save = () =>
-    run(
-      'save',
-      async () => {
-        await api(`/api/leads/${id}`, { method: 'PATCH', body: edit });
-        setEdit(null);
-        await lead.reload();
-        onChanged();
-      },
-      'Lead updated',
-    );
-  const set = (k: keyof Lead) => (e: React.ChangeEvent<HTMLInputElement>) => setEdit({ ...edit, [k]: e.target.value });
   return (
     <Modal
-      title={fullName(l)}
-      wide
+      title={`Update ${leadIds.length} lead${leadIds.length === 1 ? '' : 's'}`}
       onClose={onClose}
       footer={
-        edit ? (
-          <>
-            <Button onClick={() => setEdit(null)}>Cancel</Button>
-            <Button variant="primary" busy={busy === 'save'} onClick={save}>
-              Save
-            </Button>
-          </>
-        ) : (
-          <Button onClick={() => setEdit({ firstName: l.firstName, lastName: l.lastName, company: l.company, title: l.title, email: l.email ?? '', location: l.location })}>Edit details</Button>
-        )
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={!ready} busy={busy === 'go'} onClick={apply}>
+            Apply
+          </Button>
+        </>
       }
     >
-      <div className="spread">
-        <a href={l.profileUrl} target="_blank" rel="noreferrer">
-          {l.profileUrl}
-        </a>
-        <span className="row" style={{ gap: 6 }}>
-          {l.openProfile && <Pill status="open_profile">Open profile</Pill>}
-          <Pill status={l.connectionStatus} />
-        </span>
+      <Field label="Move to stage">
+        <select value={stageId} onChange={(e) => setStageId(e.target.value)}>
+          <option value="">Keep their stages</option>
+          {stages.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <div className="grid grid-2">
+        <Field label="Add tag" hint="Pick a tag or type a new one.">
+          <input type="text" value={add} onChange={(e) => setAdd(e.target.value)} list="bulk-tag-options" maxLength={50} />
+        </Field>
+        <Field label="Remove tag">
+          <select value={remove} onChange={(e) => setRemove(e.target.value)}>
+            <option value="">None</option>
+            {tags.map((t) => (
+              <option key={t.id} value={t.name}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </Field>
       </div>
-      {edit ? (
-        <div className="grid grid-2">
-          {(['firstName', 'lastName', 'company', 'title', 'email', 'location'] as const).map((k) => (
-            <Field key={k} label={k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())}>
-              <input type="text" value={(edit[k] as string) ?? ''} onChange={set(k)} />
-            </Field>
-          ))}
-        </div>
-      ) : (
-        <div className="grid grid-2" style={{ fontSize: 13.5 }}>
-          <div>
-            <div className="muted">Headline</div>
-            {l.headline || '—'}
-          </div>
-          <div>
-            <div className="muted">Company / title</div>
-            {[l.company, l.title].filter(Boolean).join(' · ') || '—'}
-          </div>
-          <div>
-            <div className="muted">Email</div>
-            {l.email || '—'}
-          </div>
-          <div>
-            <div className="muted">Location</div>
-            {l.location || '—'}
-          </div>
-          {Object.entries(l.custom).map(([k, v]) => (
-            <div key={k}>
-              <div className="muted">
-                <code>{`{{${k}}}`}</code>
-              </div>
-              {v}
-            </div>
-          ))}
-        </div>
-      )}
-      {!edit && (
-        <section aria-labelledby="lead-enrichment">
-          <div className="spread" style={{ marginBottom: 6 }}>
-            <h3 id="lead-enrichment" style={{ margin: 0 }}>
-              Email and company data
-            </h3>
-            {looking ? (
-              <Pill status="queued">{ENRICHMENT_STATUS_LABELS.queued}</Pill>
-            ) : (
-              l.enrichmentStatus && (
-                <span className="muted" style={{ fontSize: 12.5 }}>
-                  {ENRICHMENT_STATUS_LABELS[l.enrichmentStatus]} {timeAgo(l.enrichedAt)}
-                </span>
-              )
-            )}
-          </div>
-          <dl className="facts">
-            <div>
-              <dt>Email status</dt>
-              <dd>{l.email ? <Pill status={l.emailStatus ?? 'unknown'}>{EMAIL_STATUS_LABELS[l.emailStatus ?? 'unknown']}</Pill> : '—'}</dd>
-            </div>
-            <div>
-              <dt>Source</dt>
-              <dd>{l.email ? emailSourceLabel(l.emailSource) : '—'}</dd>
-            </div>
-            <div>
-              <dt>Checked</dt>
-              <dd>{l.emailStatusAt ? dateTime(l.emailStatusAt) : 'Not yet'}</dd>
-            </div>
-            <div>
-              <dt>Company domain</dt>
-              <dd>{l.companyDomain ?? '—'}</dd>
-            </div>
-            {Object.entries(COMPANY_FACTS).map(([k, label]) =>
-              l.enrichment[k] != null && l.enrichment[k] !== '' ? (
-                <div key={k}>
-                  <dt>{label}</dt>
-                  <dd>{String(l.enrichment[k])}</dd>
-                </div>
-              ) : null,
-            )}
-          </dl>
-          {l.emailStatusReason && (
-            <p className="field-hint" style={{ margin: '6px 0 0' }}>
-              {l.emailStatusReason}
-            </p>
-          )}
-          {!!l.enrichment.simulated && <div className="note note-warning" style={{ marginTop: 6 }}>These company facts were made up by the built-in simulator. They are only shown here and never used in messages.</div>}
-          <div className="row" style={{ marginTop: 8 }}>
-            <Button size="sm" busy={busy === 'find'} disabled={looking} onClick={() => enrich('find', { find: true, verify: true })}>
-              {l.email ? 'Verify email' : 'Find email'}
-            </Button>
-            {!!l.email && (
-              <Button size="sm" busy={busy === 'replace'} disabled={looking} onClick={() => confirm('Look for a verified work email and replace the current address if one is found?') && enrich('replace', { find: true, verify: true, overwrite: true })}>
-                Find a better email
-              </Button>
-            )}
-            <Button size="sm" busy={busy === 'company'} disabled={looking} onClick={() => enrich('company', { company: true })}>
-              Add company data
-            </Button>
-          </div>
-        </section>
-      )}
-      {!!l.campaigns.length && (
-        <div>
-          <h3 style={{ marginBottom: 6 }}>Campaigns</h3>
-          {l.campaigns.map((c: any) => (
-            <div key={c.id} className="spread" style={{ padding: '4px 0' }}>
-              <Link to={`/campaigns/${c.id}`}>{c.name}</Link>
-              <span className="row">
-                {c.lastError && <span className="field-error">{c.lastError}</span>}
-                <Pill status={c.state === 'active' ? 'running' : c.state}>{c.state === 'active' ? 'In progress' : undefined}</Pill>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      <div>
-        <h3 style={{ marginBottom: 6 }}>Timeline</h3>
-        {!l.activity.length && <p className="muted">No activity yet.</p>}
-        {l.activity.map((a: any) => (
-          <div className="feed-item" key={a.id}>
-            <span className={`feed-dot ${a.status}`} aria-hidden />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="spread">
-                <strong>
-                  {ACTION_LABELS[a.type as keyof typeof ACTION_LABELS] ?? a.type}
-                  {a.variant && <span className="muted"> · variant {a.variant}</span>}
-                  {a.status !== 'ok' && <span className="muted"> ({a.status})</span>}
-                </strong>
-                <span className="muted" style={{ fontSize: 12.5 }}>
-                  {dateTime(a.createdAt)}
-                </span>
-              </div>
-              {a.detail && <div style={{ whiteSpace: 'pre-wrap', color: 'var(--ink-2)', fontSize: 13 }}>{a.detail}</div>}
-            </div>
-          </div>
+      <datalist id="bulk-tag-options">
+        {tags.map((t) => (
+          <option key={t.id} value={t.name} />
         ))}
-      </div>
+      </datalist>
+      <Field label="Owner">
+        <select value={owner} onChange={(e) => setOwner(e.target.value)}>
+          <option value="">Keep their owners</option>
+          <option value="none">Nobody</option>
+          {team.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.name}
+            </option>
+          ))}
+        </select>
+      </Field>
     </Modal>
   );
 }

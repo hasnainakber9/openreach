@@ -7,7 +7,10 @@ import { csv, HttpError, idParam, notFound, parse, requireWriter, user } from '.
 import { autoEnrichImported } from '../services/enrichment.js';
 import { IMPORT_KINDS, serializeImport, sourceUrlProblem, startImport } from '../services/imports.js';
 import { importLeads, type LeadInput } from '../services/leads.js';
-import type { AccountRow, ImportRow, LeadRow } from '../types.js';
+import { effectiveStage, listStages, stageWhere } from '../services/pipeline.js';
+import { canonicalTags, tagLike } from '../services/tags.js';
+import { isWorkspaceMember } from '../services/tasks.js';
+import type { AccountRow, ImportRow, LeadRow, StageRow } from '../types.js';
 
 const FIELD_ALIASES: Record<string, keyof LeadInput | 'fullName'> = {
   profileurl: 'profileUrl', linkedinurl: 'profileUrl', linkedin: 'profileUrl', url: 'profileUrl', profile: 'profileUrl',
@@ -44,7 +47,9 @@ export function csvToLeads(text: string): LeadInput[] {
   });
 }
 
-export function serializeLead(l: LeadRow) {
+// Pass the workspace's stages to include the lead's pipeline stage (the first one when it has none).
+export function serializeLead(l: LeadRow, stages?: StageRow[]) {
+  const stage = stages ? effectiveStage(stages, l.stage_id) : undefined;
   return {
     id: l.id,
     listId: l.list_id,
@@ -75,6 +80,11 @@ export function serializeLead(l: LeadRow) {
     enrichmentStatus: l.enrichment_status ?? null,
     enrichedAt: l.enriched_at ?? null,
     openProfile: l.open_profile == null ? null : l.open_profile === 1,
+    stageId: stage?.id ?? l.stage_id ?? null,
+    stage: stage ? { id: stage.id, slug: stage.slug, name: stage.name, color: stage.color, kind: stage.kind } : null,
+    stageChangedAt: l.stage_changed_at ?? null,
+    stageManual: l.stage_manual === 1,
+    ownerId: l.owner_id ?? null,
     createdAt: l.created_at,
   };
 }
@@ -91,6 +101,8 @@ const leadPatch = z.object({
   tags: z.array(z.string().max(50)).max(50),
   custom: z.record(z.string(), z.string()),
   listId: z.number().int().nullable(),
+  // A workspace member, or null for nobody.
+  ownerId: z.number().int().positive().nullable(),
 }).partial();
 
 export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
@@ -138,6 +150,9 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     // unknown: an address nobody could confirm yet (never checked, or checked without a clear answer).
     emailStatus: z.enum(['valid', 'risky', 'invalid', 'unknown', 'missing']).optional(),
     enrichment: z.enum(['queued', 'done', 'not_found', 'failed', 'none']).optional(),
+    stageId: z.coerce.number().int().positive().optional(),
+    tag: z.string().trim().min(1).max(50).optional(),
+    ownerId: z.union([z.enum(['me', 'none']), z.coerce.number().int().positive()]).optional(),
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(500).default(50),
   });
@@ -153,6 +168,10 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     else if (q.emailStatus) (where.push('l.email IS NOT NULL AND l.email_status = $es'), (p.es = q.emailStatus));
     if (q.enrichment === 'none') where.push('l.enrichment_status IS NULL');
     else if (q.enrichment) (where.push('l.enrichment_status = $enr'), (p.enr = q.enrichment));
+    if (q.stageId) where.push(stageWhere(listStages(ctx, user(req).workspace_id), q.stageId));
+    if (q.tag) (where.push("l.tags LIKE $tag ESCAPE '\\'"), (p.tag = tagLike(q.tag)));
+    if (q.ownerId === 'none') where.push('l.owner_id IS NULL');
+    else if (q.ownerId) (where.push('l.owner_id = $owner'), (p.owner = q.ownerId === 'me' ? user(req).id : q.ownerId));
     if (q.q) {
       where.push("(l.first_name || ' ' || l.last_name || ' ' || l.company || ' ' || l.headline || ' ' || COALESCE(l.email, '')) LIKE $q");
       p.q = `%${q.q}%`;
@@ -167,6 +186,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
   app.get('/api/leads', async (req) => {
     const q = parse(leadQuery, req.query);
     const { total, items } = findLeads(req, q);
+    const stages = listStages(ctx, user(req).workspace_id);
     // Attach each lead's current campaign, if any.
     const ids = items.map((l) => l.id);
     const camps = ids.length
@@ -178,22 +198,23 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
       total,
       page: q.page,
       pageSize: q.pageSize,
-      items: items.map((l) => ({ ...serializeLead(l), campaigns: camps.filter((c) => c.lead_id === l.id).map((c) => ({ id: c.campaign_id, name: c.name, state: c.state })) })),
+      items: items.map((l) => ({ ...serializeLead(l, stages), campaigns: camps.filter((c) => c.lead_id === l.id).map((c) => ({ id: c.campaign_id, name: c.name, state: c.state })) })),
     };
   });
 
   app.get('/api/leads/export.csv', async (req, reply) => {
     const q = parse(leadQuery, req.query);
     const { items } = findLeads(req, q, false);
+    const stages = listStages(ctx, user(req).workspace_id);
     const customKeys = [...new Set(items.flatMap((l) => Object.keys(json(l.custom, {}))))];
     const rows = items.map((l) => {
-      const s = serializeLead(l);
+      const s = serializeLead(l, stages);
       const custom = s.custom as Record<string, string>;
       return {
         profile_url: s.profileUrl, first_name: s.firstName, last_name: s.lastName, headline: s.headline, title: s.title, company: s.company,
         location: s.location, email: s.email, email_status: s.emailStatus ?? '', email_source: s.emailSource ?? '', company_domain: s.companyDomain ?? '', phone: s.phone, connection_status: s.connectionStatus,
         connected_at: s.connectedAt ? new Date(s.connectedAt).toISOString() : '', replied_at: s.repliedAt ? new Date(s.repliedAt).toISOString() : '',
-        tags: s.tags.join(';'), ...Object.fromEntries(customKeys.map((k) => [k, custom[k] ?? ''])),
+        tags: s.tags.join(';'), stage: s.stage?.name ?? '', ...Object.fromEntries(customKeys.map((k) => [k, custom[k] ?? ''])),
       };
     });
     return csv(reply, 'leads.csv', rows);
@@ -207,7 +228,8 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
       [id],
     );
     const activity = ctx.db.all('SELECT id, type, status, detail, variant, created_at AS createdAt, campaign_id AS campaignId FROM activity WHERE lead_id = ? ORDER BY id DESC LIMIT 200', [id]);
-    return { ...serializeLead(l), campaigns, activity };
+    const owner = l.owner_id ? ctx.db.get<{ id: number; name: string }>('SELECT id, name FROM users WHERE id = ? AND workspace_id = ?', [l.owner_id, l.workspace_id]) : undefined;
+    return { ...serializeLead(l, listStages(ctx, l.workspace_id)), owner: owner ?? null, campaigns, activity };
   });
 
   app.post('/api/leads', async (req) => {
@@ -224,10 +246,14 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     ctx.db.get('SELECT id FROM leads WHERE id = ? AND workspace_id = ?', [id, user(req).workspace_id]) ?? notFound('Lead');
     const b = parse(leadPatch, req.body);
     if (b.listId) list(req, b.listId);
+    // Another workspace's user is a 404 like any other row.
+    if (b.ownerId != null && !isWorkspaceMember(ctx, user(req).workspace_id, b.ownerId)) notFound('User');
     const cols: Record<string, any> = {};
     const map: Record<string, string> = { firstName: 'first_name', lastName: 'last_name', headline: 'headline', title: 'title', company: 'company', location: 'location', email: 'email', phone: 'phone', listId: 'list_id' };
     for (const [k, col] of Object.entries(map)) if ((b as any)[k] !== undefined) cols[col] = (b as any)[k] === '' && k === 'email' ? null : (b as any)[k];
-    if (b.tags) cols.tags = JSON.stringify(b.tags);
+    // Tags take the workspace's spelling of an existing tag, and new names get a tag row.
+    if (b.tags) cols.tags = JSON.stringify(canonicalTags(ctx, user(req).workspace_id, b.tags));
+    if (b.ownerId !== undefined) cols.owner_id = b.ownerId;
     if (b.custom) cols.custom = JSON.stringify(b.custom);
     // A new address hasn't bounced: its status starts over.
     const before = ctx.db.get<{ email: string | null }>('SELECT email FROM leads WHERE id = ?', [id])!;

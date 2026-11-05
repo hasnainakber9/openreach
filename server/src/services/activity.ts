@@ -1,5 +1,6 @@
 import type { Ctx } from '../context.js';
 import { localParts } from '../engine/limits.js';
+import { advanceOnActivity } from './pipeline.js';
 
 // Activity types that count as reaching out to a lead (analytics 'contacted', reply rate). Channels add theirs here.
 export const CONTACT_ACTIVITY_TYPES = ['connect', 'message', 'email', 'inmail', 'sms', 'whatsapp'] as const;
@@ -26,7 +27,7 @@ export interface ActivityInput {
 // `day` is the account's local calendar day, which is what daily limits are counted against.
 export function logActivity(ctx: Ctx, a: ActivityInput): number {
   const now = ctx.clock.now();
-  return ctx.db.insert('activity', {
+  const id = ctx.db.insert('activity', {
     workspace_id: a.workspaceId,
     account_id: a.accountId ?? null,
     mailbox_id: a.mailboxId ?? null,
@@ -40,4 +41,7 @@ export function logActivity(ctx: Ctx, a: ActivityInput): number {
     day: localParts(now, a.timezone ?? 'UTC').date,
     created_at: now,
   });
+  // Every channel logs its sends here, so this is the one place "first contact" moves the pipeline stage.
+  advanceOnActivity(ctx, a);
+  return id;
 }

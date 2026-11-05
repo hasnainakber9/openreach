@@ -5,6 +5,7 @@ import type { CampaignSettings } from '../engine/sequence.js';
 import type { CampaignLeadRow, CampaignLeadState, CampaignRow, LeadRow } from '../types.js';
 import { logActivity } from './activity.js';
 import { campaignSettings, publicLead } from './leads.js';
+import { autoAdvance } from './pipeline.js';
 import { skipOpenTasks } from './tasks.js';
 
 // Every inbound reply (LinkedIn today; email and SMS later) goes through handleInboundReply, and every
@@ -117,8 +118,9 @@ export function handleInboundReply(ctx: Ctx, r: InboundReply) {
       timezone: r.account?.timezone ?? r.mailbox?.timezone,
     });
   });
+  autoAdvance(ctx, lead.id, 'replied', `Replied by ${r.channel === 'linkedin' ? 'LinkedIn message' : r.channel}`);
   ctx.webhooks.emit(lead.workspace_id, 'lead.replied', {
-    lead: publicLead({ ...lead, replied_at: now }),
+    lead: publicLead({ ...lead, replied_at: now }, ctx),
     message: r.body,
     ...(r.account ? { account: { id: r.account.id, name: r.account.name } } : {}),
     ...(r.mailbox ? { mailbox: { id: r.mailbox.id, name: r.mailbox.name } } : {}),

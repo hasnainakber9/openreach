@@ -64,6 +64,42 @@ export interface LeadRow {
   enrichment_status: string | null;
   enriched_at: number | null;
   enrichment_options: string | null;
+  // Pipeline stage (NULL = the workspace's first stage); stage_manual = 1 when a person set it.
+  stage_id: number | null;
+  stage_changed_at: number | null;
+  stage_manual: number;
+  owner_id: number | null;
+}
+
+export type StageKind = 'open' | 'won' | 'lost';
+
+export interface StageRow {
+  id: number;
+  workspace_id: number;
+  slug: string;
+  name: string;
+  color: string;
+  position: number;
+  kind: StageKind;
+  created_at: number;
+}
+
+export interface TagRow {
+  id: number;
+  workspace_id: number;
+  name: string;
+  color: string;
+  created_at: number;
+}
+
+export interface NoteRow {
+  id: number;
+  workspace_id: number;
+  lead_id: number;
+  user_id: number | null;
+  body: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface EnrichmentRunRow {

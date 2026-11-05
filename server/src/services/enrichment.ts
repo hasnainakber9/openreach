@@ -322,7 +322,7 @@ function applyEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions, out: Outcome
     status: out.status === 'done' ? 'ok' : out.status === 'failed' ? 'failed' : 'skipped',
     detail: out.notes.join(' · ').slice(0, 500) || null,
   });
-  ctx.webhooks.emit(lead.workspace_id, 'lead.enriched', { lead: publicLead(updated), emailStatus: updated.email_status, source: updated.email_source });
+  ctx.webhooks.emit(lead.workspace_id, 'lead.enriched', { lead: publicLead(updated, ctx), emailStatus: updated.email_status, source: updated.email_source });
   return updated;
 }
 

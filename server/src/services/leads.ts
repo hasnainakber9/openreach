@@ -204,7 +204,14 @@ export function addLeadsToCampaign(ctx: Ctx, campaign: CampaignRow, leadIds: num
   return result;
 }
 
-export function publicLead(l: LeadRow) {
+// The lead as webhooks send it. With `ctx` it adds the pipeline stage (the first stage when it has none).
+export function publicLead(l: LeadRow, ctx?: Ctx) {
+  const stage = ctx
+    ? ctx.db.get<{ id: number; slug: string; name: string }>('SELECT id, slug, name FROM pipeline_stages WHERE workspace_id = ? ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, position, id LIMIT 1', [
+        l.workspace_id,
+        l.stage_id ?? 0,
+      ])
+    : undefined;
   return {
     id: l.id,
     profileUrl: l.profile_url,
@@ -218,5 +225,6 @@ export function publicLead(l: LeadRow) {
     connectionStatus: l.connection_status,
     replyCategory: l.reply_category ?? null,
     emailStatus: l.email_status ?? null,
+    ...(ctx ? { stage: stage ?? null, ownerId: l.owner_id ?? null } : {}),
   };
 }

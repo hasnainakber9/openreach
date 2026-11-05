@@ -4,6 +4,7 @@ import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { timingSafeEqual } from 'node:crypto';
 import { hashPassword, token, verifyPassword } from '../services/crypto.js';
+import { ensureStages } from '../services/pipeline.js';
 import { HttpError, idParam, parse, requireAdmin, user, type SessionUser } from '../http.js';
 
 export const SESSION_COOKIE = 'or_session';
@@ -55,6 +56,7 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
     if (ctx.db.get('SELECT 1 FROM users WHERE email = ?', [body.email])) throw new HttpError(409, 'That email is already registered');
     const id = ctx.db.tx(() => {
       const ws = ctx.db.insert('workspaces', { name: body.workspace, created_at: Date.now() });
+      ensureStages(ctx, ws);
       return ctx.db.insert('users', { workspace_id: ws, email: body.email, name: body.name, password_hash: hashPassword(body.password), role: 'owner', created_at: Date.now() });
     });
     startSession(id, reply);

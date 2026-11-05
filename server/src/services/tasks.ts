@@ -6,6 +6,7 @@ import { leadVars, render } from '../engine/template.js';
 import type { CampaignLeadRow, CampaignRow, LeadRow, TaskRow } from '../types.js';
 import { logActivity } from './activity.js';
 import { publicLead } from './leads.js';
+import { autoAdvance } from './pipeline.js';
 
 // Tasks are to-dos for people: calls, manual LinkedIn or email touches. A `task` step creates one and holds the
 // lead (hold_reason 'task') until it is completed or skipped; the lead then moves on. Manual tasks (no campaign)
@@ -52,7 +53,7 @@ export function serializeTask(ctx: Ctx, t: TaskRow) {
 function emit(ctx: Ctx, event: 'task.created' | 'task.completed', t: TaskRow) {
   const lead = t.lead_id ? ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [t.lead_id]) : undefined;
   const { lead: _lead, ...task } = serializeTask(ctx, t);
-  ctx.webhooks.emit(t.workspace_id, event, { task, lead: lead ? publicLead(lead) : null });
+  ctx.webhooks.emit(t.workspace_id, event, { task, lead: lead ? publicLead(lead, ctx) : null });
 }
 
 const loadTask = (ctx: Ctx, id: number) => ctx.db.get<TaskRow>('SELECT * FROM tasks WHERE id = ?', [id])!;
@@ -147,6 +148,7 @@ function closeTask(ctx: Ctx, task: TaskRow, status: 'done' | 'skipped', o: { by?
   const detail = [status === 'done' ? row.title : `${row.title} (skipped)`, o.outcome ? o.outcome.replace(/_/g, ' ') : null, o.notes].filter(Boolean).join(' · ');
   logActivity(ctx, { workspaceId: row.workspace_id, campaignId: row.campaign_id, leadId: row.lead_id, type: status === 'done' ? 'task_done' : 'task_skipped', detail: detail.slice(0, 500), nodeId: row.node_id });
   emit(ctx, 'task.completed', row);
+  if (status === 'done' && row.outcome === 'meeting_booked' && row.lead_id != null) autoAdvance(ctx, row.lead_id, 'meeting', `Task "${row.title}": meeting booked`);
   return row;
 }
 

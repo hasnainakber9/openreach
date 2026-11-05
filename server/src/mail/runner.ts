@@ -150,21 +150,24 @@ export class MailRunner {
     let variant: string | null = null;
     const advance = (status: 'ok' | 'skipped', detail?: string) => {
       ctx.db.tx(() => {
+        // Queued first, so receivers hear about the send before the stage change it causes (both after commit).
+        if (status === 'ok') {
+          ctx.db.afterCommit(() =>
+            ctx.webhooks.emit(mb.workspace_id, 'action.performed', {
+              type: 'email',
+              detail,
+              ...(variant ? { nodeId: step.id, variant } : {}),
+              campaign: { id: campaign.id, name: campaign.name },
+              lead: publicLead(ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id])!, ctx),
+              mailbox: { id: mb.id, name: mb.name },
+            }),
+          );
+        }
         for (const d of aiSkipNotes) logActivity(ctx, { ...base, type: 'ai_personalize', status: 'skipped', detail: d });
         logActivity(ctx, { ...base, status, detail });
         const moved = host.moveTo(campaign, job, step.next);
         if (moved.state === 'active') host.walk(campaign, moved);
       });
-      if (status === 'ok') {
-        ctx.webhooks.emit(mb.workspace_id, 'action.performed', {
-          type: 'email',
-          detail,
-          ...(variant ? { nodeId: step.id, variant } : {}),
-          campaign: { id: campaign.id, name: campaign.name },
-          lead: publicLead(ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id])!),
-          mailbox: { id: mb.id, name: mb.name },
-        });
-      }
     };
 
     if (!lead.email) return advance('skipped', 'no email address'), 'next';

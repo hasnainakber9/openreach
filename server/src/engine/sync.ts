@@ -52,7 +52,7 @@ export function markConnected(ctx: Ctx, a: AccountRow, lead: LeadRow) {
   });
   ctx.db.run("UPDATE campaign_leads SET next_run_at = ? WHERE lead_id = ? AND state = 'active' AND node_type = 'condition'", [now, lead.id]);
   // The event means "now connected to us"; a second sender connecting too doesn't fire it again.
-  if (!wasConnected) ctx.webhooks.emit(a.workspace_id, 'lead.connected', { lead: publicLead({ ...lead, connection_status: 'connected' }), account: { id: a.id, name: a.name } });
+  if (!wasConnected) ctx.webhooks.emit(a.workspace_id, 'lead.connected', { lead: publicLead({ ...lead, connection_status: 'connected' }, ctx), account: { id: a.id, name: a.name } });
 }
 
 // Returns the number of new inbound messages.
