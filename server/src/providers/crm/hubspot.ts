@@ -62,7 +62,7 @@ export const hubspotCrm: ProviderDef<'crm'> = {
       secret: true,
       required: true,
       placeholder: 'pat-…',
-      help: 'HubSpot → Settings → Integrations → Private apps. Scopes: crm.objects.contacts.read/write and crm.objects.deals.read/write.',
+      help: 'HubSpot → Development → Legacy apps → Create legacy app → Private. Scopes: crm.objects.contacts.read/write and crm.objects.deals.read/write. The token is on the Auth tab.',
     },
     { key: 'portalId', label: 'Account id (Hub ID)', type: 'text', placeholder: '12345678', help: 'Optional. Lets OpenReach link to the contact in HubSpot.' },
     { key: 'dealPipeline', label: 'Deal pipeline', type: 'text', placeholder: 'default', help: 'Internal id of the pipeline new deals go into.' },

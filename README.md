@@ -140,7 +140,7 @@ Add **Hunter** or **Apollo** as finders and **Hunter**, **ZeroBounce** or **Neve
 
 ### CRM (HubSpot, Pipedrive)
 
-- **HubSpot:** create a private app (HubSpot → Settings → Integrations → Private apps) with the scopes `crm.objects.contacts.read/write` and `crm.objects.deals.read/write`, and paste its access token. Add your Hub ID to get links to records, and the internal ids of the deal pipeline and stage if you create deals.
+- **HubSpot:** create a private app (HubSpot → **Development → Legacy apps → Create legacy app → Private**; you need to be a super admin) with the scopes `crm.objects.contacts.read/write` and `crm.objects.deals.read/write`, then copy its access token from the app's **Auth** tab (**Show token**) and paste it. Add your Hub ID to get links to records, and the internal ids of the deal pipeline and stage if you create deals.
 - **Pipedrive:** paste your personal API token (Personal preferences → API) and your company domain (the part before `.pipedrive.com`), and optionally the stage id new deals start in.
 
 Then choose the field mapping, what gets logged as notes and which pipeline stage opens a deal on the CRM sync card. Nothing is synced until a CRM is added; the simulated CRM lets you try it.
