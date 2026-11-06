@@ -1,11 +1,11 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { assertWithinPlan, billingEnabled, withPlanLock } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { accountLimits, schedule, usage } from '../engine/engine.js';
 import { isValidTimezone, isWorkingTime, nextWorkingTime } from '../engine/limits.js';
-import { HttpError, idParam, notFound, parse, requireWriter, user } from '../http.js';
+import { HttpError, idParam, notFound, parse, requireAdmin, requireWriter, user } from '../http.js';
 import { ensureLegacyMailboxes } from '../mail/mailboxes.js';
 import { callLinkedIn } from '../services/linkedin-calls.js';
 import { releaseUnstartedLeads, retireAccount } from '../services/rotation.js';
@@ -100,9 +100,17 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     if (b.delayMaxSec !== undefined) out.delay_max_sec = b.delayMaxSec;
     if (b.warmup !== undefined) out.warmup = b.warmup ? 1 : 0;
     if (b.smtp !== undefined) {
-      // A blank password on edit keeps the saved one.
+      // A blank password on edit keeps the saved one, but only for the same server and user (as for mailboxes):
+      // otherwise it could be pointed at another host to collect it.
       const prev = existing ? JSON.parse(ctx.sealer.open(existing.smtp_enc) ?? 'null') : null;
-      out.smtp_enc = b.smtp ? ctx.sealer.seal(JSON.stringify({ ...b.smtp, pass: b.smtp.pass || prev?.pass || '' })) : null;
+      let pass = b.smtp?.pass ?? '';
+      if (b.smtp && !pass && prev?.pass) {
+        if (String(prev.host).trim().toLowerCase() !== b.smtp.host.trim().toLowerCase() || prev.port !== b.smtp.port || prev.user !== b.smtp.user) {
+          throw new HttpError(400, 'smtp: Enter the password again for the new server or user');
+        }
+        pass = prev.pass;
+      }
+      out.smtp_enc = b.smtp ? ctx.sealer.seal(JSON.stringify({ ...b.smtp, pass })) : null;
     }
     const min = out.delay_min_sec ?? existing?.delay_min_sec;
     const max = out.delay_max_sec ?? existing?.delay_max_sec;
@@ -126,9 +134,13 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
 
   app.get('/api/accounts/:id', async (req) => serializeAccount(ctx, load(req)));
 
+  // SMTP settings hold a password, so only admins change them (like mailboxes).
+  const requireSmtpRole = (req: FastifyRequest, body: { smtp?: unknown }) => void (body.smtp !== undefined && requireAdmin(req));
+
   app.post('/api/accounts', async (req) => {
     requireWriter(req);
     const body = parse(accountBody, req.body);
+    requireSmtpRole(req, body);
     if (body.driver === 'playwright' && !body.liAt) throw new HttpError(400, 'A LinkedIn session cookie (li_at) is required');
     const ws = user(req).workspace_id;
     const id = withPlanLock(ctx, ws, () => {
@@ -143,6 +155,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     requireWriter(req);
     const a = load(req);
     const body = parse(accountBody.partial(), req.body);
+    requireSmtpRole(req, body);
     ctx.db.update('accounts', a.id, columns(body, a));
     if (body.smtp) syncLegacyMailbox(a.id);
     return serializeAccount(ctx, ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [a.id])!);

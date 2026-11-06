@@ -8,6 +8,7 @@ import { localParts } from '../engine/limits.js';
 import { HttpError, idParam, isAdmin, notFound, parse, requireAdmin, requireWriter, user } from '../http.js';
 import { contactTypesSql } from '../services/activity.js';
 import { token } from '../services/crypto.js';
+import { hostProblem, urlHost } from '../services/hosts.js';
 import { stopLeadEverywhere } from '../services/replies.js';
 import { normalizePhone, suppressIdentity, type SuppressionKind } from '../services/suppression.js';
 import { WEBHOOK_EVENTS } from '../services/webhooks.js';
@@ -144,9 +145,17 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
 
   app.get('/api/webhooks/events', async () => WEBHOOK_EVENTS);
 
+  // Plain http(s) only. Hosted installs also refuse hosts on a private network (checked again before each delivery).
+  const webhookUrl = z
+    .string()
+    .url()
+    .refine((v) => /^https?:$/.test(new URL(v).protocol), 'Use an http(s) URL');
+
   app.post('/api/webhooks', async (req) => {
     const admin = requireAdmin(req);
-    const body = parse(z.object({ url: z.string().url(), events: z.array(z.enum([...WEBHOOK_EVENTS, '*'])).min(1) }), req.body);
+    const body = parse(z.object({ url: webhookUrl, events: z.array(z.enum([...WEBHOOK_EVENTS, '*'])).min(1) }), req.body);
+    const problem = await hostProblem(ctx, urlHost(body.url) ?? '');
+    if (problem) throw new HttpError(400, `url: ${problem}`);
     const id = ctx.db.insert('webhooks', { workspace_id: admin.workspace_id, url: body.url, events: JSON.stringify(body.events), secret: token(24), created_at: ctx.clock.now() });
     return { id };
   });
@@ -168,9 +177,11 @@ export function settingsRoutes(app: FastifyInstance, ctx: Ctx) {
     return { ok: true };
   });
 
+  // Admins only, like the rest of webhook management: the answer (a status code) says something about the target.
   app.post('/api/webhooks/:id/test', async (req) => {
+    const admin = requireAdmin(req);
     const { id } = parse(idParam, req.params);
-    const h = ctx.db.get<any>('SELECT id, url, events, secret FROM webhooks WHERE id = ? AND workspace_id = ?', [id, user(req).workspace_id]) ?? notFound('Webhook');
+    const h = ctx.db.get<any>('SELECT id, url, events, secret FROM webhooks WHERE id = ? AND workspace_id = ?', [id, admin.workspace_id]) ?? notFound('Webhook');
     const status = await ctx.webhooks.send(h, { event: 'test', occurredAt: new Date().toISOString(), data: { message: 'Hello from OpenReach' } });
     return { status };
   });

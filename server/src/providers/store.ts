@@ -133,12 +133,19 @@ export function createIntegration(ctx: Ctx, workspaceId: number, input: z.infer<
 export function updateIntegration(ctx: Ctx, row: IntegrationRow, patch: z.infer<typeof integrationPatch>): IntegrationRow {
   const def = providerDef(row.kind, row.provider);
   if (!def) throw new HttpError(409, `Provider "${row.provider}" is no longer available; remove this integration`);
-  const creds = integrationCredentials(ctx, row);
+  const saved = integrationCredentials(ctx, row);
+  const creds = { ...saved };
   for (const [k, v] of Object.entries(patch.credentials ?? {})) {
     if (v === null) delete creds[k];
     else if (v !== '') creds[k] = v;
   }
   const { settings, credentials } = validated(def, { ...json<Record<string, unknown>>(row.settings, {}), ...patch.settings }, creds);
+  // A saved secret is only kept for the same server: otherwise an admin who only sees the masked key could point
+  // the base URL at their own host and collect it with the next call. Same rule as mailbox passwords.
+  const before = parseSettings(def, row.settings) as Record<string, unknown>;
+  const moved = (def.hostSettings ?? []).find((k) => String(before[k] ?? '') !== String((settings as Record<string, unknown>)[k] ?? ''));
+  const kept = moved && Object.keys(saved).find((k) => credentials[k] !== undefined && !patch.credentials?.[k]);
+  if (moved && kept) throw new HttpError(400, `credentials.${kept}: Enter it again for the new ${moved}`);
   const cols: Record<string, string | number | null> = { settings: JSON.stringify(settings), credentials_enc: sealCredentials(ctx, credentials), updated_at: ctx.clock.now() };
   if (patch.label !== undefined) cols.label = patch.label || def.label;
   if (patch.enabled !== undefined) cols.enabled = patch.enabled ? 1 : 0;
@@ -146,7 +153,7 @@ export function updateIntegration(ctx: Ctx, row: IntegrationRow, patch: z.infer<
   if (patch.credentials || patch.settings) Object.assign(cols, { last_status: null, last_message: null, last_checked_at: null });
   ctx.db.tx(() => {
     ctx.db.update('integrations', row.id, cols);
-    if (row.kind === 'crm' && accountChanged(def, row, settings, credentials, integrationCredentials(ctx, row))) forgetCrmRecords(ctx, row.id);
+    if (row.kind === 'crm' && accountChanged(def, row, settings, credentials, saved)) forgetCrmRecords(ctx, row.id);
   });
   return loadIntegration(ctx, row.workspace_id, row.id)!;
 }

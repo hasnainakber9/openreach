@@ -265,7 +265,7 @@ Self-hosted installs need none of this: without `STRIPE_SECRET_KEY` nothing is l
 
 The workspace owner (the agency's owner, for clients) sees **Billing** in the sidebar: plan, usage and **Choose** buttons that open Stripe Checkout, and **Manage billing** for Stripe's Customer Portal (change plan, card, cancel; turn the portal on in your Stripe dashboard). In Stripe, add a webhook endpoint for `PUBLIC_URL/api/public/stripe/webhook` with the events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.payment_failed`, and put its signing secret in `STRIPE_WEBHOOK_SECRET`. Unsigned or wrongly signed requests are refused.
 
-With billing on, OpenReach treats the server as shared: hosts that people enter (an OpenAI-compatible base URL, mailbox SMTP and IMAP servers) must be public, so names that resolve to loopback, private, link-local or cloud metadata addresses are refused, and campaign email goes through mailboxes only (SMTP settings on a LinkedIn account can't be set).
+With billing on, OpenReach treats the server as shared: hosts that people enter (an OpenAI-compatible base URL, mailbox SMTP and IMAP servers, webhook URLs) must be public, so names that resolve to loopback, private, link-local or cloud metadata addresses are refused, and campaign email goes through mailboxes only (SMTP settings on a LinkedIn account can't be set).
 
 ## API and webhooks
 
