@@ -1,4 +1,5 @@
 import type { Ctx } from '../context.js';
+import type { PinnedAddress, PinnedInit } from '../services/pinned-fetch.js';
 
 export type ProviderErrorCode = 'AUTH' | 'QUOTA' | 'RATE_LIMIT' | 'BAD_REQUEST' | 'NOT_FOUND' | 'UNAVAILABLE' | 'TIMEOUT';
 
@@ -52,7 +53,7 @@ export class RateLimiter {
   }
 }
 
-export interface HttpJsonOptions {
+export interface HttpJsonOptions<T = any> {
   method?: string;
   headers?: Record<string, string>;
   body?: unknown; // sent as JSON
@@ -63,6 +64,11 @@ export interface HttpJsonOptions {
   // Credential values to scrub from any error message (some vendors echo the key back).
   secrets?: (string | null | undefined)[];
   integrationId?: number | null;
+  // Connect only to these already-checked addresses (services/pinned-fetch.ts; GET and HEAD only).
+  pinnedAddresses?: PinnedAddress[];
+  // A non-2xx reply the caller understands, turned into a result (undefined: mapped to an error as usual).
+  // Gets the raw body text; whatever it returns must not carry that text into an error message unchecked.
+  readError?: (status: number, text: string) => T | undefined;
 }
 
 export function scrub(text: string, secrets: (string | null | undefined)[] = []): string {
@@ -89,7 +95,7 @@ function retryAfter(h: string | null): number | undefined {
 
 // Every outbound provider call goes through here: ctx.fetch (tests inject fakes), a timeout,
 // no redirects (credentials are never replayed to another host), and errors mapped to ProviderError.
-export async function httpJson<T = any>(ctx: Ctx, url: string, opts: HttpJsonOptions = {}): Promise<T> {
+export async function httpJson<T = any>(ctx: Ctx, url: string, opts: HttpJsonOptions<T> = {}): Promise<T> {
   const host = (() => {
     try {
       return new URL(url).host;
@@ -113,7 +119,9 @@ export async function httpJson<T = any>(ctx: Ctx, url: string, opts: HttpJsonOpt
 
   let res: Response;
   try {
-    res = await ctx.fetch(url, { method: opts.method ?? (body ? 'POST' : 'GET'), headers, body, redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000) });
+    const init: PinnedInit = { method: opts.method ?? (body ? 'POST' : 'GET'), headers, body, redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000) };
+    if (opts.pinnedAddresses) init.pinnedAddresses = opts.pinnedAddresses;
+    res = await ctx.fetch(url, init);
   } catch (e) {
     const name = (e as Error)?.name;
     if (name === 'TimeoutError' || name === 'AbortError') throw fail('TIMEOUT', `${host} did not answer in time`);
@@ -130,6 +138,10 @@ export async function httpJson<T = any>(ctx: Ctx, url: string, opts: HttpJsonOpt
     }
   }
   if (res.ok) return (data ?? (text ? text : null)) as T;
+  if (opts.readError) {
+    const read = opts.readError(res.status, text);
+    if (read !== undefined) return read;
+  }
 
   const vendor = vendorMessage(data);
   const detail = vendor ? `: ${scrub(vendor, opts.secrets).slice(0, 200)}` : '';
