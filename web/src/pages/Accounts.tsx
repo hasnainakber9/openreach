@@ -55,9 +55,9 @@ export default function Accounts() {
                   {a.proxyUrl && ' · via proxy'}
                 </div>
               </div>
-              <Pill status={a.status} />
+              {a.overPlan ? <Pill status="paused">Over plan limit</Pill> : <Pill status={a.status} />}
             </div>
-            {a.statusMessage && <div className="note note-error">{a.statusMessage}</div>}
+            {a.statusMessage && <div className={`note ${a.overPlan ? 'note-warning' : 'note-error'}`}>{a.statusMessage}</div>}
             {Object.entries(a.cooldowns).some(([, t]) => t > serverNow()) && (
               <div className="note note-warning">LinkedIn pushed back on {Object.keys(a.cooldowns).map((k) => ACTION_LABELS[k as keyof typeof ACTION_LABELS] ?? k).join(', ')}; that action is paused for 24 hours.</div>
             )}

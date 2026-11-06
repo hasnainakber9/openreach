@@ -345,6 +345,8 @@ export interface Account {
   name: string;
   driver: 'simulator' | 'playwright';
   status: 'active' | 'paused' | 'needs_login' | 'error';
+  // Past the plan's limit (hosted installs after a downgrade): it still syncs but sends nothing; statusMessage says why.
+  overPlan?: boolean;
   statusMessage: string | null;
   hasSession: boolean;
   proxyUrl: string | null;
@@ -632,6 +634,8 @@ export interface Mailbox {
   hasSmtp: boolean;
   hasImap: boolean;
   status: 'active' | 'paused' | 'needs_attention';
+  // Past the plan's limit (hosted installs after a downgrade): it still reads replies but sends nothing.
+  overPlan?: boolean;
   statusMessage: string | null;
   timezone: string;
   workDays: number[];

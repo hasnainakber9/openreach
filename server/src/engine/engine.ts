@@ -1,5 +1,5 @@
 import { AI_RECHECK, aiNamesIn, nodeTexts, prefetchAi, resolveAiVars } from '../ai/personalize.js';
-import { billingEnabled } from '../billing/limits.js';
+import { billingEnabled, overPlanIds } from '../billing/limits.js';
 import { DAY, HOUR, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -9,10 +9,10 @@ import { MailRunner } from '../mail/runner.js';
 import { MessagingRunner } from '../messaging/runner.js';
 import { newMessageId } from '../mail/compose.js';
 import type { SmtpConfig } from '../services/email.js';
-import { replyDecision, replyHoldDeadline, replySince } from '../services/replies.js';
+import { replyDecision, replyHoldDeadline, replySince, stopCampaignLead } from '../services/replies.js';
 import { suppressionReason } from '../services/suppression.js';
 import { emailVerified, enrichmentSettings, findEmailGate } from '../services/enrichment.js';
-import { skipOpenTasks, taskGate } from '../services/tasks.js';
+import { taskGate } from '../services/tasks.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
 import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLegacy, pinLead, releaseUnstartedLeads, setConnection, type CapacityCache } from '../services/rotation.js';
 import type { AccountRow, CampaignLeadRow, CampaignLeadState, CampaignRow, ConnectionStatus, LeadRow } from '../types.js';
@@ -47,6 +47,8 @@ export class Engine {
   private running = new Set<Promise<void>>();
   private gate: () => boolean = () => true;
   private capacity: CapacityCache = new Map();
+  // LinkedIn accounts past their plan's limit (hosted installs after a downgrade): they sync but don't act this tick.
+  private overPlan = new Set<number>();
   // Email steps of campaigns that have mailboxes (they don't wait for a LinkedIn account).
   readonly mail: MailRunner;
   // SMS and WhatsApp steps, sent through the workspace's SMS provider.
@@ -88,6 +90,9 @@ export class Engine {
   // randomized delay. Background jobs run in the same pass, so they only run where the engine runs.
   async tick(): Promise<void> {
     this.capacity = new Map();
+    this.overPlan = overPlanIds(this.ctx, 'linkedinAccounts');
+    // Like a paused sender: leads it hasn't started go to the campaign's other senders meanwhile.
+    for (const id of this.overPlan) releaseUnstartedLeads(this.ctx, id);
     this.advanceFreeSteps();
     const accounts = this.ctx.db.all<AccountRow>("SELECT * FROM accounts WHERE status = 'active'");
     await Promise.all([
@@ -150,7 +155,8 @@ export class Engine {
       this.advanceFreeSteps();
     }
 
-    if (a.next_action_at > now) return;
+    // Past the plan's limit an account still syncs (replies stop its leads, acceptances are recorded) but acts on nothing.
+    if (a.next_action_at > now || this.overPlan.has(a.id)) return;
     // A lead still waiting for its AI text is parked for a moment and the next candidate gets the
     // turn, so a slow AI provider never idles the sender.
     for (let tries = 0; tries < ACTION_CANDIDATES; tries++) {
@@ -167,7 +173,7 @@ export class Engine {
   }
 
   // Session problems stop the account until the user reconnects it. Leads it hasn't contacted
-  // yet go back to the pool so the campaign's other senders can take them.
+  // yet (and isn't connected to) go back to the pool so the campaign's other senders can take them.
   private async guarded<T>(a: AccountRow, fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
@@ -196,14 +202,16 @@ export class Engine {
   // Waits and conditions only read the database, so they advance immediately, any time of day.
   // A lead whose sender is paused or logged out stays frozen (its sync isn't running, so an
   // "accepted within" deadline must not run out); unassigned leads move while any sender is active.
+  // Accounts past their plan's limit count as paused here.
   advanceFreeSteps() {
     const types = [...FREE_NODE_TYPES];
+    const running = this.overPlan.size ? `a.status = 'active' AND a.id NOT IN (${[...this.overPlan].map(Number).join(',')})` : "a.status = 'active'";
     const jobs = this.ctx.db.all<CampaignLeadRow>(
       `SELECT cl.* FROM campaign_leads cl JOIN campaigns c ON c.id = cl.campaign_id
        WHERE c.status = 'active' AND cl.state = 'active' AND cl.next_run_at <= ?
          AND (cl.node_type IN (${types.map(() => '?').join(',')}) OR cl.node_type IS NULL)
-         AND ((cl.account_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = cl.account_id AND a.status = 'active'))
-           OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_accounts ca JOIN accounts a ON a.id = ca.account_id WHERE ca.campaign_id = c.id AND a.status = 'active'))
+         AND ((cl.account_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = cl.account_id AND ${running}))
+           OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_accounts ca JOIN accounts a ON a.id = ca.account_id WHERE ca.campaign_id = c.id AND ${running}))
            OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_mailboxes cm JOIN mailboxes m ON m.id = cm.mailbox_id WHERE cm.campaign_id = c.id AND m.status = 'active'))
            OR NOT EXISTS (SELECT 1 FROM campaign_accounts ca WHERE ca.campaign_id = c.id))
        ORDER BY cl.next_run_at, cl.id LIMIT ${FREE_STEPS_PER_TICK}`,
@@ -230,7 +238,7 @@ export class Engine {
     );
     for (const job of candidates) {
       if (job.account_id === a.id) return job;
-      const sender = chooseSender(this.ctx, this.campaign(job.campaign_id), this.lead(job.lead_id), job.node_type as ActionType, this.capacity);
+      const sender = chooseSender(this.ctx, this.campaign(job.campaign_id), this.lead(job.lead_id), job.node_type as ActionType, this.capacity, this.overPlan);
       if (sender == null || !pinLead(this.ctx, job.id, sender)) continue;
       if (sender === a.id) return { ...job, account_id: a.id };
     }
@@ -316,16 +324,22 @@ export class Engine {
     }
   }
 
+  // Only a lead still active moves: one that stopped (a reply, an opt-out) while its action was being sent
+  // stays where it stopped, and the stale copy comes back with its real state so callers walk no further.
   moveTo(campaign: CampaignRow, job: CampaignLeadRow, nextId: string | null): CampaignLeadRow {
     const seq = campaignSequence(campaign);
     const now = this.ctx.clock.now();
     const next = nextId ? seq.nodes[nextId] : undefined;
     if (!next) {
-      this.finish(campaign, job, 'done');
+      if (!this.finish(campaign, job, 'done')) return { ...job, state: this.stateOf(job.id) };
       return { ...job, node_id: null, state: 'done' };
     }
     const patch = { node_id: next.id, node_type: next.type, node_entered_at: now, next_run_at: now, attempts: 0, last_error: null };
-    this.ctx.db.update('campaign_leads', job.id, patch);
+    const moved = this.ctx.db.run(
+      "UPDATE campaign_leads SET node_id = ?, node_type = ?, node_entered_at = ?, next_run_at = ?, attempts = 0, last_error = NULL WHERE id = ? AND state = 'active'",
+      [next.id, next.type, now, now, job.id],
+    );
+    if (!moved.changes) return { ...job, state: this.stateOf(job.id) };
     // Start writing the step's AI variables now, so they are usually ready when it runs.
     prefetchAi(this.ctx, campaign, job, next);
     return { ...job, ...patch };
@@ -348,10 +362,13 @@ export class Engine {
     return true;
   }
 
-  finish(campaign: CampaignRow, job: CampaignLeadRow, state: CampaignLeadState, error?: string) {
-    const now = this.ctx.clock.now();
-    this.ctx.db.update('campaign_leads', job.id, { state, finished_at: now, next_run_at: now, hold_reason: null, ...(error ? { last_error: error } : {}) });
-    skipOpenTasks(this.ctx, job.id, `Lead left the campaign (${state})`);
+  private stateOf(id: number): CampaignLeadState {
+    return this.ctx.db.get<{ state: CampaignLeadState }>('SELECT state FROM campaign_leads WHERE id = ?', [id])?.state ?? 'done';
+  }
+
+  // Ends an active lead; false (and nothing changes) when it already left the campaign another way.
+  finish(campaign: CampaignRow, job: CampaignLeadRow, state: Exclude<CampaignLeadState, 'active'>, error?: string): boolean {
+    if (!stopCampaignLead(this.ctx, job, state, error)) return false;
     if (state === 'done' || state === 'failed') {
       const lead = this.lead(job.lead_id);
       this.ctx.webhooks.emit(campaign.workspace_id, state === 'done' ? 'lead.finished' : 'lead.failed', {
@@ -360,6 +377,7 @@ export class Engine {
         ...(error ? { error } : {}),
       });
     }
+    return true;
   }
 
   // Performs the LinkedIn/email action at the job's node. Returns true if anything was sent

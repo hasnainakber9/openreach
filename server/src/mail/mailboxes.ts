@@ -1,4 +1,4 @@
-import { withinPlan, withPlanLock } from '../billing/limits.js';
+import { overPlanIds, overPlanMessage, withinPlan, withPlanLock } from '../billing/limits.js';
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -226,7 +226,15 @@ function capacityOf(ctx: Ctx, mb: MailboxRow, cache: MailboxCapacityCache): Mail
 // 2. Otherwise the active campaign mailbox, inside its window and under its limit, with the most room
 //    left today minus the leads already waiting for it. Ties go to the lower id.
 // Each mailbox still checks its own limit before sending, so rotation can't push one past it.
-export function chooseMailbox(ctx: Ctx, campaign: CampaignRow, lead: Pick<LeadRow, 'id'>, cache: MailboxCapacityCache, accountId: number | null = null): number | null {
+// Mailboxes in `skip` (past their plan's limit) take no new leads.
+export function chooseMailbox(
+  ctx: Ctx,
+  campaign: CampaignRow,
+  lead: Pick<LeadRow, 'id'>,
+  cache: MailboxCapacityCache,
+  accountId: number | null = null,
+  skip: ReadonlySet<number> = new Set(),
+): number | null {
   const ids = campaignMailboxIds(ctx, campaign.id);
   if (!ids.length) return null;
   const known = ctx.db.get<{ mailbox_id: number }>(
@@ -238,11 +246,12 @@ export function chooseMailbox(ctx: Ctx, campaign: CampaignRow, lead: Pick<LeadRo
   // A lead pinned to a LinkedIn sender whose SMTP settings became a mailbox keeps emailing from it, as before.
   if (accountId != null) {
     const legacy = ctx.db.get<{ id: number }>(`SELECT id FROM mailboxes WHERE legacy_account_id = ? AND status = 'active' AND id IN (${inList(ids)})`, [accountId, ...ids]);
-    if (legacy) return legacy.id;
+    if (legacy && !skip.has(legacy.id)) return legacy.id;
   }
   const boxes = ctx.db.all<MailboxRow>(`SELECT * FROM mailboxes WHERE id IN (${inList(ids)}) AND workspace_id = ? AND status = 'active'`, [...ids, campaign.workspace_id]);
   let best: { id: number; score: number } | null = null;
   for (const mb of boxes) {
+    if (skip.has(mb.id)) continue;
     const cap = capacityOf(ctx, mb, cache);
     if (!cap.working || cap.remaining <= 0) continue;
     const waiting = ctx.db.get<{ n: number }>(
@@ -268,6 +277,7 @@ export function serializeMailbox(ctx: Ctx, mb: MailboxRow) {
   const sched = mailboxSchedule(mb);
   const smtp = serverSettings(ctx, mb.smtp_enc);
   const imap = serverSettings(ctx, mb.imap_enc);
+  const overPlan = overPlanIds(ctx, 'mailboxes', mb.workspace_id).has(mb.id);
   return {
     id: mb.id,
     name: mb.name,
@@ -284,7 +294,9 @@ export function serializeMailbox(ctx: Ctx, mb: MailboxRow) {
     hasSmtp: !!smtp,
     hasImap: !!imap,
     status: mb.status,
-    statusMessage: mb.status_message,
+    // Past the plan's limit (hosted installs after a downgrade) the mailbox sends nothing; the status line says why.
+    overPlan,
+    statusMessage: overPlan ? overPlanMessage(ctx, 'mailboxes', mb.workspace_id) : mb.status_message,
     timezone: mb.timezone,
     workDays: sched.work_days,
     workStart: mb.work_start,

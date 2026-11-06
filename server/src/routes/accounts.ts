@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { assertWithinPlan, billingEnabled, withPlanLock } from '../billing/limits.js';
+import { assertWithinPlan, billingEnabled, overPlanIds, overPlanMessage, withPlanLock } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { accountLimits, schedule, usage } from '../engine/engine.js';
@@ -42,12 +42,15 @@ export function serializeAccount(ctx: Ctx, a: AccountRow) {
   const now = ctx.clock.now();
   const sched = schedule(a);
   const smtp = ctx.sealer.open(a.smtp_enc);
+  const overPlan = overPlanIds(ctx, 'linkedinAccounts', a.workspace_id).has(a.id);
   return {
     id: a.id,
     name: a.name,
     driver: a.driver,
     status: a.status,
-    statusMessage: a.status_message,
+    // Past the plan's limit (hosted installs after a downgrade) the account stands still; the status line says why.
+    overPlan,
+    statusMessage: overPlan ? overPlanMessage(ctx, 'linkedinAccounts', a.workspace_id) : a.status_message,
     hasSession: !!a.session_enc,
     proxyUrl: a.proxy_url ? a.proxy_url.replace(/\/\/([^:@/]+):[^@/]+@/, '//$1:***@') : null,
     timezone: a.timezone,
@@ -179,7 +182,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     const a = load(req);
     ctx.db.tx(() => {
       ctx.db.run("UPDATE accounts SET status = 'paused' WHERE id = ?", [a.id]);
-      // Leads it hasn't contacted yet can go out from the campaign's other senders meanwhile.
+      // Leads it hasn't contacted yet can go out from the campaign's other senders meanwhile (not those connected to it).
       releaseUnstartedLeads(ctx, a.id);
     });
     return { ok: true };

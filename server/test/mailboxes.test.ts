@@ -3,7 +3,7 @@ import { DAY, HOUR, MINUTE } from '../src/clock.js';
 import type { Sequence } from '../src/engine/sequence.js';
 import { composeEmail, newMessageId } from '../src/mail/compose.js';
 import { checkDomain, type DnsResolver } from '../src/mail/deliverability.js';
-import { findParts, imapError, parseDeliveryStatus, type InboundEmail } from '../src/mail/imap.js';
+import { findParts, imapError, isAutoReply, parseDeliveryStatus, type InboundEmail } from '../src/mail/imap.js';
 import { syncJobKey } from '../src/mail/inbound.js';
 import { effectiveDailyLimit, ensureLegacyMailboxes, isReservedAddress, retireMailbox, setCampaignMailboxes } from '../src/mail/mailboxes.js';
 import { signToken } from '../src/mail/tracking.js';
@@ -113,6 +113,57 @@ describe('mailbox limits and warm-up', () => {
     w.ctx.clock.advance(MINUTE);
     await Promise.all([w.engine.mail.tick(), w.engine.mail.tick()]);
     expect(fake.sent).toHaveLength(1);
+  });
+
+  it('never re-sends an email that went out when recording it fails', async () => {
+    const w = makeWorld();
+    const mb = addMailbox(w);
+    const [l] = emailLeads(w, 1);
+    const c = emailCampaign(w, oneEmail, [l], [mb]);
+    // A database hiccup right after the server accepted the email.
+    const db = w.ctx.db as any;
+    const insert = db.insert.bind(db);
+    let fail = true;
+    db.insert = (table: string, row: any) => {
+      if (table === 'conversations' && fail) {
+        fail = false;
+        throw new Error('connection terminated unexpectedly');
+      }
+      return insert(table, row);
+    };
+    await runFor(w, 3 * HOUR);
+    expect(mailerOf(w).sent).toHaveLength(1);
+    expect(sentRows(w, c.id).map((r) => r.status)).toEqual(['simulated']);
+    expect(cl(w, c.id, l).state).toBe('done');
+    expect(w.ctx.db.all("SELECT status FROM activity WHERE type = 'email'")).toEqual([{ status: 'ok' }]);
+  });
+
+  it('moves on without re-sending when the server stopped in the middle of a send', async () => {
+    const w = makeWorld();
+    const mb = addMailbox(w);
+    const [l] = emailLeads(w, 1);
+    const c = emailCampaign(w, twoEmails, [l], [mb]);
+    // What a crash between handing the email to the server and recording the outcome leaves behind.
+    const row = cl(w, c.id, l);
+    w.ctx.db.run('UPDATE campaign_leads SET mailbox_id = ? WHERE id = ?', [mb, row.id]);
+    w.ctx.db.insert('email_messages', {
+      workspace_id: w.workspaceId,
+      mailbox_id: mb,
+      campaign_id: c.id,
+      lead_id: l,
+      node_id: 'e1',
+      direction: 'out',
+      message_id: '<crashed@sender.dev>',
+      subject: 'Quick idea for Acme',
+      from_email: 'sara@sender.dev',
+      to_email: 'person0@acme.dev',
+      status: 'sending',
+      sent_at: w.ctx.clock.now(),
+    });
+    await runFor(w, 2 * HOUR);
+    expect(mailerOf(w).sent).toHaveLength(0);
+    expect(cl(w, c.id, l).node_id).toBe('w');
+    expect(sentRows(w, c.id).map((r) => r.status)).toEqual(['sent']);
   });
 });
 
@@ -370,6 +421,33 @@ describe('reply and bounce detection', () => {
     expect(w.ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM email_messages WHERE direction = 'in'")!.n).toBe(0);
     expect(lead(w, colleague).replied_at).toBeNull();
     expect(events).not.toContain('lead.replied');
+  });
+
+  it('keeps out-of-office answers in the thread without counting them as replies', async () => {
+    const { w, mb, leads, campaignId, sent } = await sentToFour();
+    const events: string[] = [];
+    w.ctx.webhooks.subscribe((_ws, e) => events.push(e));
+    const now = w.ctx.clock.now();
+    w.ctx.imap = () =>
+      fakeImap(() => [
+        inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, subject: 'Automatic reply: Quick idea', text: 'Out of office until Monday.', date: now, autoSubmitted: true }),
+      ]);
+    w.ctx.jobs.enqueue('email.sync', { mailboxId: mb }, { workspaceId: w.workspaceId, dedupeKey: syncJobKey(mb) });
+    await w.ctx.jobs.drain();
+    expect(cl(w, campaignId, leads[0])).toMatchObject({ state: 'active', hold_reason: null });
+    expect(lead(w, leads[0]).replied_at).toBeNull();
+    expect(events).not.toContain('lead.replied');
+    expect(w.ctx.db.all<{ body: string }>("SELECT body FROM messages WHERE conversation_id = ? AND direction = 'in'", [sent(leads[0]).conversation_id]).map((m) => m.body)).toEqual([
+      'Out of office until Monday.',
+    ]);
+    // The usual auto-reply headers are recognised.
+    expect(isAutoReply({ 'auto-submitted': 'auto-replied' })).toBe(true);
+    expect(isAutoReply({ 'auto-submitted': 'no' })).toBe(false);
+    expect(isAutoReply({ 'x-autoreply': 'yes' })).toBe(true);
+    expect(isAutoReply({ 'x-autorespond': '' })).toBe(true);
+    expect(isAutoReply({ precedence: 'Bulk' })).toBe(true);
+    expect(isAutoReply({ precedence: 'list' })).toBe(false);
+    expect(isAutoReply({})).toBe(false);
   });
 
   it('marks a bounced address invalid and skips the lead’s later email steps', async () => {

@@ -20,6 +20,8 @@ export interface InboundStats {
   replies: number;
   bounces: number;
   ignored: number;
+  // Out-of-office and other automatic answers: shown in the conversation, but not a reply.
+  autoReplies: number;
 }
 
 const isDaemon = (from: string) => /^(mailer-daemon|postmaster|mail-daemon)@/i.test(from);
@@ -48,7 +50,7 @@ function ourMessage(ctx: Ctx, mb: MailboxRow, ids: (string | null)[]): EmailMess
 }
 
 export function processInbound(ctx: Ctx, mb: MailboxRow, emails: InboundEmail[]): InboundStats {
-  const stats: InboundStats = { replies: 0, bounces: 0, ignored: 0 };
+  const stats: InboundStats = { replies: 0, bounces: 0, ignored: 0, autoReplies: 0 };
   const now = ctx.clock.now();
   // The newest reply per lead: one handleInboundReply each, like a LinkedIn thread sync.
   const newest = new Map<number, { lead: LeadRow; conversationId: number; messageId: number; body: string; date: number }>();
@@ -118,11 +120,14 @@ export function processInbound(ctx: Ctx, mb: MailboxRow, emails: InboundEmail[])
         sent_at: sentAt,
       });
       ctx.db.run('UPDATE conversations SET unread = 1, last_message_at = CASE WHEN last_message_at > ? THEN last_message_at ELSE ? END WHERE id = ?', [sentAt, sentAt, conv]);
+      // An automatic answer (out of office, vacation) says nothing about the person: it neither stops nor holds campaigns.
+      if (e.autoSubmitted) return conv;
       const prev = newest.get(lead.id);
       if (!prev || sentAt >= prev.date) newest.set(lead.id, { lead, conversationId: conv, messageId: msgId, body, date: sentAt });
       return conv;
     });
-    if (conversationId) stats.replies++;
+    if (e.autoSubmitted) stats.autoReplies++;
+    else if (conversationId) stats.replies++;
   }
   for (const r of newest.values()) {
     handleInboundReply(ctx, { lead: r.lead, channel: 'email', conversationId: r.conversationId, messageId: r.messageId, body: r.body, mailbox: { id: mb.id, name: mb.name, timezone: mb.timezone } });
