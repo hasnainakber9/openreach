@@ -493,13 +493,35 @@ describe('legacy SMTP settings through the accounts API', () => {
     const open = () => JSON.parse(api.w.ctx.sealer.open(api.w.ctx.db.get<MailboxRow>('SELECT * FROM mailboxes WHERE legacy_account_id = ?', [acc])!.smtp_enc)!);
     expect(api.w.ctx.db.all('SELECT 1 FROM mailboxes WHERE legacy_account_id = ?', [acc])).toHaveLength(1);
     expect(open()).toMatchObject({ host: 'smtp.old.dev', user: 'sam@old.dev', pass: 'pw-1' });
-    // A blank password keeps the saved one, as on the account.
-    expect((await api.call('PATCH', `/api/accounts/${acc}`, { smtp: { ...smtp, host: 'smtp.new.dev', pass: '' } })).status).toBe(200);
-    expect(open()).toMatchObject({ host: 'smtp.new.dev', pass: 'pw-1' });
+    // A blank password keeps the saved one, as on the account, but only for the same server and user.
+    expect((await api.call('PATCH', `/api/accounts/${acc}`, { smtp: { ...smtp, from: 'sam@old.dev', pass: '' } })).status).toBe(200);
+    expect(open()).toMatchObject({ host: 'smtp.old.dev', pass: 'pw-1' });
+    for (const change of [{ host: 'smtp.new.dev' }, { port: 465 }, { user: 'other@old.dev' }]) {
+      const res = await api.call('PATCH', `/api/accounts/${acc}`, { smtp: { ...smtp, ...change, pass: '' } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/smtp: Enter the password again/);
+    }
+    expect((await api.call('PATCH', `/api/accounts/${acc}`, { smtp: { ...smtp, host: 'smtp.new.dev', pass: 'pw-2' } })).status).toBe(200);
+    expect(open()).toMatchObject({ host: 'smtp.new.dev', pass: 'pw-2' });
     expect(api.w.ctx.db.all('SELECT 1 FROM mailboxes')).toHaveLength(1);
     // Other edits leave the mailbox alone.
     expect((await api.call('PATCH', `/api/accounts/${acc}`, { name: 'Seat 2' })).status).toBe(200);
     expect(open().host).toBe('smtp.new.dev');
+  });
+
+  it('lets only admins change an account’s SMTP settings (they hold a password)', async () => {
+    const api = await makeApi();
+    await api.register('Acme');
+    const smtp = { host: 'smtp.real.dev', port: 587, user: 'me@real.dev', pass: 'REAL-PASSWORD', from: 'me@real.dev' };
+    const acc = (await api.call('POST', '/api/accounts', { name: 'Seat', driver: 'simulator', smtp })).body.id;
+    api.as(await api.addUser('member'));
+    const res = await api.call('PATCH', `/api/accounts/${acc}`, { smtp: { ...smtp, host: 'evil.example', pass: '' } });
+    expect(res.status).toBe(403);
+    expect((await api.call('POST', '/api/accounts', { name: 'Seat 2', driver: 'simulator', smtp })).status).toBe(403);
+    // Everything else stays open to members.
+    expect((await api.call('PATCH', `/api/accounts/${acc}`, { name: 'Renamed' })).status).toBe(200);
+    const saved = api.w.ctx.db.get<MailboxRow>('SELECT * FROM mailboxes WHERE legacy_account_id = ?', [acc])!;
+    expect(JSON.parse(api.w.ctx.sealer.open(saved.smtp_enc)!)).toMatchObject({ host: 'smtp.real.dev', pass: 'REAL-PASSWORD' });
   });
 });
 
