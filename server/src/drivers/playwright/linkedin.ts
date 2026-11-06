@@ -140,8 +140,14 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
 
   async checkSession(): Promise<SessionInfo> {
     const page = await this.go(URLS.me);
+    // The profile is rendered by script after the document loads, often well after the short per-selector wait.
+    await page.locator(SEL.profileName).first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+    this.guard(page);
     const name = await this.firstText(page, SEL.profileName);
-    if (!name) throw new DriverError('SESSION_EXPIRED', 'Could not read the logged-in profile');
+    if (!name) {
+      const where = new URL(page.url()).pathname;
+      throw new DriverError('SESSION_EXPIRED', `Could not read the logged-in profile (LinkedIn showed ${where}). Copy a fresh li_at cookie and try again.`);
+    }
     this.selfName = name;
     return { name, profileUrl: page.url().split('?')[0] };
   }
