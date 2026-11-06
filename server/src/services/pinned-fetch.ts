@@ -4,8 +4,9 @@ import type { LookupFunction } from 'node:net';
 import { pipeline, Readable } from 'node:stream';
 import zlib from 'node:zlib';
 
-// A GET or HEAD that connects only to addresses the caller already checked, so a second DNS answer (rebinding)
-// can't send it anywhere else. The host name is still used for the Host header and for TLS (SNI and the
+// A request that connects only to addresses the caller already checked, so a second DNS answer (rebinding)
+// can't send it anywhere else. Writes (POST, PUT, PATCH, DELETE) may carry a body already in memory: a string,
+// URLSearchParams or bytes; streams, Blobs and FormData are refused. The host name is still used for the Host header and for TLS (SNI and the
 // certificate check). ctx.fetch takes this path when the request init carries `pinnedAddresses`; a fake
 // ctx.fetch in tests sees the field and can check it.
 
@@ -20,11 +21,26 @@ const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 
 const failed = (message: string, cause?: unknown) => Object.assign(new TypeError(message), { cause });
 
+const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
+
+// The request body as bytes, with the content type fetch would add; undefined for a body this can't send.
+function bodyBytes(body: RequestInit['body']): { bytes: Buffer; type?: string } | null | undefined {
+  if (body == null) return null;
+  if (typeof body === 'string') return { bytes: Buffer.from(body, 'utf8'), type: 'text/plain;charset=UTF-8' };
+  if (body instanceof URLSearchParams) return { bytes: Buffer.from(body.toString(), 'utf8'), type: 'application/x-www-form-urlencoded;charset=UTF-8' };
+  if (body instanceof ArrayBuffer) return { bytes: Buffer.from(body) };
+  if (ArrayBuffer.isView(body)) return { bytes: Buffer.from(body.buffer, body.byteOffset, body.byteLength) };
+  return undefined;
+}
+
 export function pinnedFetch(rawUrl: string, init: PinnedInit, addresses: PinnedAddress[]): Promise<Response> {
   const url = new URL(rawUrl);
   const method = (init.method ?? 'GET').toUpperCase();
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return Promise.reject(failed('fetch failed: only http(s) is supported'));
-  if (method !== 'GET' && method !== 'HEAD') return Promise.reject(failed('fetch failed: only GET and HEAD are supported'));
+  if (!METHODS.has(method)) return Promise.reject(failed(`fetch failed: ${method} is not supported`));
+  const payload = bodyBytes(init.body);
+  if (payload === undefined) return Promise.reject(failed('fetch failed: only a string, URLSearchParams or bytes can be sent'));
+  if (payload && (method === 'GET' || method === 'HEAD')) return Promise.reject(failed(`fetch failed: a ${method} request cannot have a body`));
   if (!addresses.length) return Promise.reject(failed('fetch failed: no address to connect to'));
   const signal = init.signal ?? undefined;
   if (signal?.aborted) return Promise.reject(signal.reason);
@@ -32,6 +48,10 @@ export function pinnedFetch(rawUrl: string, init: PinnedInit, addresses: PinnedA
   const headers: Record<string, string> = {};
   new Headers(init.headers).forEach((v, k) => (headers[k] = v));
   headers['accept-encoding'] = 'gzip, deflate, br';
+  if (payload) {
+    if (payload.type && !headers['content-type']) headers['content-type'] = payload.type;
+    headers['content-length'] = String(payload.bytes.length);
+  } else if (method !== 'GET' && method !== 'HEAD') headers['content-length'] = '0';
 
   // Only the checked addresses, whatever the name resolves to now.
   const lookup = ((_host: string, opts: { family?: number; all?: boolean }, cb: (...args: unknown[]) => void) => {
@@ -81,7 +101,7 @@ export function pinnedFetch(rawUrl: string, init: PinnedInit, addresses: PinnedA
       }
     });
     req.on('error', (e) => reject(e.name === 'AbortError' && signal?.aborted ? signal.reason : failed('fetch failed', e)));
-    req.end();
+    req.end(payload?.bytes);
   });
 }
 

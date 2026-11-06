@@ -761,6 +761,16 @@ describe('Company website: review fixes', () => {
     const seen: { host?: string; ua?: string }[] = [];
     const server = createServer((req, res) => {
       seen.push({ host: req.headers.host, ua: req.headers['user-agent'] });
+      if (req.url === '/echo') {
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', (d) => (body += d));
+        req.on('end', () => {
+          res.writeHead(201, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ method: req.method, type: req.headers['content-type'] ?? null, length: req.headers['content-length'] ?? null, body }));
+        });
+        return;
+      }
       if (req.url === '/gz') {
         res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' });
         res.end(gzipSync('<html>zipped</html>'));
@@ -786,7 +796,18 @@ describe('Company website: review fixes', () => {
       expect(seen[0]).toEqual({ host: `rebind.invalid:${port}`, ua: USER_AGENT });
       // No checked address of the family the connection wants: refused like a network error.
       await expect(pinnedFetch(`http://rebind.invalid:${port}/`, {}, [])).rejects.toThrow(/fetch failed/);
-      await expect(pinnedFetch(`http://rebind.invalid:${port}/`, { method: 'POST' }, at)).rejects.toThrow(/GET/);
+      // Writes go to the pinned address too, with their body.
+      const json = JSON.stringify({ name: 'Zoë' });
+      const r3 = await pinnedFetch(`http://rebind.invalid:${port}/echo`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: json }, at);
+      expect([r3.status, await r3.json()]).toEqual([201, { method: 'POST', type: 'application/json', length: String(Buffer.byteLength(json)), body: json }]);
+      const r4 = await pinnedFetch(`http://rebind.invalid:${port}/echo`, { method: 'PUT', body: new URLSearchParams({ a: '1' }) }, at);
+      expect(await r4.json()).toEqual({ method: 'PUT', type: 'application/x-www-form-urlencoded;charset=UTF-8', length: '3', body: 'a=1' });
+      const r5 = await pinnedFetch(`http://rebind.invalid:${port}/echo`, { method: 'DELETE' }, at);
+      expect(await r5.json()).toEqual({ method: 'DELETE', type: null, length: '0', body: '' });
+      // What fetch itself would refuse, or a body this can't send: refused before connecting.
+      await expect(pinnedFetch(`http://rebind.invalid:${port}/`, { method: 'GET', body: 'x' }, at)).rejects.toThrow(/cannot have a body/);
+      await expect(pinnedFetch(`http://rebind.invalid:${port}/`, { method: 'POST', body: new Blob(['x']) }, at)).rejects.toThrow(/string, URLSearchParams or bytes/);
+      await expect(pinnedFetch(`http://rebind.invalid:${port}/`, { method: 'CONNECT' }, at)).rejects.toThrow(/not supported/);
     } finally {
       server.close();
     }

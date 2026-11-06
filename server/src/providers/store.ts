@@ -56,6 +56,7 @@ export function serializeIntegration(ctx: Ctx, row: IntegrationRow) {
     credentials: Object.fromEntries(Object.entries(creds).map(([k, v]) => [k, mask(v)])),
     hasCredentials: Object.keys(creds).length > 0,
     // Twilio: the URL to paste into the number's "A message comes in" webhook (null until PUBLIC_URL is set).
+    ...(row.kind === 'crm' && def?.mappingHelp ? { mappingHelp: def.mappingHelp } : {}),
     ...(row.kind === 'sms' && row.provider === 'twilio' ? { webhookUrl: ctx.config.publicUrl ? `${ctx.config.publicUrl}/api/public/twilio/${row.id}/inbound` : null } : {}),
     lastStatus: row.last_status,
     lastMessage: row.last_message,

@@ -733,6 +733,8 @@ export interface Integration {
   settings: Record<string, unknown>;
   credentials: Record<string, string>; // masked
   hasCredentials: boolean;
+  // CRMs: how the vendor's property names look, shown under the field mapping.
+  mappingHelp?: string;
   // Twilio: the inbound webhook URL to paste into Twilio (null until PUBLIC_URL is set on the server).
   webhookUrl?: string | null;
   lastStatus: 'ok' | 'error' | null;
@@ -742,7 +744,7 @@ export interface Integration {
   updatedAt: number;
 }
 
-// ---- CRM sync (HubSpot, Pipedrive, simulated) ----
+// ---- CRM sync (HubSpot, Pipedrive, EspoCRM, simulated) ----
 
 // Saved in the CRM integration's settings (next to the vendor's own fields).
 export interface CrmSettings {

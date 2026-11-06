@@ -65,6 +65,8 @@ export interface ProviderDef<K extends ProviderKind = ProviderKind> {
   accountSettings?: string[];
   // Settings holding a URL the tenant chose; on a hosted installation their hosts must be public (services/hosts.ts).
   hostSettings?: string[];
+  // CRMs: a vendor-specific line under the field mapping (how its property names look).
+  mappingHelp?: string;
   create(ctx: Ctx, cfg: ProviderConfig): KindInstance<K>;
 }
 

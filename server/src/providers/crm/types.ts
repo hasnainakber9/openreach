@@ -77,7 +77,7 @@ export function noteHtml(text: string): string {
 export const CRM_EVENTS = ['reply', 'stage', 'finished', 'connected', 'message', 'manual'] as const;
 export type CrmEvent = (typeof CRM_EVENTS)[number];
 
-// Property names: HubSpot internal names, Pipedrive keys (custom fields are 40-hex keys).
+// Property names: HubSpot internal names, Pipedrive keys (custom fields are 40-hex keys), EspoCRM attribute names.
 const property = z.string().trim().max(100).regex(/^[A-Za-z0-9_.-]*$/, 'Use the property’s internal name (letters, digits, _ . -)');
 const slugs = z.array(z.string().trim().min(1).max(60)).max(30);
 
@@ -106,4 +106,8 @@ export type CrmSettings = z.infer<ReturnType<typeof crmSettingsSchema>>;
 
 export const HUBSPOT_MAPPING: CrmFieldMapping = { firstName: 'firstname', lastName: 'lastname', email: 'email', company: 'company', title: 'jobtitle', phone: 'phone', profileUrl: '' };
 export const PIPEDRIVE_MAPPING: CrmFieldMapping = { fullName: 'name', email: 'email', phone: 'phone', profileUrl: '' };
+// EspoCRM attribute names (custom fields start with "c", e.g. cLinkedInUrl). No company: contacts get no Account.
+// No title either: a Contact's `title` is not stored on the contact but as its role at its Account, so without an
+// Account EspoCRM drops it. A custom field (cJobTitle) can hold it.
+export const ESPOCRM_MAPPING: CrmFieldMapping = { firstName: 'firstName', lastName: 'lastName', email: 'emailAddress', phone: 'phoneNumber', profileUrl: '' };
 export const SIMULATED_MAPPING: CrmFieldMapping = { firstName: 'first_name', lastName: 'last_name', email: 'email', company: 'company', title: 'title', profileUrl: 'linkedin_url' };

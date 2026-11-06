@@ -80,7 +80,7 @@ export function CrmSyncCard({ integration, onSaved }: { integration: Integration
         <h3 style={{ marginBottom: 4 }}>Field mapping</h3>
         <p className="field-hint" style={{ margin: '0 0 6px' }}>
           The CRM property (its internal name) each field is copied to. Leave a row empty to skip that field; empty lead values never overwrite the CRM. Name a property for the LinkedIn URL to match
-          leads that have no email.
+          leads that have no email.{integration.mappingHelp ? ` ${integration.mappingHelp}` : ''}
         </p>
         <div className="table-wrap">
           <table className="crm-mapping">

@@ -64,11 +64,14 @@ export interface HttpJsonOptions<T = any> {
   // Credential values to scrub from any error message (some vendors echo the key back).
   secrets?: (string | null | undefined)[];
   integrationId?: number | null;
-  // Connect only to these already-checked addresses (services/pinned-fetch.ts; GET and HEAD only).
+  // Connect only to these already-checked addresses (services/pinned-fetch.ts).
   pinnedAddresses?: PinnedAddress[];
   // A non-2xx reply the caller understands, turned into a result (undefined: mapped to an error as usual).
   // Gets the raw body text; whatever it returns must not carry that text into an error message unchecked.
   readError?: (status: number, text: string) => T | undefined;
+  // The vendor's reason for a non-2xx reply when it isn't in the usual JSON fields (EspoCRM puts it in a header).
+  // Null falls back to the usual fields. The result is scrubbed and shortened like any vendor message.
+  errorDetail?: (data: any, headers: Headers) => string | null;
 }
 
 export function scrub(text: string, secrets: (string | null | undefined)[] = []): string {
@@ -143,7 +146,7 @@ export async function httpJson<T = any>(ctx: Ctx, url: string, opts: HttpJsonOpt
     if (read !== undefined) return read;
   }
 
-  const vendor = vendorMessage(data);
+  const vendor = opts.errorDetail?.(data, res.headers) || vendorMessage(data);
   const detail = vendor ? `: ${scrub(vendor, opts.secrets).slice(0, 200)}` : '';
   const status = res.status;
   if (status === 401 || status === 403) throw fail('AUTH', `${host} rejected the credentials (${status})${detail}`, { status });
