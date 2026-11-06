@@ -11,9 +11,46 @@ export interface DnsResolver {
   lookup(host: string): Promise<{ address: string; family: number }[]>;
 }
 
-export function systemResolver(): DnsResolver {
-  const r = new Resolver({ timeout: 5000, tries: 2 });
-  return { resolveMx: (d) => r.resolveMx(d), resolveTxt: (d) => r.resolveTxt(d), lookup: (h) => osLookup(h, { all: true }) };
+// Public resolvers used when the system's DNS server can't be reached for MX/TXT queries.
+export const FALLBACK_DNS_SERVERS = ['1.1.1.1', '8.8.8.8'];
+
+// Parses DNS_SERVERS ("1.1.1.1, 8.8.8.8" or "none"): a list of servers, [] for "none", or null when unset.
+export function dnsServersFrom(raw: string | undefined): string[] | null {
+  const v = (raw ?? '').trim();
+  if (!v) return null;
+  if (v.toLowerCase() === 'none') return [];
+  return v.split(/[\s,]+/).filter(Boolean);
+}
+
+type MxTxt = Pick<DnsResolver, 'resolveMx' | 'resolveTxt'>;
+
+// MX and TXT queries go to the system's DNS servers. Node reads those itself, and on some Windows setups (VPNs,
+// sandboxes, virtual adapters) it ends up with 127.0.0.1 where nothing listens, so every query is refused even
+// though the computer resolves names fine. Then the query is repeated once through `fallback`; a server that
+// answered (NXDOMAIN, no records...) is never second-guessed. DNS_SERVERS overrides the system servers and
+// DNS_FALLBACK_SERVERS the fallback ("none" turns it off). Host lookups always use the OS (hosts file included).
+export function withFallback(primary: MxTxt, fallback: MxTxt | null): MxTxt {
+  const unreachable = (e: unknown) => ['ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'EHOSTUNREACH'].includes((e as { code?: string })?.code ?? '');
+  const run = async <T>(q: (r: MxTxt) => Promise<T>): Promise<T> => {
+    try {
+      return await q(primary);
+    } catch (e) {
+      if (!fallback || !unreachable(e)) throw e;
+      return q(fallback);
+    }
+  };
+  return { resolveMx: (d) => run((r) => r.resolveMx(d)), resolveTxt: (d) => run((r) => r.resolveTxt(d)) };
+}
+
+export function systemResolver(env: NodeJS.ProcessEnv = process.env): DnsResolver {
+  const make = (servers: string[] | null) => {
+    const r = new Resolver({ timeout: 5000, tries: 2 });
+    if (servers?.length) r.setServers(servers);
+    return r;
+  };
+  const fallbackServers = dnsServersFrom(env.DNS_FALLBACK_SERVERS) ?? FALLBACK_DNS_SERVERS;
+  const q = withFallback(make(dnsServersFrom(env.DNS_SERVERS)), fallbackServers.length ? make(fallbackServers) : null);
+  return { ...q, lookup: (h) => osLookup(h, { all: true }) };
 }
 
 export type CheckStatus = 'pass' | 'warn' | 'fail';

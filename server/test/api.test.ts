@@ -185,4 +185,25 @@ describe('HTTP API', () => {
     const rows = csvToLeads('﻿First Name,Last Name,Profile URL,Job Title,Email Address,Tags\nA,B,https://linkedin.com/in/ab,CEO,a@b.co,vip;warm\n');
     expect(rows[0]).toMatchObject({ firstName: 'A', lastName: 'B', title: 'CEO', email: 'a@b.co', tags: ['vip', 'warm'] });
   });
+
+  it('imports and edits the company domain as a bare host', async () => {
+    expect(csvToLeads('Profile URL,Website\nhttps://linkedin.com/in/ab,https://www.Acme.com/about\n')[0].companyDomain).toBe('https://www.Acme.com/about');
+    expect(csvToLeads('Profile URL,company_domain\nhttps://linkedin.com/in/ab,acme.com\n')[0].companyDomain).toBe('acme.com');
+
+    const { call } = await setup();
+    await call('POST', '/api/auth/register', { name: 'Dee', email: 'dee@example.com', password: 'correct-horse' });
+    const list = await call('POST', '/api/lists', { name: 'D' });
+    const csv = 'Profile URL,First Name,Company Website\nhttps://www.linkedin.com/in/dom-a/,A,https://www.Acme.com/about\nhttps://www.linkedin.com/in/dom-b/,B,localhost\n';
+    expect((await call('POST', '/api/leads/import/csv', { listId: list.body.id, csv })).body).toMatchObject({ added: 2 });
+    const items = (await call('GET', `/api/leads?listId=${list.body.id}`)).body.items;
+    const a = items.find((l: any) => l.firstName === 'A');
+    expect(a.companyDomain).toBe('acme.com');
+    // Something that can't be a public website is dropped rather than stored.
+    expect(items.find((l: any) => l.firstName === 'B').companyDomain).toBeNull();
+
+    expect((await call('PATCH', `/api/leads/${a.id}`, { companyDomain: 'Initech.io' })).status).toBe(200);
+    expect((await call('GET', `/api/leads/${a.id}`)).body.companyDomain).toBe('initech.io');
+    await call('PATCH', `/api/leads/${a.id}`, { companyDomain: null });
+    expect((await call('GET', `/api/leads/${a.id}`)).body.companyDomain).toBeNull();
+  });
 });

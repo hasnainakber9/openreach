@@ -7,6 +7,7 @@ import { CampaignSettingsSchema, SequenceSchema, type Sequence } from '../engine
 import type { CampaignRow, LeadRow } from '../types.js';
 import { setConnection } from './rotation.js';
 import { suppressionReason } from './suppression.js';
+import { siteDomain } from '../providers/data/website.js';
 
 export interface LeadInput {
   profileUrl: string;
@@ -18,6 +19,9 @@ export interface LeadInput {
   location?: string;
   email?: string | null;
   phone?: string | null;
+  // The company's domain or website ("acme.com", "https://www.acme.com"), kept as a bare host. Free email
+  // finders and the website enricher need it when the lead has no work email yet.
+  companyDomain?: string | null;
   tags?: string[];
   custom?: Record<string, string>;
 }
@@ -64,8 +68,8 @@ export function importLeads(ctx: Ctx, workspaceId: number, listId: number, input
       }
       const email = l.email?.trim() || null;
       const r = ctx.db.get<{ id: number }>(
-        `INSERT INTO leads (workspace_id, list_id, public_id, profile_url, first_name, last_name, headline, title, company, location, email, email_source, phone, tags, custom, created_at)
-         VALUES ($ws, $list, $pid, $url, $fn, $ln, $hl, $title, $co, $loc, $email, $src, $phone, $tags, $custom, $now)
+        `INSERT INTO leads (workspace_id, list_id, public_id, profile_url, first_name, last_name, headline, title, company, company_domain, location, email, email_source, phone, tags, custom, created_at)
+         VALUES ($ws, $list, $pid, $url, $fn, $ln, $hl, $title, $co, $dom, $loc, $email, $src, $phone, $tags, $custom, $now)
          ON CONFLICT (workspace_id, public_id) DO NOTHING RETURNING id`,
         {
           ws: workspaceId,
@@ -77,6 +81,7 @@ export function importLeads(ctx: Ctx, workspaceId: number, listId: number, input
           hl: (l.headline ?? '').trim(),
           title: (l.title ?? '').trim(),
           co: (l.company ?? '').trim(),
+          dom: siteDomain(l.companyDomain),
           loc: (l.location ?? '').trim(),
           email,
           src: email ? (opts.emailSource ?? 'user') : null,

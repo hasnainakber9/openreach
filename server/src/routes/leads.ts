@@ -10,6 +10,7 @@ import { importLeads, type LeadInput } from '../services/leads.js';
 import { effectiveStage, listStages, stageWhere } from '../services/pipeline.js';
 import { canonicalTags, tagLike } from '../services/tags.js';
 import { isWorkspaceMember } from '../services/tasks.js';
+import { siteDomain } from '../providers/data/website.js';
 import type { AccountRow, ImportRow, LeadRow, StageRow } from '../types.js';
 
 const FIELD_ALIASES: Record<string, keyof LeadInput | 'fullName'> = {
@@ -22,6 +23,8 @@ const FIELD_ALIASES: Record<string, keyof LeadInput | 'fullName'> = {
   title: 'title', jobtitle: 'title', position: 'title', role: 'title',
   headline: 'headline', location: 'location', city: 'location', region: 'location',
   email: 'email', emailaddress: 'email', workemail: 'email', phone: 'phone', phonenumber: 'phone', tags: 'tags',
+  companydomain: 'companyDomain', domain: 'companyDomain', website: 'companyDomain', companywebsite: 'companyDomain', companyurl: 'companyDomain',
+  websiteurl: 'companyDomain', organizationwebsite: 'companyDomain', organizationdomain: 'companyDomain',
 };
 
 // Custom fields are exported as custom_<name>; importing that file gives them their names back.
@@ -105,6 +108,8 @@ const leadPatch = z.object({
   location: z.string().max(200),
   email: z.string().email().nullable().or(z.literal('')),
   phone: z.string().max(50).nullable(),
+  // A domain or website; stored as a bare host, and anything that can't be a public site clears it.
+  companyDomain: z.string().max(500).nullable(),
   tags: z.array(z.string().max(50)).max(50),
   custom: z.record(z.string(), z.string()),
   listId: z.number().int().nullable(),
@@ -263,6 +268,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     if (b.tags) cols.tags = JSON.stringify(canonicalTags(ctx, user(req).workspace_id, b.tags));
     if (b.ownerId !== undefined) cols.owner_id = b.ownerId;
     if (b.custom) cols.custom = JSON.stringify(b.custom);
+    if (b.companyDomain !== undefined) cols.company_domain = siteDomain(b.companyDomain);
     // A new address hasn't bounced: its status starts over.
     const before = ctx.db.get<{ email: string | null }>('SELECT email FROM leads WHERE id = ?', [id])!;
     // A typed address is the user's own from now on: finders never replace it unless asked to.

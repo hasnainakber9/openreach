@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DAY, HOUR, MINUTE } from '../src/clock.js';
 import type { Sequence } from '../src/engine/sequence.js';
 import { composeEmail, newMessageId } from '../src/mail/compose.js';
-import { checkDomain, type DnsResolver } from '../src/mail/deliverability.js';
+import { checkDomain, dnsServersFrom, withFallback, type DnsResolver } from '../src/mail/deliverability.js';
 import { findParts, imapError, isAutoReply, parseDeliveryStatus, type InboundEmail } from '../src/mail/imap.js';
 import { syncJobKey } from '../src/mail/inbound.js';
 import { effectiveDailyLimit, ensureLegacyMailboxes, isReservedAddress, retireMailbox, setCampaignMailboxes } from '../src/mail/mailboxes.js';
@@ -810,5 +810,31 @@ describe('mailbox API', () => {
     expect(w.ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM activity WHERE type = 'email' AND status = 'ok' AND mailbox_id = ?", [mb])!.n).toBe(2);
     const thread = await api.call('GET', `/api/inbox/${list.body[0].id}`);
     expect(thread.body.messages.map((m: any) => m.body)).toEqual(['Hi First0, see https://acme.dev/offer?x=1 for details.', 'One more thing']);
+  });
+});
+
+describe('DNS fallback', () => {
+  const fail = (code: string) => async () => {
+    throw Object.assign(new Error(code), { code });
+  };
+  const ok = { resolveMx: async () => [{ exchange: 'mx.fallback.dev', priority: 0 }], resolveTxt: async () => [['v=spf1 -all']] };
+
+  it('asks the fallback servers only when the system server is unreachable', async () => {
+    const refused = withFallback({ resolveMx: fail('ECONNREFUSED'), resolveTxt: fail('ECONNREFUSED') }, ok);
+    expect(await refused.resolveMx('acme.dev')).toEqual([{ exchange: 'mx.fallback.dev', priority: 0 }]);
+    expect(await refused.resolveTxt('acme.dev')).toEqual([['v=spf1 -all']]);
+    // An answer from the system server (no such domain) stands.
+    const answered = withFallback({ resolveMx: fail('ENOTFOUND'), resolveTxt: fail('ENODATA') }, ok);
+    await expect(answered.resolveMx('acme.dev')).rejects.toMatchObject({ code: 'ENOTFOUND' });
+    await expect(answered.resolveTxt('acme.dev')).rejects.toMatchObject({ code: 'ENODATA' });
+    // Fallback turned off.
+    await expect(withFallback({ resolveMx: fail('ECONNREFUSED'), resolveTxt: fail('ECONNREFUSED') }, null).resolveMx('acme.dev')).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+  });
+
+  it('reads DNS_SERVERS lists', () => {
+    expect(dnsServersFrom(undefined)).toBeNull();
+    expect(dnsServersFrom('  ')).toBeNull();
+    expect(dnsServersFrom('none')).toEqual([]);
+    expect(dnsServersFrom('1.1.1.1, 8.8.8.8 9.9.9.9')).toEqual(['1.1.1.1', '8.8.8.8', '9.9.9.9']);
   });
 });

@@ -78,7 +78,7 @@ export default function LeadDrawer({ id, onClose, onChanged }: { id: number; onC
             </Button>
           </>
         ) : (
-          <Button onClick={() => setEdit({ firstName: l.firstName, lastName: l.lastName, company: l.company, title: l.title, email: l.email ?? '', location: l.location })}>Edit details</Button>
+          <Button onClick={() => setEdit({ firstName: l.firstName, lastName: l.lastName, company: l.company, companyDomain: l.companyDomain ?? '', title: l.title, email: l.email ?? '', location: l.location })}>Edit details</Button>
         )
       }
     >
@@ -118,7 +118,7 @@ export default function LeadDrawer({ id, onClose, onChanged }: { id: number; onC
 
       {edit ? (
         <div className="grid grid-2">
-          {(['firstName', 'lastName', 'company', 'title', 'email', 'location'] as const).map((k) => (
+          {(['firstName', 'lastName', 'company', 'companyDomain', 'title', 'email', 'location'] as const).map((k) => (
             <Field key={k} label={k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())}>
               <input type="text" value={(edit[k] as string) ?? ''} onChange={set(k)} />
             </Field>
