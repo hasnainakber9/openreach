@@ -179,6 +179,21 @@ export class MailRunner {
     // Lease the lead while it sends, so no other tick or mailbox sees it as due meanwhile.
     if (ctx.db.run("UPDATE campaign_leads SET next_run_at = ? WHERE id = ? AND mailbox_id = ? AND state = 'active'", [ctx.clock.now() + LEASE, job.id, mb.id]).changes === 0) return 'next';
 
+    // An email this step already handed to the server (a crash, or a failure while recording it) is never sent
+    // again: the lead moves on. Only rows written since the lead reached the step count.
+    const prev = ctx.db.get<EmailMessageRow>(
+      "SELECT * FROM email_messages WHERE campaign_id = ? AND lead_id = ? AND node_id = ? AND direction = 'out' AND status <> 'failed' AND sent_at >= ? ORDER BY id DESC LIMIT 1",
+      [campaign.id, lead.id, step.id, job.node_entered_at],
+    );
+    if (prev) {
+      // The server stopped mid-send: it may have gone out. Threaded follow-ups treat it as sent.
+      if (prev.status === 'sending') ctx.db.update('email_messages', prev.id, { status: 'sent', error: 'Delivery not confirmed: the server stopped while sending' });
+      variant = prev.variant;
+      if (variant) base.variant = variant;
+      advance('ok', `${prev.subject} (not sent again: this step already emailed the lead)`);
+      return 'next';
+    }
+
     variant = ctx.db.tx(() => assignVariant(ctx, campaign, job, step));
     const node = withVariant(step, variant as any) as EmailNode;
     if (variant) base.variant = variant;
@@ -243,19 +258,10 @@ export class MailRunner {
       },
     });
 
+    let r: Awaited<ReturnType<typeof ctx.mailer.send>>;
     try {
       const transport = smtpTransport(ctx, mb);
-      const r = await ctx.mailer.send(transport && (await pinMailServer(ctx, transport)), msg);
-      ctx.db.tx(() => {
-        const conv = recordConversation(ctx, mb, lead, thread, msg.subject, messageId, body);
-        ctx.db.update('email_messages', rowId, {
-          status: r.status,
-          conversation_id: conv,
-          tracking_token: settings.trackOpens || settings.trackClicks ? signToken(ctx, 'o', { workspaceId: mb.workspace_id, leadId: lead.id, emailMessageId: rowId }) : null,
-        });
-        advance('ok', (r.status === 'simulated' ? `${subject} (simulated mailbox: not delivered)` : subject) + note);
-      });
-      return 'sent';
+      r = await ctx.mailer.send(transport && (await pinMailServer(ctx, transport)), msg);
     } catch (e) {
       const err = mailError(e);
       ctx.db.update('email_messages', rowId, { status: 'failed', error: err.message });
@@ -273,6 +279,19 @@ export class MailRunner {
       host.retry(campaign, job, base, err.message);
       return 'sent';
     }
+
+    // The email is out: nothing from here on may count as a failed send, or a retry would email the lead twice.
+    ctx.db.update('email_messages', rowId, {
+      status: r.status,
+      tracking_token: settings.trackOpens || settings.trackClicks ? signToken(ctx, 'o', { workspaceId: mb.workspace_id, leadId: lead.id, emailMessageId: rowId }) : null,
+    });
+    try {
+      ctx.db.tx(() => ctx.db.update('email_messages', rowId, { conversation_id: recordConversation(ctx, mb, lead, thread, msg.subject, messageId, body) }));
+    } catch (e) {
+      console.error(`[mail] sent email ${rowId} to lead ${lead.id} but could not add it to the inbox`, e);
+    }
+    advance('ok', (r.status === 'simulated' ? `${subject} (simulated mailbox: not delivered)` : subject) + note);
+    return 'sent';
   }
 }
 

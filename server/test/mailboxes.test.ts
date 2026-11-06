@@ -114,6 +114,57 @@ describe('mailbox limits and warm-up', () => {
     await Promise.all([w.engine.mail.tick(), w.engine.mail.tick()]);
     expect(fake.sent).toHaveLength(1);
   });
+
+  it('never re-sends an email that went out when recording it fails', async () => {
+    const w = makeWorld();
+    const mb = addMailbox(w);
+    const [l] = emailLeads(w, 1);
+    const c = emailCampaign(w, oneEmail, [l], [mb]);
+    // A database hiccup right after the server accepted the email.
+    const db = w.ctx.db as any;
+    const insert = db.insert.bind(db);
+    let fail = true;
+    db.insert = (table: string, row: any) => {
+      if (table === 'conversations' && fail) {
+        fail = false;
+        throw new Error('connection terminated unexpectedly');
+      }
+      return insert(table, row);
+    };
+    await runFor(w, 3 * HOUR);
+    expect(mailerOf(w).sent).toHaveLength(1);
+    expect(sentRows(w, c.id).map((r) => r.status)).toEqual(['simulated']);
+    expect(cl(w, c.id, l).state).toBe('done');
+    expect(w.ctx.db.all("SELECT status FROM activity WHERE type = 'email'")).toEqual([{ status: 'ok' }]);
+  });
+
+  it('moves on without re-sending when the server stopped in the middle of a send', async () => {
+    const w = makeWorld();
+    const mb = addMailbox(w);
+    const [l] = emailLeads(w, 1);
+    const c = emailCampaign(w, twoEmails, [l], [mb]);
+    // What a crash between handing the email to the server and recording the outcome leaves behind.
+    const row = cl(w, c.id, l);
+    w.ctx.db.run('UPDATE campaign_leads SET mailbox_id = ? WHERE id = ?', [mb, row.id]);
+    w.ctx.db.insert('email_messages', {
+      workspace_id: w.workspaceId,
+      mailbox_id: mb,
+      campaign_id: c.id,
+      lead_id: l,
+      node_id: 'e1',
+      direction: 'out',
+      message_id: '<crashed@sender.dev>',
+      subject: 'Quick idea for Acme',
+      from_email: 'sara@sender.dev',
+      to_email: 'person0@acme.dev',
+      status: 'sending',
+      sent_at: w.ctx.clock.now(),
+    });
+    await runFor(w, 2 * HOUR);
+    expect(mailerOf(w).sent).toHaveLength(0);
+    expect(cl(w, c.id, l).node_id).toBe('w');
+    expect(sentRows(w, c.id).map((r) => r.status)).toEqual(['sent']);
+  });
 });
 
 describe('mailbox rotation', () => {
