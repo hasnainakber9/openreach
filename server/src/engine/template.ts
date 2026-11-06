@@ -1,6 +1,7 @@
 // Message templates support:
 //   {{firstName}}            lead variables (and any custom field by name)
 //   {{company|your team}}    fallback when the value is empty
+//   {{ai:icebreaker}}        AI personalization variable defined in the campaign settings
 //   {Hi|Hello|Hey}           spintax, nestable, picked at random per send
 
 export interface TemplateLead {
@@ -35,7 +36,7 @@ export const VARIABLE_NAMES = ['firstName', 'lastName', 'fullName', 'company', '
 export function render(template: string, vars: Record<string, string>, random: () => number = Math.random): string {
   // Swap variables for placeholders first so values containing { or | survive spintax.
   const values: string[] = [];
-  const withSlots = template.replace(/\{\{\s*([\w.]+)\s*(?:\|([^}]*))?\}\}/g, (_, name: string, fallback?: string) => {
+  const withSlots = template.replace(/\{\{\s*((?:ai:)?[\w.]+)\s*(?:\|([^}]*))?\}\}/g, (_, name: string, fallback?: string) => {
     const v = (vars[name] ?? '').trim();
     values.push(v || (fallback ?? '').trim());
     return `\u0000${values.length - 1}\u0000`;
@@ -61,10 +62,16 @@ function spin(text: string, random: () => number): string {
   return out;
 }
 
-// Variables used in a template that are not known lead fields; shown as warnings in the builder.
-export function unknownVariables(template: string, known = VARIABLE_NAMES): string[] {
-  const names = [...template.matchAll(/\{\{\s*([\w.]+)/g)].map((m) => m[1]);
-  return [...new Set(names.filter((n) => !known.includes(n)))];
+// Variables used in a template that are not known lead fields or AI variables of the campaign; shown as warnings in the builder.
+export function unknownVariables(template: string, known = VARIABLE_NAMES, aiNames: string[] = []): string[] {
+  const names = [...template.matchAll(/\{\{\s*((?:ai:)?[\w.]+)/g)].map((m) => m[1]);
+  return [...new Set(names.filter((n) => (n.startsWith('ai:') ? !aiNames.includes(n.slice(3)) : !known.includes(n))))];
+}
+
+// Names of the {{ai:name}} variables the templates use.
+export function aiNamesIn(templates: (string | null | undefined)[]): string[] {
+  const names = templates.flatMap((t) => [...(t ?? '').matchAll(/\{\{\s*ai:([\w.]+)/g)].map((m) => m[1]));
+  return [...new Set(names)];
 }
 
 // LinkedIn rejects invitation notes over the limit, so trim at a word boundary.

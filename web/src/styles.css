@@ -71,6 +71,14 @@
   }
 }
 
+/* White-label: an agency's primary color (--brand, set on <html> with data-brand) replaces the accent.
+   Placed after the dark block so it wins in both themes; the shades mix with the theme's own colors. */
+:root[data-brand] {
+  --accent: var(--brand);
+  --accent-soft: color-mix(in srgb, var(--brand) 14%, var(--surface));
+  --accent-text: color-mix(in srgb, var(--brand) 75%, var(--ink));
+}
+
 * {
   box-sizing: border-box;
 }
@@ -149,6 +157,23 @@ code {
   background: var(--accent);
   display: grid;
   place-items: center;
+}
+.brand-logo {
+  height: 28px;
+  max-width: 120px;
+  object-fit: contain;
+}
+.brand-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-switch {
+  margin: 0 0 8px;
+}
+.workspace-switch select {
+  width: 100%;
 }
 .nav a {
   display: flex;
@@ -235,6 +260,48 @@ code {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Leads: the lead lists beside the table, and the email and status lines in its rows. */
+.lead-lists {
+  padding: 8px;
+}
+.lead-lists > .btn {
+  margin-top: 6px;
+}
+.lead-email {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin-top: 3px;
+  font-size: 13px;
+}
+.lead-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+/* Below 1280px the table no longer fits beside the lists, so they become a wrapped row above it. */
+@media (max-width: 1280px) {
+  .grid-side-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .lead-lists {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+  }
+  .lead-lists .nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+  .lead-lists > .btn {
+    margin-top: 0;
+  }
 }
 
 .card {
@@ -324,6 +391,7 @@ code {
   }
 }
 
+input:not([type]),
 input[type='text'],
 input[type='email'],
 input[type='password'],
@@ -371,6 +439,50 @@ textarea:focus,
 .field-error {
   font-size: 12.5px;
   color: var(--critical-text);
+}
+/* A button beside fields in a grid (align-items: start): the top padding stands in for a one-line field
+   label (keep those labels short), so the button sits on the inputs' line however long the hints are. */
+.field-action {
+  padding-top: calc(13px * 1.45 + 5px);
+}
+.field-action .btn {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.checklist {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.checklist legend {
+  padding: 0;
+  margin-bottom: 5px;
+}
+.checklist-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.checklist-item:has(input:checked) {
+  border-color: var(--accent);
+}
+.checklist-item input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.checklist-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .toggle {
@@ -431,6 +543,9 @@ textarea:focus,
   color: var(--ink-2);
   white-space: nowrap;
 }
+.pill-prefix {
+  font-weight: 500;
+}
 .pill-dot {
   width: 6px;
   height: 6px;
@@ -477,10 +592,33 @@ textarea:focus,
   color: var(--ink);
   border-bottom-color: var(--accent);
 }
+/* Phones: tabs wrap onto a second line rather than scroll, so every tab (and the active one) is in view. */
+@media (max-width: 640px) {
+  .tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+  .tab {
+    padding: 9px 10px;
+  }
+}
 
 /* ---------- Tables ---------- */
 .table-wrap {
   overflow-x: auto;
+  /* Contains absolutely positioned children (.sr-only headers), which otherwise widen the page on phones. */
+  position: relative;
+  /* Scroll cue: a shadow on each edge that has more columns past it. The two covers scroll with the
+     table (local) and hide the fixed shadows when that edge is reached, so a table that fits shows none. */
+  background:
+    linear-gradient(to right, var(--surface) 30%, transparent) left / 40px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 30%, transparent) right / 40px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) left / 16px 100% no-repeat,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) right / 16px 100% no-repeat;
+}
+/* Headers are see-through so the scroll cue shows on the header row too (the card behind is the same color). */
+.table-wrap th {
+  background: transparent;
 }
 table {
   width: 100%;
@@ -526,6 +664,154 @@ th.num {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A sub-line that may be long (a LinkedIn headline): it wraps to at most two lines and can break anywhere,
+   so it never sets its column's minimum width and the table still fits beside the lead lists. */
+.cell-sub-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Row checkboxes: a bigger box, and the whole cell is the tap target (the label fills it). */
+th.cell-check,
+td.cell-check {
+  width: 44px;
+  padding: 0;
+}
+.check-hit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 13px;
+  cursor: pointer;
+}
+.check-hit input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.check-hit-text {
+  display: none;
+}
+
+/* Phones and tablets: a data table (.table-cards) turns into one card per row. Each cell shows its column's
+   name (data-label); the .cell-primary cell is the card's title, the .cell-action cell spans the card, and
+   the .cell-check box sits at the card's top left. On wider screens these tables are unchanged. */
+@media (max-width: 900px) {
+  .table-cards,
+  .table-cards thead,
+  .table-cards tbody {
+    display: block;
+  }
+  .table-cards thead tr {
+    display: flex;
+  }
+  /* The column names show on each cell (data-label), so the header cells are hidden visually but stay
+     in the accessibility tree, where screen readers still use them as the column headers. */
+  .table-cards thead th:not(.cell-check) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  /* Only "Select all" stays from the header row. */
+  .table-cards thead th.cell-check {
+    display: block;
+    flex: 1;
+    width: auto;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .table-cards thead th.cell-check:empty {
+    display: none;
+  }
+  .table-cards thead .check-hit {
+    justify-content: flex-start;
+  }
+  .table-cards .check-hit-text {
+    display: inline;
+  }
+  .table-cards tbody tr {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .table-cards tbody tr:has(> .cell-check) {
+    padding-left: 48px;
+  }
+  .table-cards tbody tr:last-child {
+    border-bottom: none;
+  }
+  .table-cards td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border-bottom: none;
+  }
+  .table-cards td.num {
+    text-align: left;
+  }
+  .table-cards td:empty {
+    display: none;
+  }
+  .table-cards td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .table-cards td.cell-primary,
+  .table-cards td.cell-action,
+  .table-cards td[colspan] {
+    grid-column: 1 / -1;
+  }
+  .table-cards td.cell-primary:not(:has(.cell-title)) {
+    font-weight: 600;
+  }
+  .table-cards td.cell-action .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  /* A full-width ghost button reads as plain text, so give it an outline in a card. */
+  .table-cards td.cell-action .btn-ghost {
+    border-color: var(--line-strong);
+  }
+  .table-cards td.cell-check {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: auto;
+  }
+  /* Sub-lines wrap inside the card instead of widening it. */
+  .table-cards .cell-sub {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .table-cards .variant-text {
+    max-width: 100%;
+    white-space: nowrap;
+  }
 }
 
 /* ---------- Bits ---------- */
@@ -585,6 +871,26 @@ th.num {
 .progress > span {
   height: 100%;
 }
+.progress-bar > span {
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.import-list .field-label {
+  margin-bottom: 4px;
+}
+.import-row {
+  font-size: 13px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.import-list .field-label + .import-row {
+  border-top: none;
+}
 .empty {
   text-align: center;
   padding: 48px 20px;
@@ -613,6 +919,15 @@ th.num {
 .note-warning {
   background: var(--warning-soft);
   color: var(--warning-text);
+}
+/* Tasks: instructions keep their line breaks; long webhook URLs wrap instead of widening the card. */
+.task-instructions {
+  white-space: pre-wrap;
+  max-width: 520px;
+}
+.webhook-url {
+  word-break: break-all;
+  user-select: all;
 }
 .pager {
   display: flex;
@@ -720,6 +1035,44 @@ th.num {
 .toast-error {
   background: var(--critical);
   color: #fff;
+}
+.toast-link {
+  margin-left: 10px;
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+/* ---------- Billing ---------- */
+.billing-usage {
+  margin-top: 12px;
+}
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plan-card.current {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.plan-card h3,
+.plan-card p {
+  margin: 0;
+}
+.plan-limits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+.plan-limits li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 /* ---------- Auth ---------- */
@@ -932,6 +1285,10 @@ th.num {
 .node-condition {
   border-style: dashed;
 }
+.node-find_email .node-icon {
+  background: var(--info-soft);
+  color: var(--info-text);
+}
 .node-summary {
   font-size: 12.5px;
   color: var(--ink-2);
@@ -1045,6 +1402,48 @@ th.num {
   white-space: pre-wrap;
 }
 
+/* A/B variants in the step editor */
+.variant-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.variant-tabs {
+  display: inline-flex;
+  gap: 4px;
+}
+.variant-tab {
+  min-width: 34px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.variant-tab:hover {
+  border-color: var(--accent);
+}
+.variant-tab.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.variant-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.variant-text {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- Inbox ---------- */
 .inbox {
   display: grid;
@@ -1052,9 +1451,30 @@ th.num {
   height: calc(100vh - 140px);
   min-height: 480px;
 }
+/* The filters stay put above the conversations, which scroll on their own. */
 .inbox-list {
   border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.inbox-filters {
+  flex: none;
+  padding: 12px;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.inbox-items {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  /* Scroll cue: a shadow at the top or bottom while more conversations are past that edge (as .table-wrap). */
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top / 100% 40px no-repeat local,
+    linear-gradient(to top, var(--surface) 30%, transparent) bottom / 100% 40px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, color-mix(in srgb, var(--ink) 22%, transparent), transparent) top / 100% 14px no-repeat,
+    radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) bottom / 100% 14px no-repeat;
 }
 .inbox-item {
   padding: 12px 14px;
@@ -1136,6 +1556,36 @@ th.num {
 .composer textarea {
   min-height: 44px;
 }
+.thread-meta {
+  gap: 8px;
+  font-size: 13px;
+}
+.thread-meta select {
+  width: auto;
+}
+.suggestions {
+  border-top: 1px solid var(--line);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface-2);
+}
+.suggestion {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  cursor: pointer;
+  white-space: pre-wrap;
+}
+.suggestion:hover,
+.suggestion:focus-visible {
+  border-color: var(--accent);
+}
 
 .feed-item {
   display: flex;
@@ -1177,8 +1627,13 @@ th.num {
   }
 }
 @media (max-width: 800px) {
+  /* minmax(0, ...): a plain 1fr track grows to its widest child (a table), and the page scrolled sideways. */
+  /* The top bar keeps its own height and the page takes the rest: implicit rows (and the bar's wrapped
+     lines) would otherwise stretch to fill 100vh on short pages, leaving empty bands in the bar. */
   .shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    align-content: start;
   }
   .sidebar {
     position: static;
@@ -1186,6 +1641,7 @@ th.num {
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
+    align-content: flex-start;
     padding: 10px 16px;
   }
   .sidebar .nav {
@@ -1193,8 +1649,21 @@ th.num {
     flex-wrap: wrap;
     gap: 2px;
   }
+  /* Kept on phones (as one compact row): it holds the workspace switcher and Sign out. */
   .sidebar-foot {
-    display: none;
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 8px 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+  }
+  .sidebar-foot > * {
+    margin-bottom: 0 !important;
+  }
+  .sidebar-foot .workspace-switch {
+    flex-basis: 100%;
   }
   .brand {
     padding: 0 8px 0 0;
@@ -1207,18 +1676,321 @@ th.num {
   .grid-4,
   .grid-main-side,
   .grid-side-main {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
+  /* Stacked under the fields, the button needs no label-high gap. */
+  .field-action {
+    padding-top: 0;
+  }
+  /* minmax(0, ...) again: nowrap previews and the filters must not widen the inbox past the card. */
   .inbox {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     height: auto;
+    min-height: 0;
   }
   .inbox-list {
-    max-height: 300px;
     border-right: none;
     border-bottom: 1px solid var(--line);
+  }
+  /* Room for several conversations; the open one shows below the list. */
+  .inbox-items {
+    max-height: min(60vh, 560px);
+  }
+  /* With nothing open, the list is the whole inbox: no big empty panel under it. */
+  .inbox-empty {
+    display: none;
+  }
+  .inbox:not(:has(.thread)) .inbox-list {
+    border-bottom: none;
+  }
+  .thread {
+    min-width: 0;
   }
   .funnel-row {
     grid-template-columns: 100px 1fr 70px;
   }
+}
+
+/* ---------- Integrations ---------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge-sim {
+  background: var(--info-soft);
+  color: var(--info-text);
+  cursor: help;
+}
+.integration-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.integration-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  flex-wrap: wrap;
+}
+.integration-row + .integration-row {
+  border-top: 1px solid var(--line);
+}
+.integration-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.integration-row .icon-btn {
+  font-size: 16px;
+}
+/* CRM field mapping: one compact input per row. */
+.crm-mapping td:first-child {
+  width: 40%;
+  white-space: nowrap;
+}
+.crm-mapping input {
+  width: 100%;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* AI writer and AI variables */
+.ai-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.ai-var {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  min-width: 0;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Enrichment: facts on the lead drawer and the bulk run's progress */
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px 16px;
+  font-size: 13.5px;
+}
+.facts dt {
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.run-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.run-progress .progress {
+  height: 8px;
+}
+
+/* Pipeline: colored tags and stages, the board, stage and tag settings */
+.color-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.color-tag-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.color-tag-x {
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 0 0 2px;
+}
+.color-tag-x:hover,
+.color-tag-x:focus-visible {
+  color: var(--critical-text);
+}
+.tag-row {
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.board {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  align-items: flex-start;
+}
+.board-col {
+  flex: 0 0 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+  max-height: calc(100vh - 260px);
+}
+.board-col.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.board-col-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.board-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 40px;
+}
+.board-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: grab;
+}
+.board-card[aria-busy='true'] {
+  opacity: 0.6;
+}
+.board-card-name {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.board-card-name:hover,
+.board-card-name:focus-visible {
+  color: var(--accent-text);
+  text-decoration: underline;
+}
+.board-card-meta {
+  font-size: 12px;
+}
+.board-card-move {
+  font-size: 12.5px;
+  padding: 3px 6px;
+}
+.board-empty {
+  margin: 4px 0;
+  font-size: 13px;
+  text-align: center;
+}
+.stage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.stage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.stage-row:last-child {
+  border-bottom: none;
+}
+.stage-row .icon-btn {
+  font-size: 16px;
+}
+.color-input {
+  width: 34px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.note-item {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.note-item:last-child {
+  border-bottom: none;
+}
+.feed-dot.kind-note {
+  background: var(--warning);
+}
+.feed-dot.kind-stage {
+  background: var(--good);
+}
+
+/* ---------- Agency ---------- */
+.brand-preview {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.brand-preview .brand {
+  padding: 0 4px 8px;
 }
