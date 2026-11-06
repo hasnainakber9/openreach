@@ -1,6 +1,7 @@
-import type { Database } from '../db/database.js';
+import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { sign } from './crypto.js';
+import { checkHost, HostCheckError, urlHost } from './hosts.js';
 
 export const WEBHOOK_EVENTS = [
   'lead.connected',
@@ -35,7 +36,12 @@ export class Webhooks {
   deliver = true;
   private subscribers: EventSubscriber[] = [];
 
-  constructor(private db: Database) {}
+  // ctx is read lazily (db, fetch, dns), so tests can swap them after the context is built.
+  constructor(private ctx: Ctx) {}
+
+  private get db() {
+    return this.ctx.db;
+  }
 
   // In-process listeners (for example CRM sync). They should only enqueue jobs, never do slow work inline.
   subscribe(fn: EventSubscriber) {
@@ -66,16 +72,23 @@ export class Webhooks {
     let status = '';
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await fetch(h.url, {
+        // Hosted installs: the URL is the tenant's, so its host must be public (checked when saved, and again
+        // here since DNS can change). fetch resolves the name once more on its own, as for AI base URLs.
+        await checkHost(this.ctx, urlHost(h.url) ?? '');
+        // No redirects: a public URL must not bounce the request to an internal one.
+        const res = await this.ctx.fetch(h.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'x-openreach-event': payload.event, 'x-openreach-signature': sign(h.secret, body) },
           body,
+          redirect: 'error',
           signal: AbortSignal.timeout(10_000),
         });
         status = `${res.status}`;
         if (res.ok) break;
       } catch (e) {
         status = `error: ${(e as Error).message}`;
+        // A private host stays private: retrying only delays the answer.
+        if (e instanceof HostCheckError && e.code === 'BLOCKED') break;
       }
       await new Promise((r) => setTimeout(r, 2000 * 4 ** attempt));
     }

@@ -494,6 +494,38 @@ describe('hosted installs: tenant-supplied hosts', () => {
     expect(r.status).toBe(200);
     const mb = { name: 'Relay', fromEmail: 'me@solo.dev', smtp: { host: '127.0.0.1', port: 25 }, imap: { host: 'localhost', port: 143 } };
     expect((await api.call('POST', '/api/mailboxes', mb)).status).toBe(200);
+    expect((await api.call('POST', '/api/webhooks', { url: 'http://localhost:5678/hook', events: ['*'] })).status).toBe(200);
+  });
+
+  it('refuses webhooks to private hosts, when saved and before each delivery, and never follows redirects', async () => {
+    const w = makeWorld();
+    enableBilling(w, PRO_DEFAULT);
+    dns(w, { 'hooks.public.dev': ['93.184.215.14'], 'hooks.corp.dev': ['10.0.0.7'] });
+    const api = await makeApi(w);
+    await api.register('Acme');
+    const add = (url: string) => api.call('POST', '/api/webhooks', { url, events: ['*'] });
+    for (const url of ['http://169.254.169.254/latest/meta-data', 'http://127.0.0.1:8080/admin', 'http://[::1]/x', 'https://hooks.corp.dev/in', 'https://nowhere.dev/in']) {
+      const r = await add(url);
+      expect(r.status, url).toBe(400);
+      expect(r.body.error).toMatch(/^url: /);
+    }
+    expect((await add('ftp://hooks.public.dev/in')).status).toBe(400);
+    const hook = await add('https://hooks.public.dev/in');
+    expect(hook.status).toBe(200);
+
+    const seen: { url: string; redirect?: RequestRedirect }[] = [];
+    w.ctx.fetch = (async (url: string, init: RequestInit) => (seen.push({ url, redirect: init.redirect }), new Response('ok'))) as typeof fetch;
+    w.ctx.webhooks.deliver = true;
+    // Members can't fire test deliveries (the status code says something about the target).
+    const member = await api.addUser('member');
+    expect((await api.call('POST', `/api/webhooks/${hook.body.id}/test`, {}, member)).status).toBe(403);
+    expect((await api.call('POST', `/api/webhooks/${hook.body.id}/test`)).body).toEqual({ status: '200' });
+    expect(seen).toEqual([{ url: 'https://hooks.public.dev/in', redirect: 'error' }]);
+    // The name later points inside: nothing is sent, and a private host isn't retried.
+    dns(w, { 'hooks.public.dev': ['169.254.169.254'] });
+    const r = await api.call('POST', `/api/webhooks/${hook.body.id}/test`);
+    expect(r.body.status).toMatch(/^error: .*private or local network/);
+    expect(seen).toHaveLength(1);
   });
 
   it('refuses private mail servers and connects to the address it checked', async () => {

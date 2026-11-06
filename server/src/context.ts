@@ -47,7 +47,6 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
     config,
     sealer,
     drivers: new DriverPool(db, clock, config, sealer),
-    webhooks: new Webhooks(db),
     mailer: smtpMailer,
     random: Math.random,
     fetch: (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => globalThis.fetch(input, init),
@@ -58,6 +57,7 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
   } as Ctx;
   // The queue and resolver read ctx lazily, so later overrides (tests) still apply.
   ctx.jobs ??= new JobQueue(ctx);
+  ctx.webhooks ??= new Webhooks(ctx);
   ctx.providers ??= new ProviderResolver(ctx);
   if (!('stripe' in overrides)) ctx.stripe = config.stripeSecretKey ? stripeClient(ctx, config.stripeSecretKey) : null;
   registerProviders();
