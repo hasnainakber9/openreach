@@ -3,6 +3,7 @@ import { applyCategory } from '../src/ai/classify.js';
 import { DAY, MINUTE } from '../src/clock.js';
 import { DB } from '../src/db/db.js';
 import type { Sequence } from '../src/engine/sequence.js';
+import { canonicalTags, createTag, listTags } from '../src/services/tags.js';
 import { autoAdvance, BULK_EVENT_MAX_IDS, deleteStage, listStages, setStage, stageOf } from '../src/services/pipeline.js';
 import { handleInboundReply } from '../src/services/replies.js';
 import { setSetting } from '../src/services/settings.js';
@@ -540,5 +541,27 @@ describe('bulk stage moves', () => {
     expect((await api.call('POST', '/api/leads/bulk', { leadIds: leadIds.slice(0, 20), addTags: ['vip'] })).body).toEqual({ updated: 20, matched: 20 });
     expect((await api.call('POST', '/api/leads/bulk', { leadIds: leadIds.slice(0, 20), addTags: ['VIP'], ownerId: null })).body).toEqual({ updated: 10, matched: 20 });
     expect(bulk).toHaveLength(1);
+  });
+});
+
+describe('tags', () => {
+  it('reuses a tag another instance created a moment ago instead of failing', () => {
+    const w = makeWorld();
+    const [id] = addLeads(w, 1);
+    const first = createTag(w.ctx, w.workspaceId, 'vip', '#123456');
+    // Both instances read "no such tag" and insert it: the second one gets the first one's row.
+    expect(createTag(w.ctx, w.workspaceId, 'vip')).toMatchObject({ id: first.id, color: '#123456' });
+    w.ctx.db.update('leads', id, { tags: '["Q3"]' });
+    const tx = w.ctx.db.tx(() => {
+      w.ctx.db.insert('tags', { workspace_id: w.workspaceId, name: 'Q3', color: '#000000', created_at: 1 });
+      return createTag(w.ctx, w.workspaceId, 'Q3');
+    });
+    expect(tx.color).toBe('#000000');
+    expect(canonicalTags(w.ctx, w.workspaceId, ['VIP', 'q3', 'new'])).toEqual(['vip', 'Q3', 'new']);
+    expect(listTags(w.ctx, w.workspaceId).map((t) => [t.name, t.leads])).toEqual([
+      ['new', 0],
+      ['Q3', 1],
+      ['vip', 0],
+    ]);
   });
 });
