@@ -112,7 +112,7 @@ export const imapflowFactory: ImapFactory = (cfg) => {
           if (!uids.length) return { uidValidity: validity, lastUid: from, messages: [] };
 
           const raw: { uid: number; envelope: any; structure?: MessageStructureObject; headers: string; date: number }[] = [];
-          for await (const m of c.fetch(uids.join(','), { uid: true, envelope: true, bodyStructure: true, internalDate: true, headers: ['references', 'auto-submitted'] }, { uid: true })) {
+          for await (const m of c.fetch(uids.join(','), { uid: true, envelope: true, bodyStructure: true, internalDate: true, headers: ['references', ...AUTO_REPLY_HEADERS] }, { uid: true })) {
             raw.push({ uid: m.uid, envelope: m.envelope ?? {}, structure: m.bodyStructure, headers: m.headers?.toString('utf8') ?? '', date: new Date(m.internalDate ?? m.envelope?.date ?? Date.now()).getTime() });
           }
           // Bodies are downloaded after the fetch loop: imapflow can't run commands inside it.
@@ -138,7 +138,7 @@ export const imapflowFactory: ImapFactory = (cfg) => {
               subject: String(r.envelope.subject ?? ''),
               date: r.date,
               text,
-              autoSubmitted: !!headers['auto-submitted'] && headers['auto-submitted'].toLowerCase() !== 'no',
+              autoSubmitted: isAutoReply(headers),
               report,
             });
           }
@@ -192,6 +192,17 @@ export function findParts(s: MessageStructureObject | undefined): { text?: strin
 }
 
 // Header block → lower-cased name → value (folded lines joined).
+// Headers that mark automatic mail: Auto-Submitted (RFC 3834) other than "no", the older X-Autoreply and
+// X-Autorespond, and Precedence: auto_reply, bulk or junk (out-of-office replies and mailing lists).
+export const AUTO_REPLY_HEADERS = ['auto-submitted', 'x-autoreply', 'x-autorespond', 'precedence'];
+
+export function isAutoReply(headers: Record<string, string>): boolean {
+  const auto = headers['auto-submitted']?.trim().toLowerCase();
+  if (auto && auto !== 'no') return true;
+  if (headers['x-autoreply'] != null || headers['x-autorespond'] != null) return true;
+  return ['auto_reply', 'bulk', 'junk'].includes(headers.precedence?.trim().toLowerCase() ?? '');
+}
+
 export function parseHeaders(block: string): Record<string, string> {
   const out: Record<string, string> = {};
   const head = block.split(/\r?\n\r?\n/)[0];
