@@ -19,6 +19,7 @@
     "csv-parse": "^7.0.3",
     "fastify": "^5.12.7",
     "imapflow": "^2.10.2",
+    "mailchecker": "^6.0.21",
     "nodemailer": "^10.3.1",
     "pg": "^8.16.3",
     "stripe": "^23.1.0",

@@ -59,7 +59,7 @@ const WIKIDATA_MISS_TTL = 24 * HOUR;
 const ROBOTS_TTL = HOUR;
 const ROBOTS_ERROR_TTL = 10 * 60_000;
 
-class TtlCache<V> {
+export class TtlCache<V> {
   private m = new Map<string, { until: number; value: V }>();
   constructor(private max: number) {}
   get(key: string, now: number): { value: V } | undefined {

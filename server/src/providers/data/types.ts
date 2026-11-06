@@ -6,6 +6,9 @@ export interface FindEmailInput {
   company: string;
   domain?: string;
   profileUrl: string;
+  // false when this run or workspace has verification of found addresses turned off: a finder that checks its
+  // guesses with the workspace's verifiers (the Pattern finder) must not spend verifier checks then.
+  verify?: boolean;
 }
 
 export interface FoundEmail {
@@ -14,6 +17,9 @@ export interface FoundEmail {
   status?: EmailStatus; // the vendor's own verification, mapped
   reason?: string;
   credits?: number; // what the call cost, for the usage log
+  // The status already comes from this workspace's own email verifier (the Pattern finder asks it), so the
+  // waterfall doesn't pay to check the same address again.
+  verified?: boolean;
 }
 
 export type EmailStatus = 'valid' | 'risky' | 'invalid' | 'unknown';

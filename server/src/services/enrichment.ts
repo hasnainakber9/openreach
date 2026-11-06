@@ -135,8 +135,9 @@ function verifierFor(ctx: Ctx, workspaceId: number, verifier: EmailVerifier, ema
 // returned with accepted = false, and invalid ones are dropped, as is the lead's own address if it bounced.
 export async function findEmailWaterfall(ctx: Ctx, workspaceId: number, lead: LeadRow, opts: { verify: boolean; settings: EnrichmentSettings }): Promise<WaterfallResult> {
   const finders: EmailFinder[] = ctx.providers.list(workspaceId, 'email_finder');
-  const verifier = opts.verify && opts.settings.verifyFound ? ctx.providers.get(workspaceId, 'email_verifier') : null;
-  const input = { firstName: lead.first_name, lastName: lead.last_name, company: lead.company, domain: lead.company_domain ?? undefined, profileUrl: lead.profile_url };
+  const verifyFound = opts.verify && opts.settings.verifyFound;
+  const verifier = verifyFound ? ctx.providers.get(workspaceId, 'email_verifier') : null;
+  const input = { firstName: lead.first_name, lastName: lead.last_name, company: lead.company, domain: lead.company_domain ?? undefined, profileUrl: lead.profile_url, verify: verifyFound };
   const tried: Attempt[] = [];
   let transient: Error | null = null;
   let best: Omit<WaterfallResult, 'tried' | 'transient' | 'accepted'> | null = null;
@@ -169,7 +170,7 @@ export async function findEmailWaterfall(ctx: Ctx, workspaceId: number, lead: Le
     }
     let status: EmailStatus = found.status ?? 'unknown';
     let reason = found.reason ?? `${label}: not verified`;
-    if (verifier && !(found.status && opts.settings.trustFinderStatus)) {
+    if (verifier && !(found.status && found.verified) && !(found.status && opts.settings.trustFinderStatus)) {
       const v = await verifyWith(ctx, workspaceId, verifierFor(ctx, workspaceId, verifier, email, finder.simulated), email);
       // A verifier that couldn't tell (or the simulator on a real address) doesn't erase the finder's own check.
       if (v.status !== 'unknown' || !found.status) ({ status, reason } = v);

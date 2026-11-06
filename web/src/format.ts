@@ -69,7 +69,7 @@ export const ENRICHMENT_STATUS_LABELS: Record<EnrichmentStatus, string> = { queu
 // Where a lead's email came from.
 export function emailSourceLabel(source: string | null): string {
   if (!source) return '';
-  const known: Record<string, string> = { user: 'Entered by hand', csv: 'From the CSV import', linkedin: 'From LinkedIn contact info', hunter: 'Found by Hunter', apollo: 'Found by Apollo', simulated: 'Made up by the simulator (never emailed from a real mailbox)' };
+  const known: Record<string, string> = { user: 'Entered by hand', csv: 'From the CSV import', linkedin: 'From LinkedIn contact info', hunter: 'Found by Hunter', apollo: 'Found by Apollo', pattern: 'Guessed from the name and company domain (Pattern finder)', simulated: 'Made up by the simulator (never emailed from a real mailbox)' };
   return known[source] ?? `Found by ${source}`;
 }
 

@@ -395,7 +395,7 @@ export interface Lead {
   emailStatusReason: string | null;
   // When the status was last set (verification, bounce).
   emailStatusAt: number | null;
-  // user | csv | linkedin | a finder's provider id (hunter, apollo, simulated).
+  // user | csv | linkedin | a finder's provider id (hunter, apollo, pattern, simulated).
   emailSource: string | null;
   emailFoundAt: number | null;
   companyDomain: string | null;
