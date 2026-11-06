@@ -1,6 +1,8 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { Ctx } from '../context.js';
 import { logActivity } from '../services/activity.js';
+import { isBlockedAddress } from '../services/hosts.js';
 
 // Links that leave the app (unsubscribe, open pixel, click redirect) carry an HMAC-signed token of
 // (workspace, lead, email message) under a key derived from APP_SECRET, so the public routes can trust
@@ -49,9 +51,54 @@ export function verifyToken(ctx: Ctx, kind: TokenKind, token: string): TokenPayl
 export const clickSignature = (ctx: Ctx, token: string, url: string) => mac(ctx, `c-url:${token}:${url}`);
 export const verifyClick = (ctx: Ctx, token: string, url: string, sig: string) => safeEqual(clickSignature(ctx, token, url), sig);
 
-// Absolute links come from PUBLIC_URL only, never from a request's Host header.
+// Names that never resolve on the public internet: local and reserved TLDs (RFC 2606, 6761, 6762, 8375),
+// plus .internal and .lan, which home routers and clouds use for their own networks.
+const LOCAL_SUFFIXES = ['localhost', 'local', 'internal', 'lan', 'home.arpa', 'test', 'invalid', 'example'];
+
+// Whether recipients can open links on this URL: https on a public host. A laptop at http://127.0.0.1:8799 or
+// https://openreach.local can't serve an unsubscribe page to a stranger's inbox, so such a link would be a
+// dead opt-out. Checked from the name alone (no DNS): a public name that resolves privately is the
+// operator's own setup, and would fail the same way for any other link.
+export function isPublicUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'https:') return false;
+  // Credentials would be copied into every link a recipient sees, and links are built by appending a path,
+  // which lands inside a query or fragment.
+  if (u.username || u.password || u.search || u.hash) return false;
+  // Every trailing dot: "localhost.." is still localhost.
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  if (isIP(host)) return !isBlockedAddress(host);
+  // A single label (http://myserver) only means something on the local network.
+  if (!host.includes('.')) return false;
+  return !LOCAL_SUFFIXES.some((s) => host === s || host.endsWith(`.${s}`));
+}
+
+// PUBLIC_URL when recipients can reach it, else null: emails then carry no links to this server at all.
+export const publicLinkBase = (ctx: Ctx) => (isPublicUrl(ctx.config.publicUrl) ? ctx.config.publicUrl! : null);
+
+// Why emails can't carry an unsubscribe link (null when they can).
+export function publicLinkProblem(ctx: Ctx): string | null {
+  if (publicLinkBase(ctx)) return null;
+  if (!ctx.config.publicUrl) return 'PUBLIC_URL is not set';
+  // Only the origin is shown (status lines reach every workspace admin): never a password in the URL.
+  let shown: string | null = null;
+  try {
+    shown = new URL(ctx.config.publicUrl).origin;
+  } catch {
+    // Not a URL at all: said without repeating it.
+  }
+  return `PUBLIC_URL${shown && shown !== 'null' ? ` (${shown})` : ''} is not a public https:// address that recipients can open`;
+}
+
+// Absolute links come from PUBLIC_URL only, never from a request's Host header, and only when it is public.
 export function mailLinks(ctx: Ctx, p: TokenPayload) {
-  const base = ctx.config.publicUrl;
+  const base = publicLinkBase(ctx);
   if (!base) return null;
   const click = signToken(ctx, 'c', p);
   return {

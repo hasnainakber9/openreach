@@ -592,7 +592,7 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
           <Toggle checked={form.trackClicks} onChange={(v) => setForm({ ...form, trackClicks: v })} label="Track link clicks" hint="Sends links through this server first. Off by default." />
           {(form.trackOpens || form.trackClicks) && (
             <div className="note">
-              Tracking records when someone opens an email or clicks a link, which is personal data: make sure you have a lawful basis (for example under GDPR) and mention it in your privacy notice. Tracking images and rewritten links can also hurt deliverability, and mail privacy features and scanners make the numbers approximate. It needs PUBLIC_URL on the server.
+              Tracking records when someone opens an email or clicks a link, which is personal data: make sure you have a lawful basis (for example under GDPR) and mention it in your privacy notice. Tracking images and rewritten links can also hurt deliverability, and mail privacy features and scanners make the numbers approximate. It needs PUBLIC_URL on the server, set to a public https:// address that recipients can open.
             </div>
           )}
           <Toggle checked={form.stopOnReply} onChange={(v) => setForm({ ...form, stopOnReply: v })} label="Stop when a lead replies" hint="Recommended. Replies are picked up from the LinkedIn inbox and from the campaign's mailboxes." />

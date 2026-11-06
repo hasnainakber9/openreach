@@ -11,7 +11,7 @@ import { newMessageId } from '../mail/compose.js';
 import type { SmtpConfig } from '../services/email.js';
 import { replyDecision, replyHoldDeadline, replySince, stopCampaignLead } from '../services/replies.js';
 import { suppressionReason } from '../services/suppression.js';
-import { emailVerified, enrichmentSettings, findEmailGate } from '../services/enrichment.js';
+import { emailVerified, enrichmentSettings, findEmailGate, unconfirmedGuess } from '../services/enrichment.js';
 import { taskGate } from '../services/tasks.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
 import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLegacy, pinLead, releaseUnstartedLeads, setConnection, type CapacityCache } from '../services/rotation.js';
@@ -468,6 +468,8 @@ export class Engine {
         const smtp = raw ? (JSON.parse(raw) as SmtpConfig) : null;
         // Addresses made up by the simulated finder never go out through a real server.
         if (smtp && lead.email_source === 'simulated') return advance('skipped', 'address made up by the simulated email finder: never sent from a real mailbox'), false;
+        const guess = smtp && unconfirmedGuess(ctx, lead);
+        if (guess) return advance('skipped', guess), false;
         const subject = fitRendered(render(node.subject, vars, ctx.random), RENDERED_MAX.emailSubject);
         const from = smtp ? smtp.from || smtp.user : '';
         const how = await ctx.mailer.send(smtp && { host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user, pass: smtp.pass }, {

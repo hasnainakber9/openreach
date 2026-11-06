@@ -10,6 +10,7 @@ import { leadVars, render } from '../engine/template.js';
 import { assignVariant } from '../engine/variants.js';
 import { logActivity, type ActivityInput } from '../services/activity.js';
 import { mailError } from '../services/email.js';
+import { unconfirmedGuess } from '../services/enrichment.js';
 import { pinMailServer } from '../services/hosts.js';
 import { suppressionReason } from '../services/suppression.js';
 import type { CampaignLeadRow, CampaignLeadState, CampaignRow, EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
@@ -23,7 +24,7 @@ import {
   isSimulated,
   mailboxNeedsAttention,
   mailboxSchedule,
-  needsPublicUrl,
+  optOutProblem,
   pinMailbox,
   releaseUnstartedMailboxLeads,
   remainingToday,
@@ -106,8 +107,9 @@ export class MailRunner {
     for (let tries = 0; tries < CANDIDATES; tries++) {
       const job = this.nextJob(mb);
       if (!job) return;
-      // Campaign email needs a working unsubscribe link; a real mailbox can't send without it.
-      if (!ctx.config.publicUrl && needsPublicUrl(mb)) return mailboxNeedsAttention(ctx, mb, 'Set PUBLIC_URL so emails can carry an unsubscribe link');
+      // Hosted servers need a working unsubscribe link; self-hosted ones fall back to reply mode (see optOutProblem).
+      const optOut = optOutProblem(ctx, mb);
+      if (optOut) return mailboxNeedsAttention(ctx, mb, optOut);
       if (!isSimulated(mb) && !smtpTransport(ctx, mb)) return mailboxNeedsAttention(ctx, mb, 'Add SMTP settings to send from this mailbox');
       const outcome = await this.send(mb, job);
       if (outcome === 'next') continue;
@@ -183,6 +185,8 @@ export class MailRunner {
     if (lead.email_status === 'invalid') return advance('skipped', `email address is invalid${lead.email_status_reason ? ` (${lead.email_status_reason})` : ''}`), 'next';
     if (!isSimulated(mb) && isReservedAddress(lead.email)) return advance('skipped', 'reserved test address (.example, .test, ...): never sent from a real mailbox'), 'next';
     if (!isSimulated(mb) && lead.email_source === 'simulated') return advance('skipped', 'address made up by the simulated email finder: never sent from a real mailbox'), 'next';
+    const guess = isSimulated(mb) ? null : unconfirmedGuess(ctx, lead);
+    if (guess) return advance('skipped', guess), 'next';
 
     // Lease the lead while it sends, so no other tick or mailbox sees it as due meanwhile.
     if (ctx.db.run("UPDATE campaign_leads SET next_run_at = ? WHERE id = ? AND mailbox_id = ? AND state = 'active'", [ctx.clock.now() + LEASE, job.id, mb.id]).changes === 0) return 'next';

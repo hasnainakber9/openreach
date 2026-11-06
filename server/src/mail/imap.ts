@@ -6,6 +6,7 @@ import { MailError } from '../services/email.js';
 import { pinMailServer } from '../services/hosts.js';
 import type { EmailMessageRow, MailboxRow } from '../types.js';
 import { emailDomain, isSimulated, serverSettings, type ServerSettings } from './mailboxes.js';
+import { htmlToText } from './replyText.js';
 
 // Reading replies and bounces. The engine only talks to ImapClient; ctx.imap builds the real one (imapflow)
 // so tests inject fake inbox data, and simulated mailboxes answer from their own sent mail.
@@ -119,7 +120,8 @@ export const imapflowFactory: ImapFactory = (cfg) => {
           const messages: InboundEmail[] = [];
           for (const r of raw) {
             const parts = findParts(r.structure);
-            const text = parts.text ? await download(c, r.uid, parts.text) : '';
+            // Without a text part, the HTML one as text: otherwise an HTML-only "remove me" would read as nothing.
+            const text = parts.text ? await download(c, r.uid, parts.text) : parts.html ? htmlToText(await download(c, r.uid, parts.html)) : '';
             let report: InboundEmail['report'] = null;
             if (parts.deliveryStatus) {
               const dsn = parseDeliveryStatus(await download(c, r.uid, parts.deliveryStatus));
@@ -175,14 +177,16 @@ async function download(c: ImapFlow, uid: number, part: string): Promise<string>
   return Buffer.concat(chunks).toString('utf8').slice(0, MAX_TEXT);
 }
 
-// The first text/plain part, and for delivery reports the status part and the returned headers.
-export function findParts(s: MessageStructureObject | undefined): { text?: string; deliveryStatus?: string; originalHeaders?: string } {
-  const out: { text?: string; deliveryStatus?: string; originalHeaders?: string } = {};
+// The first text/plain part (and text/html, used when there is no plain one), and for delivery reports the
+// status part and the returned headers.
+export function findParts(s: MessageStructureObject | undefined): { text?: string; html?: string; deliveryStatus?: string; originalHeaders?: string } {
+  const out: { text?: string; html?: string; deliveryStatus?: string; originalHeaders?: string } = {};
   const walk = (n: MessageStructureObject | undefined) => {
     if (!n) return;
     const type = n.type.toLowerCase();
     const part = n.part ?? '1';
     if (type === 'text/plain' && !out.text && n.disposition?.toLowerCase() !== 'attachment') out.text = part;
+    else if (type === 'text/html' && !out.html && n.disposition?.toLowerCase() !== 'attachment') out.html = part;
     else if (type === 'message/delivery-status' || type === 'message/global-delivery-status') out.deliveryStatus ??= part;
     else if (type === 'text/rfc822-headers' || type === 'message/rfc822') out.originalHeaders ??= part;
     for (const child of n.childNodes ?? []) walk(child);

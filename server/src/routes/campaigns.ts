@@ -10,7 +10,8 @@ import { contactTypesSql } from '../services/activity.js';
 import { addLeadsToCampaign, campaignSequence, campaignSettings } from '../services/leads.js';
 import { isWorkspaceMember, skipOpenTasks } from '../services/tasks.js';
 import { campaignAccountIds, campaignAccounts, setCampaignAccounts } from '../services/rotation.js';
-import { campaignMailboxes, campaignMailboxIds, setCampaignMailboxes } from '../mail/mailboxes.js';
+import { campaignMailboxes, campaignMailboxIds, sendsForOthers, setCampaignMailboxes } from '../mail/mailboxes.js';
+import { publicLinkBase } from '../mail/tracking.js';
 import type { CampaignRow, LeadRow } from '../types.js';
 import { serializeLead } from './leads.js';
 
@@ -176,7 +177,7 @@ export function campaignRoutes(app: FastifyInstance, ctx: Ctx) {
       startedAt: c.started_at,
       stats: campaignStats(ctx, c.id),
       steps: Object.keys(seq.nodes).length,
-      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: [...sequenceWarnings(seq, settings), ...senderWarnings(ctx, seq, settings, mailboxes.length), ...channelWarnings(ctx, c.workspace_id, seq), ...dataWarnings(ctx, c.workspace_id, seq)] } : {}),
+      ...(full ? { sequence: seq, problems: validateSequence(seq), warnings: [...sequenceWarnings(seq, settings), ...senderWarnings(ctx, seq, settings, mailboxes), ...channelWarnings(ctx, c.workspace_id, seq), ...dataWarnings(ctx, c.workspace_id, seq)] } : {}),
     };
   };
 
@@ -382,13 +383,25 @@ function senderProblem(seq: Sequence, accounts: number, mailboxes: number): stri
   return null;
 }
 
-function senderWarnings(ctx: Ctx, seq: Sequence, settings: CampaignSettings, mailboxes: number): string[] {
+function senderWarnings(ctx: Ctx, seq: Sequence, settings: CampaignSettings, mailboxes: { id: number; provider: string }[]): string[] {
   const emails = Object.values(seq.nodes).filter((n) => n.type === 'email');
   if (!emails.length) return [];
   const out: string[] = [];
-  if (!mailboxes) out.push('Email steps have no mailbox: they go out through the LinkedIn account’s old SMTP settings, or are only recorded (not delivered) without them. Choose mailboxes in the campaign settings.');
-  if ((settings.trackOpens || settings.trackClicks) && !ctx.config.publicUrl) out.push('Open and click tracking need PUBLIC_URL on the server; without it emails go out untracked.');
-  if (!mailboxes && emails.some((n) => n.type === 'email' && n.replyInThread)) out.push('"Reply in the same thread" only works when the campaign sends from mailboxes.');
+  if (!mailboxes.length) out.push('Email steps have no mailbox: they go out through the LinkedIn account’s old SMTP settings, or are only recorded (not delivered) without them. Choose mailboxes in the campaign settings.');
+  // Without a public address no email links back to this server (see publicLinkBase).
+  const linkless = !publicLinkBase(ctx);
+  if (linkless && mailboxes.some((m) => m.provider !== 'simulated')) {
+    if (sendsForOthers(ctx)) out.push('Real mailboxes can’t send campaign email until PUBLIC_URL is set to the server’s public https:// address, which the unsubscribe link needs.');
+    else {
+      out.push('PUBLIC_URL is not a public https:// address, so emails carry no unsubscribe link: their footer asks people to reply “unsubscribe”, and such replies put them on the do-not-contact list.');
+      // Those replies must be read, so a real mailbox without IMAP stops (see optOutProblem).
+      const ids = mailboxes.filter((m) => m.provider !== 'simulated').map((m) => m.id);
+      const noImap = ctx.db.all<{ name: string }>(`SELECT name FROM mailboxes WHERE imap_enc IS NULL AND legacy_account_id IS NULL AND id IN (${ids.map(() => '?').join(',')})`, ids);
+      if (noImap.length) out.push(`Without IMAP settings those replies are never read, so ${noImap.map((m) => m.name).join(', ')} can’t send campaign email. Add IMAP settings on the Mailboxes page.`);
+    }
+  }
+  if ((settings.trackOpens || settings.trackClicks) && linkless) out.push('Open and click tracking need PUBLIC_URL set to a public https:// address; without it emails go out untracked.');
+  if (!mailboxes.length && emails.some((n) => n.type === 'email' && n.replyInThread)) out.push('"Reply in the same thread" only works when the campaign sends from mailboxes.');
   return out;
 }
 

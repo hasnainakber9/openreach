@@ -2,13 +2,14 @@ import { z } from 'zod';
 import { MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import type { JobHelpers, JobInfo } from '../jobs/queue.js';
+import { ruleOptOut } from '../mail/replyText.js';
 import { AI_MAX_TIMEOUT_SECONDS } from '../providers/ai/types.js';
 import { ProviderError } from '../providers/http.js';
 import { logActivity } from '../services/activity.js';
 import { publicLead } from '../services/leads.js';
 import { autoAdvance, stageForCategory } from '../services/pipeline.js';
 import { resolveReplyHolds } from '../services/replies.js';
-import { suppressLead } from '../services/suppression.js';
+import { alreadySuppressed, suppressLead } from '../services/suppression.js';
 import type { LeadRow } from '../types.js';
 import { CATEGORY_LABELS, isReplyCategory, isSuppressCategory, SUPPRESS_MIN_CONFIDENCE, type ReplyCategory } from './categories.js';
 import { completeAi, extractJson } from './complete.js';
@@ -79,6 +80,14 @@ export async function classifyJob(job: JobInfo<{ messageId: number }>, h: JobHel
         status: 'failed',
         detail: (e instanceof ProviderError ? e.message : 'Classification failed').slice(0, 300),
       });
+      // An opt-out must not wait for the AI to come back: when the keyword rules are sure the reply asks to be
+      // left alone, it is applied now, as the AI's answer would have been. They read only the person's own
+      // short text (not a quoted footer or a signature's "to unsubscribe..."). Anything else stays unclassified.
+      const rules = ruleOptOut(msg.body);
+      if (rules) {
+        applyCategory(ctx, { workspaceId: ws, conversationId: msg.conversation_id, messageId: msg.id, ...rules, source: 'rules', note: 'keyword rules, AI unavailable' });
+        return { ...rules, note: 'AI unavailable: classified by keyword rules' };
+      }
     }
     throw e;
   }
@@ -98,7 +107,10 @@ export interface CategoryInput {
   messageId: number | null;
   category: ReplyCategory;
   confidence: number;
-  source: 'ai' | 'manual';
+  // 'rules': the keyword rules (an explicit opt-out caught as the mail arrived, or the fallback when the AI failed).
+  source: 'ai' | 'manual' | 'rules';
+  // Said in the activity instead of how sure it is ("keyword rules, AI unavailable").
+  note?: string;
 }
 
 // Stores a category on the message, its conversation and its lead (the last two only when it is about
@@ -146,7 +158,7 @@ export function applyCategory(ctx: Ctx, o: CategoryInput) {
       campaignId: campaign?.campaign_id,
       leadId: conv.lead_id,
       type: 'classified',
-      detail: `${CATEGORY_LABELS[o.category]} (${o.source === 'manual' ? 'set by hand' : `${Math.round(o.confidence * 100)}% sure`})`,
+      detail: `${CATEGORY_LABELS[o.category]} (${o.note ?? (o.source === 'manual' ? 'set by hand' : o.source === 'rules' ? 'keyword rules' : `${Math.round(o.confidence * 100)}% sure`)})`,
     });
   });
   ctx.webhooks.emit(o.workspaceId, 'lead.classified', {
@@ -165,7 +177,8 @@ export function applyCategory(ctx: Ctx, o: CategoryInput) {
   if (slug) autoAdvance(ctx, lead.id, slug, `Reply ${o.source === 'manual' ? 'marked' : 'classified'} as ${CATEGORY_LABELS[o.category].toLowerCase()}`);
   // Only a sure opt-out suppresses, and only about the lead's latest reply: a late answer about an older
   // "not interested" must not drop someone whose newer reply says "let's talk". A category set by hand counts.
-  if (isSuppressCategory(o.category) && o.confidence >= SUPPRESS_MIN_CONFIDENCE[o.category] && (o.source === 'manual' || latestForLead)) {
-    suppressLead(ctx, lead, o.category, o.source === 'manual' ? 'inbox' : 'reply classification');
+  // Someone already suppressed (an opt-out reply caught as it arrived) is left as they are.
+  if (isSuppressCategory(o.category) && o.confidence >= SUPPRESS_MIN_CONFIDENCE[o.category] && (o.source === 'manual' || latestForLead) && !alreadySuppressed(ctx, lead)) {
+    suppressLead(ctx, lead, o.category, o.source === 'manual' ? 'inbox' : o.source === 'rules' ? 'keyword rules' : 'reply classification');
   }
 }

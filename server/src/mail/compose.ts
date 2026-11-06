@@ -3,7 +3,8 @@ import type { OutgoingEmail } from '../services/email.js';
 
 // Builds the email a step sends: Message-ID, threading headers, a plain-text body with a minimal HTML
 // twin, the signature, the unsubscribe footer and List-Unsubscribe headers (RFC 2369 / RFC 8058), and
-// the optional open pixel and click-tracked links.
+// the optional open pixel and click-tracked links. Without a public PUBLIC_URL there is no link: the footer
+// asks people to reply "unsubscribe" (reply mode), and inbound mail detection honours that reply.
 
 export function newMessageId(fromEmail: string | null | undefined, random: () => number = Math.random): string {
   const domain = (fromEmail ?? '').split('@')[1]?.replace(/[^a-z0-9.-]/gi, '') || 'openreach.invalid';
@@ -35,7 +36,7 @@ export interface ComposeInput {
     openPixel?: string | null;
     click?: ((url: string) => string) | null;
   } | null;
-  // Campaign emails carry the unsubscribe footer; one-to-one replies from the inbox don't.
+  // Campaign emails carry the unsubscribe footer (link or reply mode); one-to-one replies from the inbox don't.
   footer?: boolean;
 }
 
@@ -67,20 +68,29 @@ function toHtml(text: string, click?: ((url: string) => string) | null): string 
 export function composeEmail(input: ComposeInput): OutgoingEmail {
   const subject = input.thread ? replySubject(input.thread.subject) : input.subject.trim();
   const signature = input.signature?.trim();
-  const unsubscribe = input.footer === false ? null : (input.links?.unsubscribe ?? null);
+  const footer = input.footer !== false;
+  const unsubscribe = footer ? (input.links?.unsubscribe ?? null) : null;
   const mailto = `mailto:${input.fromEmail}?subject=unsubscribe`;
 
+  // A reply always works as well (the List-Unsubscribe mailto sends the same word), so the opt-out still
+  // works for someone whose mail client hides links. Without a link it is the only way, said in full.
+  // With a Reply-To elsewhere a reply never reaches this mailbox, so people are asked to email the sender.
+  const elsewhere = !!input.replyTo && input.replyTo.trim().toLowerCase() !== input.fromEmail.trim().toLowerCase();
   let text = input.body.trim();
   if (signature) text += `\n\n-- \n${signature}`;
-  if (unsubscribe) text += `\n\nDon't want to hear from me again? Unsubscribe: ${unsubscribe}`;
+  if (unsubscribe) text += `\n\nDon't want to hear from me again? Unsubscribe: ${unsubscribe}${elsewhere ? '' : ' or just reply "unsubscribe".'}`;
+  else if (footer && elsewhere) text += `\n\nDon't want to hear from me again? Email ${input.fromEmail} with the subject "unsubscribe" and I won't contact you again.`;
+  else if (footer) text += `\n\nDon't want to hear from me again? Just reply "unsubscribe" and I won't contact you again.`;
 
   let html = toHtml(input.body.trim(), input.links?.click);
   if (signature) html += `\n<p style="color:#555">${escapeHtml(signature).replace(/\n/g, '<br>')}</p>`;
-  if (unsubscribe) html += `\n<p style="color:#888;font-size:12px">Don't want to hear from me again? <a href="${escapeHtml(unsubscribe)}">Unsubscribe</a></p>`;
+  if (unsubscribe) html += `\n<p style="color:#888;font-size:12px">Don't want to hear from me again? <a href="${escapeHtml(unsubscribe)}">Unsubscribe</a>${elsewhere ? '' : ' or just reply &quot;unsubscribe&quot;.'}</p>`;
+  else if (footer && elsewhere) html += `\n<p style="color:#888;font-size:12px">Don't want to hear from me again? Email <a href="${escapeHtml(mailto)}">${escapeHtml(input.fromEmail)}</a> with the subject &quot;unsubscribe&quot; and I won't contact you again.</p>`;
+  else if (footer) html += `\n<p style="color:#888;font-size:12px">Don't want to hear from me again? Just reply &quot;unsubscribe&quot; and I won't contact you again.</p>`;
   if (input.links?.openPixel) html += `\n<img src="${escapeHtml(input.links.openPixel)}" width="1" height="1" alt="" style="display:block;border:0">`;
 
   const headers: Record<string, string> = {};
-  if (input.footer !== false) {
+  if (footer) {
     headers['List-Unsubscribe'] = unsubscribe ? `<${unsubscribe}>, <${mailto}>` : `<${mailto}>`;
     if (unsubscribe) headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
   }

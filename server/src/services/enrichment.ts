@@ -58,6 +58,19 @@ export const isUserEmail = (l: Pick<LeadRow, 'email' | 'email_source'>) => !!l.e
 
 export const emailAccepted = (status: string | null | undefined, s: Pick<EnrichmentSettings, 'acceptRisky'>) => status === 'valid' || (status === 'risky' && s.acceptRisky);
 
+// The Pattern finder's id, as stored in email_source: its addresses are guesses built from the name and domain.
+export const PATTERN_SOURCE = 'pattern';
+
+// Why a real mailbox must not email this lead's address, or null: a Pattern finder guess that no verifier
+// confirmed (valid, or risky when the workspace accepts risky addresses). A wrong guess reaches a stranger
+// or bounces, which hurts the sending domain. Addresses people gave us and other finders' results are
+// left to the usual checks.
+export function unconfirmedGuess(ctx: Ctx, lead: Pick<LeadRow, 'workspace_id' | 'email' | 'email_source' | 'email_status'>): string | null {
+  if (!lead.email || lead.email_source !== PATTERN_SOURCE) return null;
+  if (emailAccepted(lead.email_status, enrichmentSettings(ctx, lead.workspace_id))) return null;
+  return `guessed address not confirmed by a verifier (${lead.email_status || 'not checked'}): never sent from a real mailbox`;
+}
+
 // The "If email verified" condition.
 export const emailVerified = (l: Pick<LeadRow, 'email' | 'email_status'>, s: Pick<EnrichmentSettings, 'acceptRisky'>) => !!l.email && emailAccepted(l.email_status, s);
 

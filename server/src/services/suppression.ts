@@ -48,6 +48,12 @@ export function suppressLead(ctx: Ctx, lead: LeadRow, reason: SuppressionReason,
   ctx.webhooks.emit(lead.workspace_id, 'lead.suppressed', { lead: publicLead(lead, ctx), reason, source });
 }
 
+// Already on the do-not-contact list and in no running campaign: suppressing again would change nothing
+// (and only repeat the lead.suppressed event).
+export function alreadySuppressed(ctx: Ctx, lead: LeadRow): boolean {
+  return !!suppressionReason(ctx, lead) && !ctx.db.get("SELECT 1 FROM campaign_leads WHERE lead_id = ? AND state = 'active'", [lead.id]);
+}
+
 // Why this lead must not be contacted, or null. Checked when leads join a campaign and before every action.
 export function suppressionReason(ctx: Ctx, lead: LeadRow): string | null {
   const ids: [SuppressionKind, string | null][] = [

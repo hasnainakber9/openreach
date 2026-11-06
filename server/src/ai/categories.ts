@@ -72,7 +72,10 @@ const RULES: [ReplyCategory, RegExp][] = [
     'out_of_office',
     /\b(out of (the )?office|auto(matic)?[- ]?reply|automated (reply|response)|on (annual |parental |maternity |paternity |sick )?leave|on (vacation|holiday)|away from (my|the) (desk|office)|limited access to (my )?e-?mail|i('m| am) (currently )?(away|travell?ing) (until|till|and)|will (be back|return) on)\b/,
   ],
-  ['unsubscribe', /\b(unsubscribe|remove me|take me off|opt (me )?out|stop (messaging|contacting|emailing|sending|writing)|do not (contact|message|email|call) me|don't (contact|message|email|call) me|leave me alone)\b|^\W*stop\W*$/],
+  [
+    'unsubscribe',
+    /\b(unsubscribe|remove (me|my (e-?mail|address|details|name|contact|data|info(rmation)?)|this (e-?mail|address))|take me off|opt (me )?out|stop (messaging|contacting|emailing|sending|writing)|(do not|don't|never|(do not|don't) ever) (contact|message|e-?mail|call|write to) me|leave me alone|delete my (data|details|info(rmation)?|e-?mail|address|contact))\b|^\W*(please )?(stop|remove)\W*$/,
+  ],
   ['not_interested', /\b(not interested|no,? thanks|no,? thank you|not for us|not a (good )?fit|we('re| are) (all )?(set|good)( here)?(?=(,? (thanks?|thank you))?\W*$)|i('ll| will) pass|pass on this|not looking for)\b/],
   ['wrong_person', /\b(wrong person|no longer (at|with|work)|not the right (person|contact)|left the company|don't work (at|for)|not my (area|department)|not responsible for|(reach|speak) (out )?to my colleague)\b/],
   [
@@ -92,7 +95,9 @@ const RULES: [ReplyCategory, RegExp][] = [
 // Words that make a decline conditional: "not interested in X, but...", "not interested at the moment".
 const QUALIFIERS = /\b(but|however|unless|though|although|except|yet|maybe|perhaps)\b/;
 const TIMING = /\b(right now|at the moment|at this (time|stage|point)|for now|this (year|quarter|month)|currently)\b/;
-const NEGATED = /\b(not|never|n't|no longer)\s+(\w+\s+){0,3}$/;
+// "n't" has no word boundary in front of it ("don't", "wouldn't"), so it stands outside the \b group. A
+// question is no negation: "why won't you stop emailing me?", "can't you just remove me?" are opt-outs.
+const NEGATED = /(\b(not|never|no longer)|n't)\s+(?!you\b)(\w+\s+){0,3}$/;
 const POSITIVE = RULES.filter(([c]) => c === 'meeting_booked' || c === 'interested').map(([, re]) => re);
 
 export function keywordCategory(text: string): Classification {
@@ -105,6 +110,8 @@ export function keywordCategory(text: string): Classification {
       const after = t.slice(m.index + m[0].length);
       // "I'm not saying unsubscribe me", "I wouldn't say not interested": under every suppression threshold.
       if (NEGATED.test(before)) return { category, confidence: 0.4 };
+      // "No need to remove me, I'm interested": next to a positive phrase it is no sure opt-out.
+      if (category === 'unsubscribe' && POSITIVE.some((p) => p.test(t))) return { category, confidence: 0.4 };
       // Only "not interested" can be conditional; "stop messaging me, but thanks" is still an opt-out.
       if (category === 'not_interested') {
         if (TIMING.test(after)) return { category: 'not_now', confidence: 0.65 };

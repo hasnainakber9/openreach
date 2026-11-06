@@ -1,15 +1,37 @@
 import { describe, expect, it } from 'vitest';
+import { parsePlans } from '../src/billing/plans.js';
 import { DAY, HOUR, MINUTE } from '../src/clock.js';
 import type { Sequence } from '../src/engine/sequence.js';
 import { composeEmail, newMessageId } from '../src/mail/compose.js';
 import { checkDomain, dnsServersFrom, withFallback, type DnsResolver } from '../src/mail/deliverability.js';
 import { findParts, imapError, isAutoReply, parseDeliveryStatus, type InboundEmail } from '../src/mail/imap.js';
-import { syncJobKey } from '../src/mail/inbound.js';
-import { effectiveDailyLimit, ensureLegacyMailboxes, isReservedAddress, retireMailbox, setCampaignMailboxes } from '../src/mail/mailboxes.js';
-import { signToken } from '../src/mail/tracking.js';
+import { optOutReason, processInbound, syncJobKey } from '../src/mail/inbound.js';
+import { clearOldPublicUrlHolds, effectiveDailyLimit, ensureLegacyMailboxes, isReservedAddress, retireMailbox, setCampaignMailboxes } from '../src/mail/mailboxes.js';
+import { htmlToText } from '../src/mail/replyText.js';
+import { isPublicUrl, signToken } from '../src/mail/tracking.js';
+import { createIntegration } from '../src/providers/store.js';
+import { EnrichmentSettingsSchema } from '../src/services/enrichment.js';
+import { setSetting } from '../src/services/settings.js';
 import { MailError } from '../src/services/email.js';
 import type { CampaignLeadRow, EmailMessageRow, LeadRow, MailboxRow } from '../src/types.js';
-import { addLeads, fakeImap, mailerOf, makeApi, makeCampaign, makeWorld, runFor, type World } from './helpers.js';
+import { addLeads, fakeFetch, fakeImap, mailerOf, makeApi, makeCampaign, makeWorld as baseWorld, runFor, type World } from './helpers.js';
+
+// Sign-up closed, like a typical self-hosted server (the test default is open): real mailboxes send in
+// reply mode there when PUBLIC_URL is not public.
+function makeWorld(...args: Parameters<typeof baseWorld>): World {
+  const w = baseWorld(...args);
+  w.ctx.config.allowSignup = false;
+  return w;
+}
+
+// A public https PUBLIC_URL: emails carry unsubscribe and tracking links (the test default, localhost, doesn't).
+const PUBLIC = 'https://reach.example.net';
+
+// Billing on, as on a hosted server, with one unlimited plan; null turns it off again (self-hosted).
+function hosted(w: World, on = true) {
+  w.ctx.stripe = on ? ({} as any) : null;
+  w.ctx.config.plans = on ? parsePlans('[{ "id": "free", "name": "Free", "default": true }]', 'test') : undefined;
+}
 
 const oneEmail: Sequence = { start: 'e', nodes: { e: { id: 'e', type: 'email', subject: 'Hello {{firstName}}', body: 'Hi {{firstName}}, see https://acme.dev/offer?x=1 for details.', next: null } } };
 const twoEmails: Sequence = {
@@ -36,6 +58,8 @@ function addMailbox(w: World, o: Record<string, any> = {}): number {
     gap_max_sec: 120,
     created_at: w.ctx.clock.now(),
     ...(real ? { smtp_enc: w.ctx.sealer.seal(JSON.stringify({ host: 'smtp.sender.dev', port: 465, secure: true, user: 'sara@sender.dev', pass: 'app-password-1234' })) } : {}),
+    // Reply mode reads opt-out replies, so real mailboxes have IMAP unless a test says otherwise.
+    ...(real ? { imap_enc: w.ctx.sealer.seal(JSON.stringify({ host: 'imap.sender.dev', port: 993, secure: true, user: 'sara@sender.dev', pass: 'app-password-1234' })) } : {}),
     ...o,
   });
 }
@@ -232,7 +256,8 @@ describe('composing emails', () => {
     expect(msg.headers!['List-Unsubscribe']).toBe('<https://app.dev/u/tok>, <mailto:sara@sender.dev?subject=unsubscribe>');
     expect(msg.headers!['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
     expect(msg.text).toContain('-- \nSara\nSender Inc');
-    expect(msg.text).toContain('Unsubscribe: https://app.dev/u/tok');
+    expect(msg.text).toContain('Unsubscribe: https://app.dev/u/tok or just reply "unsubscribe".');
+    expect(msg.html).toContain('<a href="https://app.dev/u/tok">Unsubscribe</a> or just reply &quot;unsubscribe&quot;.');
     expect(msg.html).toContain('Hi &lt;Ann&gt;,<br>see <a href="https://acme.dev/x">https://acme.dev/x</a>.');
     expect(msg.html).not.toContain('<img');
     // Inbox replies carry no footer or list headers.
@@ -243,6 +268,7 @@ describe('composing emails', () => {
 
   it('sends campaign email from a real mailbox with an unsubscribe link and no tracking by default', async () => {
     const w = makeWorld();
+    w.ctx.config.publicUrl = PUBLIC;
     const mb = addMailbox(w, { provider: 'smtp' });
     emailCampaign(w, oneEmail, emailLeads(w, 1), [mb]);
     await runFor(w, 30 * MINUTE);
@@ -250,7 +276,9 @@ describe('composing emails', () => {
     expect(sent.transport).toMatchObject({ host: 'smtp.sender.dev', port: 465, secure: true });
     expect(sent.msg.from).toBe('"Sara Seller" <sara@sender.dev>');
     expect(sent.msg.messageId).toMatch(/@sender\.dev>$/);
-    expect(sent.msg.headers!['List-Unsubscribe']).toMatch(/^<http:\/\/localhost:8787\/u\/\d+\.\d+\.\d+\.[\w-]{22}>, <mailto:sara@sender\.dev\?subject=unsubscribe>$/);
+    expect(sent.msg.headers!['List-Unsubscribe']).toMatch(/^<https:\/\/reach\.example\.net\/u\/\d+\.\d+\.\d+\.[\w-]{22}>, <mailto:sara@sender\.dev\?subject=unsubscribe>$/);
+    expect(sent.msg.headers!['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
+    expect(sent.msg.text).toMatch(/Unsubscribe: https:\/\/reach\.example\.net\/u\/\S+ or just reply "unsubscribe"\.$/);
     expect(sent.msg.html).not.toContain('/t/o/');
     expect(sent.msg.html).not.toContain('/t/c/');
     expect(sent.msg.html).toContain('href="https://acme.dev/offer?x=1"');
@@ -269,24 +297,34 @@ describe('composing emails', () => {
     expect(isReservedAddress('x@examples.com')).toBe(false);
   });
 
-  it('puts a real mailbox on needs attention without PUBLIC_URL or when SMTP refuses the login', async () => {
+  it('puts a real mailbox on needs attention on a hosted server without a public PUBLIC_URL, or when SMTP refuses the login', async () => {
     const w = makeWorld();
     const mb = addMailbox(w, { provider: 'smtp' });
     const leads = emailLeads(w, 2);
     const { id } = emailCampaign(w, oneEmail, leads, [mb]);
     const events: string[] = [];
     w.ctx.webhooks.subscribe((_ws, e) => events.push(e));
+    // Hosted (billing on): no reply mode, a working unsubscribe link is required.
+    hosted(w);
     w.ctx.config.publicUrl = undefined;
     await runFor(w, 10 * MINUTE);
-    expect(mailbox(w, mb)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/PUBLIC_URL/) });
+    expect(mailbox(w, mb)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/^PUBLIC_URL is not set: on this hosted server/) });
+    expect(mailerOf(w).sent).toHaveLength(0);
+    // A PUBLIC_URL recipients can't open counts as none.
+    w.ctx.config.publicUrl = 'http://localhost:8787';
+    w.ctx.db.run("UPDATE mailboxes SET status = 'active' WHERE id = ?", [mb]);
+    await runFor(w, 10 * MINUTE);
+    expect(mailbox(w, mb)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/^PUBLIC_URL \(http:\/\/localhost:8787\) is not a public https:\/\/ address/) });
     expect(mailerOf(w).sent).toHaveLength(0);
 
-    w.ctx.config.publicUrl = 'http://localhost:8787';
+    // Self-hosted again (the SMTP host is not looked up there), with a public address.
+    hosted(w, false);
+    w.ctx.config.publicUrl = PUBLIC;
     w.ctx.db.run("UPDATE mailboxes SET status = 'active' WHERE id = ?", [mb]);
     mailerOf(w).failures.push(new MailError('AUTH', 'Invalid login: 535 5.7.8'));
     await runFor(w, 10 * MINUTE);
     expect(mailbox(w, mb)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/SMTP login refused/) });
-    expect(events.filter((e) => e === 'mailbox.needs_attention')).toHaveLength(2);
+    expect(events.filter((e) => e === 'mailbox.needs_attention')).toHaveLength(3);
     expect(sentRows(w, id).map((r) => r.status)).toEqual(['failed']);
     // Nothing went out, so the lead is free again: not pinned to the broken mailbox.
     expect(leads.map((l) => cl(w, id, l))).toEqual(leads.map(() => expect.objectContaining({ state: 'active', mailbox_id: null })));
@@ -304,6 +342,7 @@ describe('composing emails', () => {
 describe('unsubscribe and tracking links', () => {
   async function sentWorld(settings: Record<string, unknown> = {}) {
     const w = makeWorld();
+    w.ctx.config.publicUrl = PUBLIC;
     const mb = addMailbox(w, { provider: 'smtp' });
     const leads = emailLeads(w, 1);
     const c = emailCampaign(w, oneEmail, leads, [mb], settings);
@@ -318,7 +357,7 @@ describe('unsubscribe and tracking links', () => {
     const { w, api, leadId, msg } = await sentWorld();
     // Also running in a LinkedIn campaign.
     const other = makeCampaign(w, { start: 'v', nodes: { v: { id: 'v', type: 'wait', days: 5, hours: 0, next: null } } }, { skipIfInOtherCampaign: false }, [leadId]);
-    const url = /<(http[^>]+)>/.exec(msg.headers!['List-Unsubscribe'])![1].replace('http://localhost:8787', '');
+    const url = /<(http[^>]+)>/.exec(msg.headers!['List-Unsubscribe'])![1].replace(PUBLIC, '');
 
     const page = await api.app.inject({ method: 'GET', url });
     expect(page.statusCode).toBe(200);
@@ -350,8 +389,8 @@ describe('unsubscribe and tracking links', () => {
 
   it('tracks opens and clicks only when turned on, and redirects only to signed URLs', async () => {
     const { w, api, msg, row } = await sentWorld({ trackOpens: true, trackClicks: true });
-    const pixel = /src="http:\/\/localhost:8787(\/t\/o\/[^"]+)"/.exec(msg.html!)![1];
-    const click = /href="http:\/\/localhost:8787(\/t\/c\/[^"]+)"/.exec(msg.html!)![1].replace(/&amp;/g, '&');
+    const pixel = /src="https:\/\/reach\.example\.net(\/t\/o\/[^"]+)"/.exec(msg.html!)![1];
+    const click = /href="https:\/\/reach\.example\.net(\/t\/c\/[^"]+)"/.exec(msg.html!)![1].replace(/&amp;/g, '&');
     const gif = await api.app.inject({ method: 'GET', url: pixel });
     expect(gif.headers['content-type']).toBe('image/gif');
     await api.app.inject({ method: 'GET', url: pixel });
@@ -836,5 +875,383 @@ describe('DNS fallback', () => {
     expect(dnsServersFrom('  ')).toBeNull();
     expect(dnsServersFrom('none')).toEqual([]);
     expect(dnsServersFrom('1.1.1.1, 8.8.8.8 9.9.9.9')).toEqual(['1.1.1.1', '8.8.8.8', '9.9.9.9']);
+  });
+});
+
+describe('public links and reply mode', () => {
+  it('only treats an https PUBLIC_URL on a public host as reachable by recipients', () => {
+    for (const url of ['https://reach.example.net', 'https://reach.example.net/openreach', 'https://8.8.8.8', 'https://[2606:4700:4700::1111]', 'https://APP.Example.COM.', 'https://reach.example.net:8443']) expect(isPublicUrl(url), url).toBe(true);
+    for (const url of [
+      undefined,
+      '',
+      'not a url',
+      'http://reach.example.net',
+      'http://127.0.0.1:8799',
+      'https://127.0.0.1:8799',
+      'https://localhost',
+      'https://app.localhost',
+      'https://openreach.local',
+      'https://box.internal',
+      'https://router.lan',
+      'https://reach.test',
+      'https://myserver',
+      'https://10.0.0.5',
+      'https://192.168.1.20',
+      'https://172.16.4.1',
+      'https://100.64.0.1',
+      'https://169.254.169.254',
+      'https://[::1]',
+      'https://[fe80::1]',
+      'https://[fd00::5]',
+      'https://[::ffff:127.0.0.1]',
+      // Spellings of loopback and local names that WHATWG URL or the dot stripping must catch.
+      'https://0.0.0.0',
+      'https://127.1',
+      'https://2130706433',
+      'https://0x7f000001',
+      'https://LOCALHOST',
+      'https://Box.LOCAL',
+      'https://localhost..',
+      'https://foo.local..',
+      'https://a.local%2e%2e',
+      // Credentials would be copied into every link; a query or fragment would swallow the path.
+      'https://user:pass@reach.example.net',
+      'https://evil.com@127.0.0.1',
+      'https://reach.example.net?x=1',
+      'https://reach.example.net/#/',
+    ]) {
+      expect(isPublicUrl(url), String(url)).toBe(false);
+    }
+  });
+
+  it('never shows a password from PUBLIC_URL in the mailbox status', async () => {
+    const w = makeWorld();
+    hosted(w);
+    w.ctx.config.publicUrl = 'https://ops:secret@reach.local';
+    const mb = addMailbox(w, { provider: 'smtp' });
+    emailCampaign(w, oneEmail, emailLeads(w, 1), [mb]);
+    await runFor(w, 10 * MINUTE);
+    expect(mailbox(w, mb)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/^PUBLIC_URL \(https:\/\/reach\.local\) is not a public/) });
+    expect(mailbox(w, mb).status_message).not.toContain('secret');
+  });
+
+  it('asks for an email to the sender instead of a reply when Reply-To points elsewhere', () => {
+    const base = { from: 'sara@sender.dev', fromEmail: 'sara@sender.dev', replyTo: 'sales@sender.dev', to: 'ann@acme.dev', subject: 'Hi', body: 'Hello Ann', messageId: '<m@sender.dev>' };
+    const linkless = composeEmail(base);
+    expect(linkless.text).toBe(`Hello Ann\n\nDon't want to hear from me again? Email sara@sender.dev with the subject "unsubscribe" and I won't contact you again.`);
+    expect(linkless.html).toContain(`Email <a href="mailto:sara@sender.dev?subject=unsubscribe">sara@sender.dev</a> with the subject &quot;unsubscribe&quot;`);
+    expect(linkless.replyTo).toBe('sales@sender.dev');
+    // With a link, no reply option that would land in the other mailbox.
+    const linked = composeEmail({ ...base, links: { unsubscribe: 'https://app.dev/u/tok' } });
+    expect(linked.text).toMatch(/Unsubscribe: https:\/\/app\.dev\/u\/tok$/);
+    // A Reply-To that is the sender itself changes nothing.
+    expect(composeEmail({ ...base, replyTo: 'Sara@Sender.dev' }).text).toContain('Just reply "unsubscribe"');
+  });
+
+  it('stops a real mailbox without IMAP in reply mode, and treats open sign-up as hosted', async () => {
+    const w = makeWorld();
+    const mb = addMailbox(w, { provider: 'smtp', imap_enc: null });
+    emailCampaign(w, oneEmail, emailLeads(w, 1), [mb]);
+    await runFor(w, 10 * MINUTE);
+    expect(mailbox(w, mb)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/^Add IMAP settings/) });
+    expect(mailerOf(w).sent).toHaveLength(0);
+    // Open sign-up counts as hosted: strangers' campaigns need the link.
+    const open = makeWorld();
+    open.ctx.config.allowSignup = true;
+    const box = addMailbox(open, { provider: 'smtp' });
+    emailCampaign(open, oneEmail, emailLeads(open, 1), [box]);
+    await runFor(open, 10 * MINUTE);
+    expect(mailbox(open, box)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/on this hosted server/) });
+    expect(mailerOf(open).sent).toHaveLength(0);
+  });
+
+  it('puts mailboxes stopped for lack of PUBLIC_URL before reply mode back to work at startup', () => {
+    const w = makeWorld();
+    const old = 'Set PUBLIC_URL so emails can carry an unsubscribe link';
+    const ok = addMailbox(w, { provider: 'smtp', status: 'needs_attention', status_message: old });
+    const noImap = addMailbox(w, { provider: 'smtp', imap_enc: null, status: 'needs_attention', status_message: old });
+    const other = addMailbox(w, { provider: 'smtp', status: 'needs_attention', status_message: 'SMTP login refused' });
+    clearOldPublicUrlHolds(w.ctx);
+    expect(mailbox(w, ok)).toMatchObject({ status: 'active', status_message: null });
+    expect(mailbox(w, noImap)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/^Add IMAP settings/) });
+    expect(mailbox(w, other)).toMatchObject({ status: 'needs_attention', status_message: 'SMTP login refused' });
+  });
+
+  it('asks for an "unsubscribe" reply when there is no link, with the mailto header only', () => {
+    const base = { from: 'sara@sender.dev', fromEmail: 'sara@sender.dev', to: 'ann@acme.dev', subject: 'Hi', body: 'Hello Ann', signature: 'Sara', messageId: '<m@sender.dev>' };
+    for (const links of [null, { unsubscribe: null, openPixel: null, click: null }]) {
+      const msg = composeEmail({ ...base, links });
+      expect(msg.text).toBe(`Hello Ann\n\n-- \nSara\n\nDon't want to hear from me again? Just reply "unsubscribe" and I won't contact you again.`);
+      expect(msg.html).toContain(`<p style="color:#888;font-size:12px">Don't want to hear from me again? Just reply &quot;unsubscribe&quot; and I won't contact you again.</p>`);
+      expect(msg.headers).toEqual({ 'List-Unsubscribe': '<mailto:sara@sender.dev?subject=unsubscribe>' });
+    }
+    // Inbox replies still carry no footer at all.
+    const reply = composeEmail({ ...base, footer: false });
+    expect(reply.text).not.toMatch(/unsubscribe/i);
+    expect(reply.html).not.toMatch(/unsubscribe/i);
+  });
+
+  it('sends from a real mailbox in reply mode on a self-hosted server, with no links to an unreachable PUBLIC_URL', async () => {
+    for (const publicUrl of [undefined, 'http://localhost:8787', 'http://127.0.0.1:8799', 'https://openreach.local']) {
+      const w = makeWorld();
+      w.ctx.config.publicUrl = publicUrl;
+      const mb = addMailbox(w, { provider: 'smtp' });
+      const { id } = emailCampaign(w, oneEmail, emailLeads(w, 1), [mb], { trackOpens: true, trackClicks: true });
+      await runFor(w, 30 * MINUTE);
+      const [sent] = mailerOf(w).sent;
+      expect(sent, String(publicUrl)).toBeDefined();
+      expect(mailbox(w, mb)).toMatchObject({ status: 'active', status_message: null });
+      expect(sent.msg.headers).toEqual({ 'List-Unsubscribe': '<mailto:sara@sender.dev?subject=unsubscribe>' });
+      expect(sent.msg.text).toContain(`Just reply "unsubscribe" and I won't contact you again.`);
+      expect(sent.msg.html).toContain('Just reply &quot;unsubscribe&quot;');
+      // No unsubscribe link, open pixel or click redirect: the link in the body is left as written.
+      for (const part of [sent.msg.text, sent.msg.html!]) {
+        expect(part).not.toMatch(/localhost|127\.0\.0\.1|openreach\.local|\/u\/|\/t\/[oc]\//);
+      }
+      expect(sent.msg.html).not.toContain('<img');
+      expect(sent.msg.html).toContain('href="https://acme.dev/offer?x=1"');
+      expect(sentRows(w, id)[0].status).toBe('sent');
+    }
+  });
+
+  it('lets a mailbox resume in reply mode only on a self-hosted server, and says so in the API and campaign warnings', async () => {
+    const api = await makeApi();
+    await api.register('Acme');
+    // Sign-up closed after the first user: a self-hosted server.
+    api.w.ctx.config.allowSignup = false;
+    const created = await api.call('POST', '/api/mailboxes', {
+      name: 'Sales',
+      provider: 'smtp',
+      fromEmail: 'sara@sender.dev',
+      smtp: { host: 'smtp.sender.dev', port: 465, secure: true, user: 'sara@sender.dev', pass: 'app-password-1234' },
+    });
+    expect(created.body).toMatchObject({ status: 'active', unsubscribe: 'reply' });
+    const id = created.body.id;
+    const campaign = await api.call('POST', '/api/campaigns', { name: 'C', sequence: oneEmail, mailboxIds: [id], settings: { trackOpens: true } });
+    const warnings = () => api.call('GET', `/api/campaigns/${campaign.body.id}`).then((r) => (r.body.warnings as string[]).join(' '));
+    expect(campaign.body.warnings.join(' ')).toMatch(/PUBLIC_URL is not a public https:\/\/ address, so emails carry no unsubscribe link: their footer asks people to reply “unsubscribe”/);
+    expect(campaign.body.warnings.join(' ')).toMatch(/Open and click tracking need PUBLIC_URL set to a public https:\/\/ address/);
+    // Reply mode needs the replies read: without IMAP the mailbox can't send.
+    expect(campaign.body.warnings.join(' ')).toMatch(/Without IMAP settings those replies are never read, so Sales can’t send campaign email/);
+    api.w.ctx.db.run("UPDATE mailboxes SET status = 'needs_attention', status_message = 'x' WHERE id = ?", [id]);
+    const noImap = await api.call('POST', `/api/mailboxes/${id}/resume`, {});
+    expect(noImap.status).toBe(409);
+    expect(noImap.body.error).toMatch(/^Add IMAP settings: with no unsubscribe link/);
+    await api.call('PATCH', `/api/mailboxes/${id}`, { imap: { host: 'imap.sender.dev', port: 993, secure: true, user: 'sara@sender.dev', pass: 'app-password-1234' } });
+    expect((await api.call('POST', `/api/mailboxes/${id}/resume`, {})).body).toMatchObject({ status: 'active', unsubscribe: 'reply', hasImap: true });
+    expect(await warnings()).not.toMatch(/IMAP/);
+
+    api.w.ctx.db.run("UPDATE mailboxes SET status = 'needs_attention', status_message = 'x' WHERE id = ?", [id]);
+    hosted(api.w);
+    // On a hosted server reply mode doesn't exist: the mailbox says it can't offer an opt-out yet.
+    expect((await api.call('GET', `/api/mailboxes/${id}`)).body).toMatchObject({ unsubscribe: 'none' });
+    const refused = await api.call('POST', `/api/mailboxes/${id}/resume`, {});
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/^PUBLIC_URL \(http:\/\/localhost:8787\) is not a public https:\/\/ address .* campaign emails must carry a working unsubscribe link/);
+    expect(await warnings()).toMatch(/Real mailboxes can’t send campaign email until PUBLIC_URL is set/);
+    // A public address fixes it on a hosted server too.
+    api.w.ctx.config.publicUrl = PUBLIC;
+    expect((await api.call('POST', `/api/mailboxes/${id}/resume`, {})).body).toMatchObject({ status: 'active', unsubscribe: 'link' });
+    expect(await warnings()).not.toMatch(/PUBLIC_URL/);
+
+    hosted(api.w, false);
+    api.w.ctx.config.publicUrl = undefined;
+    api.w.ctx.db.run("UPDATE mailboxes SET status = 'needs_attention' WHERE id = ?", [id]);
+    expect((await api.call('POST', `/api/mailboxes/${id}/resume`, {})).body).toMatchObject({ status: 'active', unsubscribe: 'reply' });
+  });
+});
+
+describe('opt-out replies', () => {
+  async function sentWorld(n = 1) {
+    const w = makeWorld();
+    w.ctx.config.publicUrl = undefined;
+    const mb = addMailbox(w, { provider: 'smtp' });
+    const leads = emailLeads(w, n);
+    const c = emailCampaign(w, twoEmails, leads, [mb]);
+    // Each lead also waits in a LinkedIn campaign that keeps going after replies.
+    const other = makeCampaign(w, { start: 'v', nodes: { v: { id: 'v', type: 'wait', days: 5, hours: 0, next: null } } }, { skipIfInOtherCampaign: false, stopOnReply: false }, leads);
+    await runFor(w, 2 * HOUR);
+    expect(sentRows(w, c.id)).toHaveLength(n);
+    const events: string[] = [];
+    w.ctx.webhooks.subscribe((_ws, e) => events.push(e));
+    const sync = (mail: InboundEmail[]) => processInbound(w.ctx, mailbox(w, mb), mail);
+    return { w, mb, leads, campaignId: c.id, otherId: other.id, events, sync, sent: (l: number) => sentRows(w, c.id).find((r) => r.lead_id === l)! };
+  }
+  const suppressed = (w: World, leadId: number) =>
+    w.ctx.db.all<{ kind: string; reason: string; source: string }>('SELECT kind, reason, source FROM suppressions WHERE lead_id = ? ORDER BY kind', [leadId]);
+
+  it('suppresses everywhere on the List-Unsubscribe mailto (subject "unsubscribe"), without waiting for AI', async () => {
+    const { w, leads, campaignId, otherId, events, sync } = await sentWorld();
+    // What a mail client's unsubscribe button sends: a new message, no thread headers, often no text.
+    expect(sync([inbound({ uid: 1, from: 'person0@acme.dev', subject: 'Unsubscribe', text: '', date: w.ctx.clock.now() })])).toMatchObject({ replies: 1 });
+    expect(suppressed(w, leads[0])).toEqual([
+      { kind: 'email', reason: 'unsubscribe', source: 'email reply' },
+      { kind: 'linkedin', reason: 'unsubscribe', source: 'email reply' },
+    ]);
+    expect(cl(w, campaignId, leads[0]).state).not.toBe('active');
+    expect(cl(w, otherId, leads[0])).toMatchObject({ state: 'skipped', last_error: 'Suppressed: unsubscribe' });
+    expect(w.ctx.db.get('SELECT category, category_source AS s FROM conversations WHERE lead_id = ?', [leads[0]])).toEqual({ category: 'unsubscribe', s: 'rules' });
+    expect(w.ctx.db.get("SELECT detail FROM activity WHERE lead_id = ? AND type = 'classified'", [leads[0]])).toEqual({ detail: 'Unsubscribe (unsubscribed by reply: subject "unsubscribe")' });
+    expect(events.filter((e) => e === 'lead.suppressed')).toHaveLength(1);
+    // The classifier leaves the labelled reply alone; nothing is suppressed twice.
+    await w.ctx.jobs.drain();
+    expect(events.filter((e) => e === 'lead.suppressed')).toHaveLength(1);
+    expect(w.ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM activity WHERE type = 'classified'")!.n).toBe(1);
+    // "Re: unsubscribe" counts too, even from an auto-responder; a question about a list does not.
+    expect(optOutReason('RE: re:  UNSUBSCRIBE ', '')).toBe('subject "unsubscribe"');
+    expect(optOutReason('Unsubscribe me from the webinar list?', '')).toBeNull();
+  });
+
+  it('honours "unsubscribe" in the subject of an automatic message', async () => {
+    const { w, leads, sync } = await sentWorld();
+    sync([inbound({ uid: 1, from: 'person0@acme.dev', subject: 'Re: unsubscribe', text: 'This message was sent automatically.', autoSubmitted: true, date: w.ctx.clock.now() })]);
+    expect(suppressed(w, leads[0]).map((s) => s.reason)).toEqual(['unsubscribe', 'unsubscribe']);
+  });
+
+  it('suppresses on a short reply that asks to be removed, ignoring the quoted footer and signature', async () => {
+    const { w, leads, campaignId, otherId, sync, sent } = await sentWorld(2);
+    const now = w.ctx.clock.now();
+    sync([
+      inbound({
+        uid: 1,
+        from: 'person0@acme.dev',
+        inReplyTo: sent(leads[0]).message_id,
+        subject: 'Re: Quick idea for Acme',
+        text: `Please remove me from your list.\n\n-- \nAnn Smith\nHead of Sales, Acme\n\nOn Mon, Sara wrote:\n> Hi First0\n> Don't want to hear from me again? Just reply "unsubscribe" and I won't contact you again.`,
+        date: now,
+      }),
+      inbound({ uid: 2, from: 'person1@acme.dev', inReplyTo: sent(leads[1]).message_id, subject: 'Re: Quick idea for Acme', text: 'stop emailing me\n\nSent from my iPhone', date: now }),
+    ]);
+    for (const l of leads) {
+      expect(suppressed(w, l).map((s) => s.source)).toEqual(['email reply', 'email reply']);
+      expect(cl(w, campaignId, l).state).not.toBe('active');
+      expect(cl(w, otherId, l).state).toBe('skipped');
+    }
+    expect(w.ctx.db.get("SELECT detail FROM activity WHERE lead_id = ? AND type = 'classified'", [leads[0]])).toEqual({ detail: 'Unsubscribe (unsubscribed by reply: "Please remove me from your list.")' });
+  });
+
+  it('suppresses on angry questions and on an HTML-only reply', async () => {
+    const { w, leads, sync, sent } = await sentWorld(3);
+    const now = w.ctx.clock.now();
+    sync([
+      inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, text: "Why won't you stop emailing me?", date: now }),
+      inbound({ uid: 2, from: 'person1@acme.dev', inReplyTo: sent(leads[1]).message_id, text: "Can't you just remove me from your list?", date: now }),
+      // What the IMAP fetch makes of a reply with only an HTML part.
+      inbound({
+        uid: 3,
+        from: 'person2@acme.dev',
+        inReplyTo: sent(leads[2]).message_id,
+        text: htmlToText(`<div dir="ltr"><p>Please remove my email from your list</p></div><div class="gmail_quote">On Mon, Sara wrote:<blockquote>Hi<br>Don't want to hear from me again? Just reply &quot;unsubscribe&quot;</blockquote></div>`),
+        date: now,
+      }),
+    ]);
+    for (const l of leads) expect(suppressed(w, l).map((s) => s.source)).toEqual(['email reply', 'email reply']);
+  });
+
+  it('reads HTML-only replies as text, without the quoted history', () => {
+    expect(findParts({ type: 'multipart/alternative', childNodes: [{ part: '1', type: 'text/html' }] })).toEqual({ html: '1' });
+    expect(findParts({ type: 'multipart/alternative', childNodes: [{ part: '1', type: 'text/plain' }, { part: '2', type: 'text/html' }] })).toMatchObject({ text: '1' });
+    expect(htmlToText('<html><head><style>p{color:red}</style></head><body><p>Stop&nbsp;emailing me.</p><p>Ann<br>Acme &amp; Co</p><blockquote><p>Hi <b>Ann</b></p><blockquote>older</blockquote></blockquote></body></html>')).toBe('Stop emailing me.\nAnn\nAcme & Co');
+    expect(htmlToText('<div>Sure, call me.</div><div id="divRplyFwdMsg">From: Sara<br>Don\'t want to hear from me again?</div>')).toBe('Sure, call me.');
+  });
+
+  it('leaves replies that only mention unsubscribing to the classifier', async () => {
+    const { w, leads, otherId, sync, sent } = await sentWorld(10);
+    const now = w.ctx.clock.now();
+    const long = `Thanks Sara, this came at a good time. ${'We are reviewing our outbound tooling this quarter and would like to compare a few options before deciding. '.repeat(2)}I nearly hit unsubscribe on the first email, but the second one was useful. Can we talk on Thursday?`;
+    expect(long.length).toBeGreaterThan(200);
+    sync([
+      inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, text: "Don't unsubscribe me, I'd like to hear more.", date: now }),
+      inbound({ uid: 2, from: 'person1@acme.dev', inReplyTo: sent(leads[1]).message_id, text: long, date: now }),
+      // Nothing of their own above our quoted footer.
+      inbound({ uid: 3, from: 'person2@acme.dev', inReplyTo: sent(leads[2]).message_id, text: `\n\nOn Mon, Sara wrote:\n> Don't want to hear from me again? Just reply "unsubscribe".`, date: now }),
+      // An out-of-office whose text says "unsubscribe" is no opt-out.
+      inbound({ uid: 4, from: 'person3@acme.dev', inReplyTo: sent(leads[3]).message_id, subject: 'Automatic reply: Quick idea', text: 'Unsubscribe', autoSubmitted: true, date: now }),
+      inbound({ uid: 5, from: 'person4@acme.dev', inReplyTo: sent(leads[4]).message_id, text: 'Please do not unsubscribe me, just send less often.', date: now }),
+      // Our footer quoted under a Dutch header block, and under an Outlook "From: Name" block with no address.
+      inbound({ uid: 6, from: 'person5@acme.dev', inReplyTo: sent(leads[5]).message_id, text: `Prima, bel me maar.\n\nVan: Sara <sara@sender.dev>\nOnderwerp: Hoi\n\nKort vraagje?\n\nDon't want to hear from me again? Just reply \"unsubscribe\" and I won't contact you again.`, date: now }),
+      inbound({ uid: 7, from: 'person6@acme.dev', inReplyTo: sent(leads[6]).message_id, text: `Ok, Tuesday works.\n\nFrom: Sara Seller\nSent: Monday\nTo: Ann\nSubject: Hi\n\nOpen to a chat?\n\nDon't want to hear from me again? Just reply \"unsubscribe\" and I won't contact you again.`, date: now }),
+      // A positive reply whose signature carries a legal notice, and a refusal to be removed.
+      inbound({ uid: 8, from: 'person7@acme.dev', inReplyTo: sent(leads[7]).message_id, text: "Thanks.\n\nJohn Smith | VP Sales\nThis email is confidential. To unsubscribe from our marketing emails visit acme.dev/prefs.", date: now }),
+      inbound({ uid: 9, from: 'person8@acme.dev', inReplyTo: sent(leads[8]).message_id, text: "No need to remove me, I'm interested", date: now }),
+      inbound({ uid: 10, from: 'person9@acme.dev', inReplyTo: sent(leads[9]).message_id, text: "Sounds great, let's talk Tuesday.\n\nJohn Smith\nTo unsubscribe from our marketing emails visit acme.dev/prefs.", date: now }),
+    ]);
+    expect(w.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM suppressions')!.n).toBe(0);
+    for (const l of leads) expect(cl(w, otherId, l).state).toBe('active');
+    expect(w.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM messages WHERE category IS NOT NULL')!.n).toBe(0);
+  });
+
+  it('applies a sure opt-out from the keyword rules when the AI fails, and nothing else', async () => {
+    const { w, leads, otherId, sync, sent } = await sentWorld(4);
+    // The configured AI server refuses the key: the classify job fails for good on its first attempt.
+    createIntegration(w.ctx, w.workspaceId, { kind: 'ai', provider: 'openai_compat', credentials: {}, settings: { baseUrl: 'http://localhost:11434/v1', writerModel: 'm', classifierModel: 'm' } });
+    w.ctx.fetch = fakeFetch([{ url: /11434/, reply: () => ({ status: 401, json: { error: { message: 'bad key' } } }) }]);
+    const now = w.ctx.clock.now();
+    sync([
+      inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, text: 'Not interested, thanks.', date: now }),
+      inbound({ uid: 2, from: 'person1@acme.dev', inReplyTo: sent(leads[1]).message_id, text: 'Sounds good, tell me more.', date: now }),
+      // Outlook quotes the original (and our footer) with no "> ", and a signature mentions unsubscribing.
+      inbound({ uid: 3, from: 'person2@acme.dev', inReplyTo: sent(leads[2]).message_id, text: `Yes, happy to chat.\n\nFrom: Sara Seller\nSent: Monday\nTo: Ann\nSubject: quick question\n\nHi Ann, open to a chat?\n\nDon't want to hear from me again? Just reply \"unsubscribe\" and I won't contact you again.`, date: now }),
+      inbound({ uid: 4, from: 'person3@acme.dev', inReplyTo: sent(leads[3]).message_id, text: 'Thanks, Thursday is fine.\n\nJohn\nTo unsubscribe from our marketing emails visit acme.dev/prefs', date: now }),
+    ]);
+    // "Not interested" is no unsubscribe, so it waits for the classifier.
+    expect(w.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM suppressions')!.n).toBe(0);
+    await w.ctx.jobs.drain();
+    expect(suppressed(w, leads[0])).toEqual([
+      { kind: 'email', reason: 'not_interested', source: 'keyword rules' },
+      { kind: 'linkedin', reason: 'not_interested', source: 'keyword rules' },
+    ]);
+    expect(cl(w, otherId, leads[0]).state).toBe('skipped');
+    expect(w.ctx.db.all<{ status: string; detail: string }>("SELECT status, detail FROM activity WHERE lead_id = ? AND type = 'classified' ORDER BY id", [leads[0]]).map((a) => `${a.status}: ${a.detail}`)).toEqual([
+      expect.stringMatching(/^failed: /),
+      'ok: Not interested (keyword rules, AI unavailable)',
+    ]);
+    expect(w.ctx.db.get('SELECT category, category_source AS s FROM conversations WHERE lead_id = ?', [leads[0]])).toEqual({ category: 'not_interested', s: 'rules' });
+    // Anything else stays unclassified, as before.
+    expect(suppressed(w, leads[1])).toEqual([]);
+    expect(w.ctx.db.get('SELECT category FROM conversations WHERE lead_id = ?', [leads[1]])).toEqual({ category: null });
+    expect(cl(w, otherId, leads[1]).state).toBe('active');
+    for (const l of leads.slice(2)) {
+      expect(suppressed(w, l)).toEqual([]);
+      expect(cl(w, otherId, l).state).toBe('active');
+    }
+  });
+});
+
+describe('guessed addresses', () => {
+  it('sends from a real mailbox only to Pattern finder guesses a verifier confirmed', async () => {
+    const w = makeWorld();
+    const mb = addMailbox(w, { provider: 'smtp' });
+    const leads = emailLeads(w, 5);
+    const set = (l: number, source: string, status: string | null) => w.ctx.db.run('UPDATE leads SET email_source = ?, email_status = ? WHERE id = ?', [source, status, l]);
+    set(leads[0], 'pattern', 'unknown');
+    set(leads[1], 'pattern', 'valid');
+    set(leads[2], 'pattern', 'risky');
+    set(leads[3], 'pattern', null);
+    // Addresses people gave us are unchanged, verified or not.
+    set(leads[4], 'csv', 'unknown');
+    const { id } = emailCampaign(w, oneEmail, leads, [mb]);
+    await runFor(w, 2 * HOUR);
+    expect(mailerOf(w).sent.map((s) => s.msg.to).sort()).toEqual(['person1@acme.dev', 'person4@acme.dev']);
+    expect(w.ctx.db.all("SELECT lead_id, detail FROM activity WHERE type = 'email' AND status = 'skipped' AND campaign_id = ? ORDER BY lead_id", [id])).toEqual([
+      { lead_id: leads[0], detail: 'guessed address not confirmed by a verifier (unknown): never sent from a real mailbox' },
+      { lead_id: leads[2], detail: 'guessed address not confirmed by a verifier (risky): never sent from a real mailbox' },
+      { lead_id: leads[3], detail: 'guessed address not confirmed by a verifier (not checked): never sent from a real mailbox' },
+    ]);
+    expect(cl(w, id, leads[0]).state).toBe('done');
+  });
+
+  it('accepts a risky guess when the workspace accepts risky addresses, and a simulated mailbox sends to any', async () => {
+    const w = makeWorld();
+    setSetting(w.ctx, w.workspaceId, 'enrichment', EnrichmentSettingsSchema, { acceptRisky: true });
+    const real = addMailbox(w, { provider: 'smtp' });
+    const leads = emailLeads(w, 2);
+    w.ctx.db.run("UPDATE leads SET email_source = 'pattern', email_status = 'risky' WHERE id = ?", [leads[0]]);
+    w.ctx.db.run("UPDATE leads SET email_source = 'pattern', email_status = 'unknown' WHERE id = ?", [leads[1]]);
+    emailCampaign(w, oneEmail, [leads[0]], [real]);
+    const sim = addMailbox(w, { name: 'Sim', from_email: 'sim@sender.dev' });
+    emailCampaign(w, oneEmail, [leads[1]], [sim]);
+    await runFor(w, 2 * HOUR);
+    expect(mailerOf(w).sent.map((s) => s.msg.to).sort()).toEqual(['person0@acme.dev', 'person1@acme.dev']);
   });
 });

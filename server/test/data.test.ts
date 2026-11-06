@@ -374,6 +374,8 @@ describe('find_email step and email_verified condition', () => {
 describe('simulated addresses and real mailboxes', () => {
   it('never sends to an address made up by the simulated finder from a real mailbox', async () => {
     const w = makeWorld();
+    // A public address, so the mailbox sends with an unsubscribe link (the test default, localhost, isn't one).
+    w.ctx.config.publicUrl = 'https://reach.example.net';
     const [made, real] = addLeads(w, 2);
     w.ctx.db.run("UPDATE leads SET email = 'first0.last@acmecorp.com', email_source = 'simulated' WHERE id = ?", [made]);
     w.ctx.db.run("UPDATE leads SET email = 'first1.last@acmecorp.com', email_source = 'csv' WHERE id = ?", [real]);

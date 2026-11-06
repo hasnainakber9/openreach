@@ -624,7 +624,7 @@ function ContentFields({ type, value, onChange, variantId }: { type: VariantNode
         value={value.body ?? ''}
         onChange={(body) => onChange({ ...value, body })}
         rows={7}
-        hint="Sent from the campaign's mailboxes (see Settings) to leads with a known email address, with your signature and an unsubscribe link."
+        hint="Sent from the campaign's mailboxes (see Settings) to leads with a known email address, with your signature and an unsubscribe link (or, when the server has no public address, a line asking people to reply “unsubscribe”)."
       />
     </>
   );

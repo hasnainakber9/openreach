@@ -216,7 +216,7 @@ function Thread({ id, onChange, writer }: { id: number; onChange: () => void; wr
           ) : (
             <span className="muted">{c.messages.some((m) => m.direction === 'in') ? 'Not classified yet' : 'No reply yet'}</span>
           )}
-          {c.category && <span className="muted">{c.categorySource === 'manual' ? 'set by hand' : c.categoryConfidence != null ? `AI, ${Math.round(c.categoryConfidence * 100)}% sure` : ''}</span>}
+          {c.category && <span className="muted">{c.categorySource === 'manual' ? 'set by hand' : c.categorySource === 'rules' ? 'keyword rules' : c.categoryConfidence != null ? `AI, ${Math.round(c.categoryConfidence * 100)}% sure` : ''}</span>}
           {writer && (
             <select value={c.category ?? ''} onChange={(e) => e.target.value && setCategory(e.target.value as ReplyCategory)} aria-label="Change reply category" disabled={busy === 'category'}>
               <option value="" disabled>

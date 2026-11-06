@@ -71,7 +71,23 @@ export default function Mailboxes({ me }: { me: Me }) {
               </div>
               {m.statusMessage && <div className={`note ${m.overPlan ? 'note-warning' : 'note-error'}`}>{m.statusMessage}</div>}
               {m.simulated && <div className="note">Simulated: emails are recorded but never delivered, and made-up replies and bounces come back so you can try the whole flow.</div>}
-              {!m.simulated && !m.hasImap && <div className="note note-warning">No IMAP settings: replies and bounces from this mailbox aren’t detected, so sequences won’t stop when people answer.</div>}
+              {!m.simulated && !m.hasImap && (
+                <div className="note note-warning">
+                  No IMAP settings: replies and bounces from this mailbox aren’t detected, so sequences won’t stop when people answer
+                  {m.unsubscribe !== 'reply'
+                    ? '.'
+                    : m.legacyAccountId
+                      ? ', and replies asking to unsubscribe must be added to the do-not-contact list by hand.'
+                      : '. With no unsubscribe link, campaign emails ask people to reply “unsubscribe”, so this mailbox can’t send them until it has IMAP settings.'}
+                </div>
+              )}
+              {!m.simulated && m.hasImap && m.unsubscribe === 'reply' && m.status !== 'needs_attention' && (
+                <div className="note">
+                  No unsubscribe link: this server has no public address (PUBLIC_URL), so campaign emails ask people to{' '}
+                  {m.replyTo && m.replyTo.toLowerCase() !== m.fromEmail.toLowerCase() ? `email ${m.fromEmail} with the subject “unsubscribe”` : 'reply “unsubscribe”'} instead. Such
+                  messages put them on the do-not-contact list automatically.
+                </div>
+              )}
               <Meter label="Sent today" used={m.sentToday} limit={m.effectiveLimit} />
               {m.warmup && m.effectiveLimit < m.dailyLimit && (
                 <div className="note">

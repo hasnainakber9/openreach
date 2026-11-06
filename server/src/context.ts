@@ -8,7 +8,7 @@ import { registerHandlers } from './jobs/handlers.js';
 import { JobQueue } from './jobs/queue.js';
 import { systemResolver, type DnsResolver } from './mail/deliverability.js';
 import { imapflowFactory, type ImapFactory } from './mail/imap.js';
-import { ensureLegacyMailboxes } from './mail/mailboxes.js';
+import { clearOldPublicUrlHolds, ensureLegacyMailboxes } from './mail/mailboxes.js';
 import { registerProviders } from './providers/index.js';
 import { ProviderResolver } from './providers/store.js';
 import { Sealer } from './services/crypto.js';
@@ -68,5 +68,7 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
   registerCrmTriggers(ctx);
   // Accounts' SMTP settings from before mailboxes become mailboxes (once; needs APP_SECRET, so not a migration).
   ensureLegacyMailboxes(ctx);
+  // Mailboxes stopped for lack of PUBLIC_URL before reply mode existed.
+  clearOldPublicUrlHolds(ctx);
   return ctx;
 }

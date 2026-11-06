@@ -73,6 +73,20 @@ describe('keyword classifier (simulated AI)', () => {
       ['Please stop messaging me, but thanks for reaching out.', 'unsubscribe', 0.9],
       ['Unsubscribe me please, though I appreciate it.', 'unsubscribe', 0.9],
       ["I'm not saying unsubscribe me, just slow down.", 'unsubscribe', 0.4],
+      // Contractions negate too.
+      ["Don't unsubscribe me, I'd like to hear more.", 'unsubscribe', 0.4],
+      ["I wouldn't say not interested, just busy.", 'not_interested', 0.4],
+      ["Please don't remove me.", 'unsubscribe', 0.4],
+      // A question is no negation, and a positive phrase makes an opt-out unsure.
+      ["Why won't you stop emailing me?", 'unsubscribe', 0.9],
+      ["Can't you just remove me from your list?", 'unsubscribe', 0.9],
+      ["No need to remove me, I'm interested", 'unsubscribe', 0.4],
+      // Plain wordings of the same request.
+      ['Please remove my email from your list', 'unsubscribe', 0.9],
+      ['Never email me again', 'unsubscribe', 0.9],
+      ['Please stop', 'unsubscribe', 0.9],
+      ['please delete my details', 'unsubscribe', 0.9],
+      ['Please remove.', 'unsubscribe', 0.9],
       ['Hi, appreciate the note. Not a priority for us right now, maybe next quarter.', 'not_now', 0.9],
       ["Thanks! We're actually looking at this now. Let's talk.", 'interested', 0.9],
       ['Thanks for reaching out! Happy to chat, what does your calendar look like next week?', 'interested', 0.9],

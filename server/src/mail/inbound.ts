@@ -1,3 +1,4 @@
+import { applyCategory } from '../ai/classify.js';
 import { DAY, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { PermanentError, type JobHelpers, type JobInfo } from '../jobs/queue.js';
@@ -5,9 +6,11 @@ import { logActivity } from '../services/activity.js';
 import { MailError } from '../services/email.js';
 import { publicLead } from '../services/leads.js';
 import { handleInboundReply } from '../services/replies.js';
+import { alreadySuppressed, suppressLead } from '../services/suppression.js';
 import type { EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
 import { imapFor, normalizeMessageId, type InboundEmail } from './imap.js';
 import { mailboxNeedsAttention, WENT_OUT } from './mailboxes.js';
+import { ownText, ruleOptOut, stripQuoted } from './replyText.js';
 
 // Replies and bounces read from a mailbox's INBOX (email.sync job). Mail is matched to our own outbound
 // emails by In-Reply-To/References, else by sender address to a lead this mailbox emailed; anything else
@@ -26,18 +29,15 @@ export interface InboundStats {
 
 const isDaemon = (from: string) => /^(mailer-daemon|postmaster|mail-daemon)@/i.test(from);
 
-// Drops quoted history ("> ..." lines and everything after "On ... wrote:") so the inbox and the
-// classifier see what the person actually wrote.
-export function stripQuoted(text: string): string {
-  const lines = text.replace(/\r\n/g, '\n').split('\n');
-  const out: string[] = [];
-  for (const line of lines) {
-    if (/^On .{4,200}wrote:\s*$/.test(line.trim()) || /^-{2,}\s*Original Message\s*-{2,}/i.test(line.trim())) break;
-    if (/^\s*>/.test(line)) continue;
-    out.push(line);
-  }
-  const s = out.join('\n').trim();
-  return s || text.trim();
+// An explicit opt-out, honoured as the mail arrives and without AI: the subject the List-Unsubscribe
+// mailto (and the reply-mode footer) asks for, or a short reply the keyword rules read as an unsubscribe
+// ("remove me", "stop emailing me"; "don't unsubscribe me" is not one). A plain "not interested" is no
+// unsubscribe and waits for the classifier. Returns why, or null.
+export function optOutReason(subject: string, text: string): string | null {
+  if (/^\s*((re|aw|sv|fwd?)\s*:\s*)*unsubscribe\s*$/i.test(subject)) return 'subject "unsubscribe"';
+  if (ruleOptOut(text)?.category !== 'unsubscribe') return null;
+  const quote = ownText(text).replace(/\s+/g, ' ');
+  return `"${quote.length > 80 ? `${quote.slice(0, 79)}…` : quote}"`;
 }
 
 function ourMessage(ctx: Ctx, mb: MailboxRow, ids: (string | null)[]): EmailMessageRow | undefined {
@@ -54,6 +54,8 @@ export function processInbound(ctx: Ctx, mb: MailboxRow, emails: InboundEmail[])
   const now = ctx.clock.now();
   // The newest reply per lead: one handleInboundReply each, like a LinkedIn thread sync.
   const newest = new Map<number, { lead: LeadRow; conversationId: number; messageId: number; body: string; date: number }>();
+  // Explicit opt-outs per lead (the first one counts).
+  const optOuts = new Map<number, { conversationId: number; messageId: number; reason: string }>();
   for (const e of [...emails].sort((a, b) => a.date - b.date || a.uid - b.uid)) {
     const messageId = normalizeMessageId(e.messageId);
     // Mail from before the mailbox was added here is not a reply to us.
@@ -100,9 +102,12 @@ export function processInbound(ctx: Ctx, mb: MailboxRow, emails: InboundEmail[])
     }
     const body = stripQuoted(e.text).slice(0, 8000) || '(no text)';
     const sentAt = Math.min(e.date, now);
+    // An automatic answer is no opt-out, unless it is the List-Unsubscribe mailto (some clients mark theirs).
+    const optOut = e.autoSubmitted ? optOutReason(e.subject, '') : optOutReason(e.subject, e.text);
     const conversationId = ctx.db.tx(() => {
       const conv = conversationFor(ctx, mb, lead, original, e, messageId);
       const msgId = ctx.db.insert('messages', { conversation_id: conv, external_id: messageId, direction: 'in', body, sent_at: sentAt });
+      if (optOut && !optOuts.has(lead.id)) optOuts.set(lead.id, { conversationId: conv, messageId: msgId, reason: optOut });
       ctx.db.insert('email_messages', {
         workspace_id: mb.workspace_id,
         mailbox_id: mb.id,
@@ -132,7 +137,17 @@ export function processInbound(ctx: Ctx, mb: MailboxRow, emails: InboundEmail[])
   for (const r of newest.values()) {
     handleInboundReply(ctx, { lead: r.lead, channel: 'email', conversationId: r.conversationId, messageId: r.messageId, body: r.body, mailbox: { id: mb.id, name: mb.name, timezone: mb.timezone } });
   }
+  for (const [leadId, o] of optOuts) honourOptOut(ctx, mb, leadId, o);
   return stats;
+}
+
+// Like an unsubscribe link: the person goes on the do-not-contact list and stops in every campaign, final
+// even if a newer message came in meanwhile. The reply is labelled Unsubscribe, so the classifier skips it.
+function honourOptOut(ctx: Ctx, mb: MailboxRow, leadId: number, o: { conversationId: number; messageId: number; reason: string }) {
+  const lead = ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [leadId]);
+  if (!lead) return;
+  if (!alreadySuppressed(ctx, lead)) suppressLead(ctx, lead, 'unsubscribe', 'email reply');
+  applyCategory(ctx, { workspaceId: mb.workspace_id, conversationId: o.conversationId, messageId: o.messageId, category: 'unsubscribe', confidence: 1, source: 'rules', note: `unsubscribed by reply: ${o.reason}` });
 }
 
 // The reply's thread: the conversation of the email it answers, else the lead's latest thread in this

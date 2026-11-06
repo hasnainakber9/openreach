@@ -11,7 +11,7 @@ import {
   emailDomain,
   isSimulated,
   MAILBOX_PRESETS,
-  needsPublicUrl,
+  optOutProblem,
   releaseUnstartedMailboxLeads,
   retireMailbox,
   serializeMailbox,
@@ -209,7 +209,8 @@ export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
   app.post('/api/mailboxes/:id/resume', async (req) => {
     requireAdmin(req);
     const mb = load(req);
-    if (!ctx.config.publicUrl && needsPublicUrl(mb)) throw new HttpError(409, 'Set PUBLIC_URL on the server first: campaign emails must carry a working unsubscribe link');
+    const optOut = optOutProblem(ctx, mb);
+    if (optOut) throw new HttpError(409, optOut);
     if (!isSimulated(mb) && !mb.smtp_enc) throw new HttpError(400, 'Add SMTP settings first');
     ctx.db.run("UPDATE mailboxes SET status = 'active', status_message = NULL WHERE id = ?", [mb.id]);
     return reload(mb.id);

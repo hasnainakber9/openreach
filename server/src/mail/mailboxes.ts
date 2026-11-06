@@ -1,4 +1,4 @@
-import { overPlanIds, overPlanMessage, withinPlan, withPlanLock } from '../billing/limits.js';
+import { billingEnabled, overPlanIds, overPlanMessage, withinPlan, withPlanLock } from '../billing/limits.js';
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -7,6 +7,7 @@ import { mask } from '../services/crypto.js';
 import type { SmtpConfig, SmtpTransport } from '../services/email.js';
 import { skipTasksOfStoppedLeads } from '../services/tasks.js';
 import type { AccountRow, CampaignRow, LeadRow, MailboxRow } from '../types.js';
+import { publicLinkBase, publicLinkProblem } from './tracking.js';
 
 // Mailboxes are the workspace's sending addresses for email steps, separate from LinkedIn accounts.
 // Each one keeps its own daily limit (with a warm-up ramp), sending window and random gaps, and a
@@ -64,10 +65,46 @@ export const presetById = (id: string) => MAILBOX_PRESETS.find((p) => p.id === i
 
 export const isSimulated = (mb: Pick<MailboxRow, 'provider'>) => mb.provider === 'simulated';
 
-// Real mailboxes need PUBLIC_URL for the unsubscribe link. One migrated from an account's SMTP settings
-// sent without it before mailboxes existed, so it keeps doing so (mailto List-Unsubscribe only) rather
-// than stopping those campaigns' email steps after an upgrade.
-export const needsPublicUrl = (mb: Pick<MailboxRow, 'provider' | 'legacy_account_id'>) => !isSimulated(mb) && mb.legacy_account_id == null;
+// Why a mailbox can't send campaign email for lack of an unsubscribe link, or null. Every campaign email
+// offers an opt-out: an unsubscribe link when PUBLIC_URL is a public https address, otherwise (reply mode)
+// a footer asking people to reply "unsubscribe", which inbound mail detection honours, so the mailbox must
+// have IMAP for those replies to be read. A self-hosted install, often a laptop nobody can reach, sends in
+// reply mode. A server that sends other people's campaigns (billing on, or open sign-up) does so at volume,
+// where mailbox providers expect a one-click link, so its real mailboxes need it.
+// A mailbox migrated from an account's SMTP settings sent without a link before mailboxes existed, so it
+// keeps doing so rather than stopping those campaigns' email steps after an upgrade.
+export function optOutProblem(ctx: Ctx, mb: Pick<MailboxRow, 'provider' | 'legacy_account_id' | 'imap_enc'>): string | null {
+  if (isSimulated(mb) || mb.legacy_account_id != null) return null;
+  const problem = publicLinkProblem(ctx);
+  if (!problem) return null;
+  if (sendsForOthers(ctx)) return `${problem}: on this hosted server, campaign emails must carry a working unsubscribe link. Set PUBLIC_URL to the server's public https:// address.`;
+  if (!mb.imap_enc) return 'Add IMAP settings: with no unsubscribe link (PUBLIC_URL is not a public https:// address), campaign emails ask people to reply "unsubscribe", and only IMAP lets OpenReach read those replies.';
+  return null;
+}
+
+// Other people's campaigns go through this server: billing is on, or anyone can sign up.
+export const sendsForOthers = (ctx: Ctx) => billingEnabled(ctx) || ctx.config.allowSignup;
+
+// How this mailbox's campaign emails offer the opt-out: an unsubscribe link, a reply (no public PUBLIC_URL),
+// or neither because it can't send campaign email until that is fixed (see optOutProblem).
+export function unsubscribeMode(ctx: Ctx, mb: MailboxRow): 'link' | 'reply' | 'none' {
+  if (publicLinkBase(ctx)) return 'link';
+  return !isSimulated(mb) && mb.legacy_account_id == null && sendsForOthers(ctx) ? 'none' : 'reply';
+}
+
+// Before reply mode, a real mailbox without PUBLIC_URL was stopped with this message. Where it may now send
+// in reply mode it goes back to work after the upgrade instead of waiting for someone to click Resume; on a
+// hosted server the message is brought up to date.
+const OLD_PUBLIC_URL_MESSAGE = 'Set PUBLIC_URL so emails can carry an unsubscribe link';
+
+export function clearOldPublicUrlHolds(ctx: Ctx) {
+  const held = ctx.db.all<MailboxRow>("SELECT * FROM mailboxes WHERE status = 'needs_attention' AND status_message = ?", [OLD_PUBLIC_URL_MESSAGE]);
+  for (const mb of held) {
+    const problem = optOutProblem(ctx, mb);
+    if (problem) ctx.db.run('UPDATE mailboxes SET status_message = ? WHERE id = ?', [problem, mb.id]);
+    else ctx.db.run("UPDATE mailboxes SET status = 'active', status_message = NULL WHERE id = ?", [mb.id]);
+  }
+}
 
 export function serverSettings(ctx: Ctx, sealed: string | null): ServerSettings | null {
   const raw = ctx.sealer.open(sealed);
@@ -197,7 +234,7 @@ export function retireMailbox(ctx: Ctx, mailboxId: number) {
   });
 }
 
-// A mailbox that can't send (login refused, PUBLIC_URL missing) stops until the user fixes it.
+// A mailbox that can't send (login refused, no public PUBLIC_URL on a hosted server) stops until the user fixes it.
 // Leads whose email never went out move on to the campaign's other mailboxes.
 export function mailboxNeedsAttention(ctx: Ctx, mb: MailboxRow, reason: string) {
   const changed = ctx.db.run("UPDATE mailboxes SET status = 'needs_attention', status_message = ? WHERE id = ? AND status <> 'needs_attention'", [reason, mb.id]).changes;
@@ -297,6 +334,8 @@ export function serializeMailbox(ctx: Ctx, mb: MailboxRow) {
     // Past the plan's limit (hosted installs after a downgrade) the mailbox sends nothing; the status line says why.
     overPlan,
     statusMessage: overPlan ? overPlanMessage(ctx, 'mailboxes', mb.workspace_id) : mb.status_message,
+    // How campaign emails offer the opt-out: an unsubscribe link, a footer asking for a reply, or 'none' (can't send).
+    unsubscribe: unsubscribeMode(ctx, mb),
     timezone: mb.timezone,
     workDays: sched.work_days,
     workStart: mb.work_start,
@@ -330,7 +369,7 @@ function parseFrom(from: string): { name: string; email: string } {
 // Turns each LinkedIn account's SMTP settings into a mailbox, once, and links it to the campaigns that
 // send email from that account. Those campaigns then send through the mail runner, so the mailbox keeps
 // the account's behaviour: no warm-up, the account's email limit, schedule and pauses. Idempotent.
-// It also keeps sending without PUBLIC_URL (see needsPublicUrl).
+// It also keeps sending without PUBLIC_URL (see optOutProblem).
 
 export function ensureLegacyMailboxes(ctx: Ctx) {
   const accounts = ctx.db.all<AccountRow>('SELECT * FROM accounts WHERE smtp_enc IS NOT NULL AND id NOT IN (SELECT legacy_account_id FROM mailboxes WHERE legacy_account_id IS NOT NULL)');

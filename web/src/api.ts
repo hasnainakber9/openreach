@@ -601,7 +601,7 @@ export interface Thread {
   profileUrl: string;
   category: ReplyCategory | null;
   categoryConfidence: number | null;
-  categorySource: 'ai' | 'manual' | null;
+  categorySource: 'ai' | 'manual' | 'rules' | null;
   // The stage slug the reply's category points to.
   suggestedStage: 'interested' | 'meeting' | 'lost' | null;
   // The lead's pipeline stage (null for threads without a lead).
@@ -637,6 +637,9 @@ export interface Mailbox {
   // Past the plan's limit (hosted installs after a downgrade): it still reads replies but sends nothing.
   overPlan?: boolean;
   statusMessage: string | null;
+  // How campaign emails offer the opt-out: an unsubscribe link, or (no public PUBLIC_URL) a request to reply
+  // "unsubscribe"; 'none' on a hosted server without a public PUBLIC_URL, where real mailboxes can't send.
+  unsubscribe: 'link' | 'reply' | 'none';
   timezone: string;
   workDays: number[];
   workStart: string;

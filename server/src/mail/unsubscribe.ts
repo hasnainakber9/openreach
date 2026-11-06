@@ -1,5 +1,5 @@
 import type { Ctx } from '../context.js';
-import { suppressIdentity, suppressLead, suppressionReason } from '../services/suppression.js';
+import { alreadySuppressed, suppressIdentity, suppressLead } from '../services/suppression.js';
 import type { LeadRow } from '../types.js';
 import { verifyToken } from './tracking.js';
 
@@ -12,7 +12,7 @@ export function unsubscribeByToken(ctx: Ctx, token: string): UnsubscribeResult {
   if (!p) return null;
   const lead = ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ? AND workspace_id = ?', [p.leadId, p.workspaceId]);
   if (lead) {
-    const already = !!suppressionReason(ctx, lead) && !ctx.db.get("SELECT 1 FROM campaign_leads WHERE lead_id = ? AND state = 'active'", [lead.id]);
+    const already = alreadySuppressed(ctx, lead);
     if (!already) suppressLead(ctx, lead, 'unsubscribe', 'email link');
     return { ok: true, already };
   }
