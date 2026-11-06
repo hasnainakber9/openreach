@@ -55,17 +55,41 @@ export function markConnected(ctx: Ctx, a: AccountRow, lead: LeadRow) {
   if (!wasConnected) ctx.webhooks.emit(a.workspace_id, 'lead.connected', { lead: publicLead({ ...lead, connection_status: 'connected' }, ctx), account: { id: a.id, name: a.name } });
 }
 
+// The lead behind a thread whose participant link LinkedIn didn't show (2026 inbox threads may have none).
+// A thread already tied to a lead keeps it. Otherwise the match is by name, and only to a lead this
+// account has written to whose conversation isn't tied to a LinkedIn thread yet, whose message also
+// appears in this thread, and only when exactly one lead fits: a wrong match would run reply handling
+// (and stop a campaign) for the wrong person.
+function participantByName(ctx: Ctx, a: AccountRow, t: InboxThread, knownLeadId: number | null): LeadRow | undefined {
+  if (knownLeadId) return ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [knownLeadId]);
+  const name = t.participant.name.replace(/\s+/g, ' ').trim().toLowerCase();
+  const ours = [...new Set(t.messages.filter((m) => m.direction === 'out').map((m) => m.body))];
+  if (!name || !ours.length) return undefined;
+  const rows = ctx.db.all<{ lead_id: number }>(
+    `SELECT DISTINCT c.lead_id FROM conversations c JOIN messages m ON m.conversation_id = c.id
+     WHERE c.account_id = ? AND c.lead_id IS NOT NULL AND c.thread_id LIKE 'local-%' AND LOWER(TRIM(c.participant_name)) = ?
+       AND m.direction = 'out' AND m.body IN (${ours.map(() => '?').join(', ')})`,
+    [a.id, name, ...ours],
+  );
+  return rows.length === 1 ? ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [rows[0].lead_id]) : undefined;
+}
+
 // Returns the number of new inbound messages.
 export function storeThread(ctx: Ctx, a: AccountRow, t: InboxThread): number {
+  const known = ctx.db.get<{ id: number; lead_id: number | null }>('SELECT id, lead_id FROM conversations WHERE account_id = ? AND thread_id = ?', [a.id, t.threadId]);
   const lead = t.participant.publicId
     ? ctx.db.get<LeadRow>('SELECT * FROM leads WHERE workspace_id = ? AND public_id = ?', [a.workspace_id, t.participant.publicId])
-    : undefined;
+    : participantByName(ctx, a, t, known?.lead_id ?? null);
 
-  let conv =
-    ctx.db.get<{ id: number }>('SELECT id FROM conversations WHERE account_id = ? AND thread_id = ?', [a.id, t.threadId]) ??
-    (lead ? ctx.db.get<{ id: number }>('SELECT id FROM conversations WHERE account_id = ? AND lead_id = ?', [a.id, lead.id]) : undefined);
+  let conv: { id: number } | undefined =
+    known ?? (lead ? ctx.db.get<{ id: number }>('SELECT id FROM conversations WHERE account_id = ? AND lead_id = ?', [a.id, lead.id]) : undefined);
   if (conv) {
-    ctx.db.run('UPDATE conversations SET thread_id = ?, participant_name = COALESCE(NULLIF(?, \'\'), participant_name) WHERE id = ?', [t.threadId, t.participant.name, conv.id]);
+    ctx.db.run('UPDATE conversations SET thread_id = ?, participant_name = COALESCE(NULLIF(?, \'\'), participant_name), lead_id = COALESCE(lead_id, ?) WHERE id = ?', [
+      t.threadId,
+      t.participant.name,
+      lead?.id ?? null,
+      conv.id,
+    ]);
   } else {
     conv = {
       id: ctx.db.insert('conversations', {

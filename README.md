@@ -339,7 +339,18 @@ Whatever the settings, a reply classified as *unsubscribe* (even a polite one, u
 
 ### When LinkedIn changes its markup
 
-The browser driver finds elements by accessible names (for example *“Invite Jane to connect”*) rather than by CSS classes, which LinkedIn renames often. If an action starts failing, the selectors to update are all in `server/src/drivers/playwright/selectors.ts`. The driver is tested against a local mock of LinkedIn's markup (`server/test/playwright-driver.test.ts`), which checks the driver's own logic. It cannot check the live site. Please open an issue or PR when you spot drift.
+The browser driver finds elements by accessible names (for example *“Invite Jane to connect”*), roles and page structure rather than by CSS classes, which LinkedIn renames often (since 2026 its class names are obfuscated, like `gvylje`). If an action starts failing, the selectors to update are in `server/src/drivers/playwright/selectors.ts`, and the code that reads a profile's details is in `parse.ts` next to it.
+
+LinkedIn moves members to new layouts gradually, so the driver handles both profile layouts it has seen:
+
+- **2026 layout** (no `h1`): the name comes from the page title (*Name | LinkedIn*) or the first heading of the profile card; degree, headline, company and location are read from the card's lines by their order; Connect and Message are links; Follow, Connect and other actions may sit in the *More* menu; the message composer is inside a shadow root. The driver waits up to 15 seconds for the profile card to appear, since LinkedIn draws it a few seconds after the page loads.
+- **Older layout** (name in an `h1`): read with the class-based selectors kept as fallbacks.
+
+Actions are only taken from the profile's own card, never from the *People you may know* list beside it, and a control labelled with someone else's name is never used. A message is typed into the conversation bubble that belongs to the person (LinkedIn keeps bubbles with other people open across pages), and sent and closed from that bubble. A profile whose card never appears is retried later rather than marked as failed, and a slow own profile does not mark the account *Needs login*.
+
+In the 2026 inbox the open thread shows no link to the other person's profile, so the driver reads it from the hovercard their name opens. If that fails, the thread is tied to a lead by name, and only when exactly one lead this account messaged has that name and the message you sent appears in the thread. Links inside messages are never taken for the participant.
+
+The driver is tested against a local mock of both layouts (`server/test/playwright-driver.test.ts`), and its page readers against scrubbed snapshots of LinkedIn's 2026 markup (`server/test/fixtures/linkedin-2026/`). That checks the driver's own logic, not the live site: the invitation dialog, the *Pending* state, the inbox name hovercard, the InMail composer and Sales Navigator have not been seen in the 2026 layout yet, so those still follow the older markup. Please open an issue or PR when you spot drift.
 
 ## Configuration
 

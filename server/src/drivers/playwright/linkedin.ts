@@ -12,6 +12,19 @@ import {
   type Person,
   type SessionInfo,
 } from '../types.js';
+import {
+  companyFromCard,
+  connectionRows,
+  nameFromTitle,
+  namesOtherPerson,
+  parseDegree,
+  parseTopCardLines,
+  profileLinkRows,
+  threadEvents,
+  topCardSnapshot,
+  type LinkRow,
+  type TopCardSnapshot,
+} from './parse.js';
 import { BLOCKED_PATHS, LABELS, SEL, URLS } from './selectors.js';
 
 // Drives a real Chromium session logged in with the member's `li_at` cookie. Each account gets
@@ -44,6 +57,8 @@ export interface PlaywrightOptions extends BrowserSpec {
   onContext?: (ctx: BrowserContext) => Promise<void>;
   // Multiplies every human-like pause (tests use 0).
   pace?: number;
+  // How long to wait for a profile's card to render (default 15 s; tests shorten it).
+  readyTimeoutMs?: number;
 }
 
 // What a session problem tells the user to do. A pasted cookie often stops working in OpenReach's browser
@@ -169,25 +184,87 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     return '';
   }
 
-  // Finds a profile action by accessible name, opening the "More" menu if it is tucked away there.
-  private async profileAction(page: Page, label: RegExp): Promise<Locator | null> {
-    const card = page.locator(SEL.topCard).first();
-    const direct = card.getByRole('button', { name: label });
-    for (let i = 0; i < (await direct.count()); i++) {
-      if (await direct.nth(i).isVisible()) return direct.nth(i);
+  // Waits for the profile's top card, which LinkedIn renders by script several seconds after the document
+  // loads. False when it never shows.
+  private async profileReady(page: Page): Promise<boolean> {
+    const ok = await page.locator(SEL.profileReady).first().waitFor({ state: 'visible', timeout: this.o.readyTimeoutMs ?? 15_000 }).then(() => true, () => false);
+    this.guard(page);
+    return ok;
+  }
+
+  // Opens a profile and waits for its top card. A page that loaded but never rendered one is retried later.
+  private async openProfile(url: string): Promise<Page> {
+    const page = await this.go(url);
+    if (!(await this.profileReady(page))) throw new DriverError('TRANSIENT', 'The profile page did not finish loading');
+    return page;
+  }
+
+  // The section around the profile's name. Actions are looked up only in here: the rest of the page
+  // shows other people's Connect and Follow buttons (People you may know).
+  private async topCard(page: Page): Promise<Locator | null> {
+    const h1 = page.locator('main h1');
+    const heading = (await h1.count()) ? h1.first() : page.locator('main h2').first();
+    const card = heading.locator('xpath=ancestor::section[1]');
+    return (await card.count()) ? card.first() : null;
+  }
+
+  // The profile's name. The title ("Name | LinkedIn") is the most reliable source in the 2026 layout.
+  private async nameOf(page: Page, snap?: TopCardSnapshot | null): Promise<string> {
+    snap ??= await page.evaluate(topCardSnapshot).catch(() => null);
+    return nameFromTitle(await page.title().catch(() => '')) || snap?.heading || (await this.firstText(page, SEL.profileName));
+  }
+
+  // Name, headline, location, degree and company from the top card, in either layout.
+  private async readProfile(page: Page) {
+    const snap = await page.evaluate(topCardSnapshot).catch(() => null);
+    const name = await this.nameOf(page, snap);
+    if (snap?.layout === 'h2') {
+      const f = parseTopCardLines(snap.lines);
+      return { name, headline: f.headline, location: f.location, degree: f.degree, company: companyFromCard(snap.chips, f.companyLine) };
     }
-    const more = card.getByRole('button', { name: LABELS.more });
-    if (await more.count()) {
-      await more.first().click();
-      await this.pause(0.5, 1.2);
-      const items = page.locator(SEL.dropdownItems);
-      for (let i = 0; i < (await items.count()); i++) {
-        const item = items.nth(i);
-        const name = (await item.getAttribute('aria-label')) ?? (await item.innerText().catch(() => ''));
-        if (label.test(name.trim()) && (await item.isVisible())) return item;
-      }
-      await page.keyboard.press('Escape');
+    const headline = await this.firstText(page, SEL.profileHeadline);
+    const location = await this.firstText(page, SEL.profileLocation);
+    const degree = parseDegree(await this.firstText(page, SEL.profileDegree));
+    const companyLabel = (await page.locator(SEL.currentCompany).first().getAttribute('aria-label', { timeout: 1500 }).catch(() => null)) ?? '';
+    const company = companyLabel.replace(/^Current company:\s*/i, '').replace(/\.\s*Click.*$/i, '').trim();
+    return { name, headline, location, degree, company };
+  }
+
+  // The first visible control in `list` whose label doesn't name someone other than `person`. The 2026
+  // top card is rendered twice (one copy hidden), so the first match is not always the one on screen.
+  private async firstVisible(list: Locator, person = ''): Promise<Locator | null> {
+    for (let i = 0; i < (await list.count()); i++) {
+      const el = list.nth(i);
+      if (!(await el.isVisible())) continue;
+      if (person && namesOtherPerson(await controlLabel(el), person)) continue;
+      return el;
     }
+    return null;
+  }
+
+  // Finds a profile action (a button or a link) by accessible name in the top card, opening the "More"
+  // menu if it is tucked away there. `person` is the profile's name: a control naming anyone else is
+  // never returned.
+  private async profileAction(page: Page, label: RegExp, person = ''): Promise<Locator | null> {
+    const card = await this.topCard(page);
+    if (!card) return null;
+    const direct = await this.firstVisible(card.getByRole('button', { name: label }).or(card.getByRole('link', { name: label })), person);
+    if (direct) return direct;
+    const more = await this.firstVisible(card.getByRole('button', { name: LABELS.more }));
+    if (!more) return null;
+    await more.click();
+    await this.pause(0.5, 1.2);
+    const items = page.locator(SEL.menuItems);
+    await items.first().waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    for (let i = 0; i < (await items.count()); i++) {
+      const item = items.nth(i);
+      if (!(await item.isVisible())) continue;
+      // A 2026 item's text is often one word ("Follow") while an inner element is labelled "Follow Jane Doe".
+      const inner = (await item.locator('[aria-label]').count()) ? await item.locator('[aria-label]').first().getAttribute('aria-label') : null;
+      const names = [await controlLabel(item), inner ?? ''].filter(Boolean);
+      if (names.some((n) => label.test(n)) && !names.some((n) => namesOtherPerson(n, person))) return item;
+    }
+    await page.keyboard.press('Escape');
     return null;
   }
 
@@ -198,47 +275,103 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     }
   }
 
+  // Marks the composers already open before clicking Message, and counts the dialogs, so what the click
+  // opens can be told apart. New bubbles open to the left of old ones, so the last composer is not
+  // necessarily the new one.
+  private async composerBaseline(page: Page, boxSel: string): Promise<ComposerBaseline> {
+    await page.locator(boxSel).evaluateAll((els) => els.forEach((el) => el.setAttribute('data-or-seen', '1')));
+    return { dialogs: await page.locator(SEL.dialog).count() };
+  }
+
+  // Waits for the composer that clicking Message opened. LinkedIn keeps conversation bubbles open across
+  // pages, so a bubble whose own profile card or header links to this person comes first (a link further
+  // down, in a message or a shared profile, can be anyone), then a new dialog holding a composer (Sales
+  // Navigator), then a composer that was not there before. A new dialog without one (an InMail upsell,
+  // say) is LinkedIn's answer instead: null. The profile URL may have redirected (a URN to the vanity
+  // name), so both ids count.
+  private async waitForComposer(page: Page, url: string, boxSel: string, before: ComposerBaseline): Promise<{ box: Locator; scope: Locator } | null> {
+    const ids = [...new Set([publicIdFromUrl(url), publicIdFromUrl(page.url())].filter((id): id is string => !!id))];
+    const own = ids.map((id) => SEL.bubbleOwnerLink(encodeURIComponent(id))).join(', ');
+    const bubble = own ? page.locator(SEL.messageBubble).filter({ has: page.locator(own) }) : null;
+    const fresh = page.locator(boxSel).and(page.locator(':not([data-or-seen])'));
+    const dialogs = page.locator(SEL.dialog);
+    const deadline = Date.now() + 10_000;
+    let answeredAt = 0;
+    while (Date.now() < deadline) {
+      if (bubble && (await bubble.locator(boxSel).count())) return this.pinComposer(page, bubble.last().locator(boxSel).last());
+      if ((await dialogs.count()) > before.dialogs) {
+        const d = dialogs.last();
+        if (await d.locator(boxSel).count()) return this.pinComposer(page, d.locator(boxSel).last());
+        answeredAt ||= Date.now();
+        if (Date.now() - answeredAt > 1500) return null;
+      }
+      if (await fresh.count()) return this.pinComposer(page, fresh.first());
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return null;
+  }
+
+  // Tags the chosen composer and the bubble, dialog or form around it, so typing, Send and close all stay
+  // on that one even when other bubbles (with their own enabled Send buttons) are open.
+  private async pinComposer(page: Page, box: Locator): Promise<{ box: Locator; scope: Locator }> {
+    const token = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    await box.evaluate(
+      (el, a) => {
+        el.setAttribute('data-or-box', a.token);
+        let scope: Element | null = el.closest(a.container);
+        // A composer outside any bubble or dialog: the nearest element that also holds a Send button.
+        for (let n: Node | null = el; n && !scope; n = n instanceof ShadowRoot ? n.host : n.parentNode) {
+          if (n instanceof Element && n.querySelector(a.send)) scope = n;
+        }
+        (scope ?? el).setAttribute('data-or-composer', a.token);
+      },
+      { token, container: `${SEL.messageBubble}, ${SEL.dialog}`, send: SEL.messageSend },
+    );
+    return { box: page.locator(`[data-or-box="${token}"]`), scope: page.locator(`[data-or-composer="${token}"]`) };
+  }
+
+  // Closes the composer's bubble after sending, so it doesn't pile up on later pages.
+  private async closeComposer(scope: Locator) {
+    const close = scope.locator(SEL.messageOverlayClose).last();
+    if (await close.count()) await close.click({ timeout: 3000 }).catch(() => {});
+  }
+
   async checkSession(): Promise<SessionInfo> {
     const page = await this.go(URLS.me);
-    // The profile is rendered by script after the document loads, often well after the short per-selector wait.
-    await page.locator(SEL.profileName).first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
-    this.guard(page);
-    const name = await this.firstText(page, SEL.profileName);
-    if (!name) {
-      const where = new URL(page.url()).pathname;
-      throw new DriverError('SESSION_EXPIRED', `Could not read the logged-in profile (LinkedIn showed ${where}). ${RELOGIN_HINT}`);
+    let name = (await this.profileReady(page)) ? (await this.readProfile(page)).name : '';
+    const where = new URL(page.url()).pathname;
+    if (!name && /^\/in\//.test(where)) {
+      // Still on a profile, so the session works (guard() catches login and checkpoint pages): the card is
+      // slow or laid out in a way the driver doesn't know. The title still has the name; without it, try later.
+      name = nameFromTitle(await page.title().catch(() => ''));
+      if (!name) throw new DriverError('TRANSIENT', `The logged-in profile did not finish loading (LinkedIn showed ${where})`);
     }
+    if (!name) throw new DriverError('SESSION_EXPIRED', `Could not read the logged-in profile (LinkedIn showed ${where}). ${RELOGIN_HINT}`);
     this.selfName = name;
     await this.syncCookie();
     return { name, profileUrl: page.url().split('?')[0] };
   }
 
   async viewProfile(url: string): Promise<Person> {
-    const page = await this.go(url);
-    await page.locator(SEL.profileName).first().waitFor().catch(() => {
-      throw new DriverError('NOT_FOUND', 'Profile did not load');
-    });
+    const page = await this.openProfile(url);
     await this.browse(page);
-    const full = await this.firstText(page, SEL.profileName);
+    const { name: full, headline, location, degree, company } = await this.readProfile(page);
     const [firstName, ...rest] = full.split(/\s+/);
-    const headline = await this.firstText(page, SEL.profileHeadline);
-    const location = await this.firstText(page, SEL.profileLocation);
-    const degreeText = await this.firstText(page, SEL.profileDegree);
-    const degree = /1st/.test(degreeText) ? 1 : /2nd/.test(degreeText) ? 2 : /3rd/.test(degreeText) ? 3 : null;
-    const companyLabel = (await page.locator(SEL.currentCompany).first().getAttribute('aria-label').catch(() => null)) ?? '';
-    const company = companyLabel.replace(/^Current company:\s*/i, '').replace(/\.\s*Click.*$/i, '').trim();
     const title = headline.includes(' at ') ? headline.split(' at ')[0].trim() : headline;
 
     let email: string | null = null;
     let phone: string | null = null;
-    if (degree === 1 && (await page.locator(SEL.contactInfoLink).count())) {
-      await page.locator(SEL.contactInfoLink).first().click();
-      const modal = page.locator(SEL.contactModal).first();
-      await modal.waitFor().catch(() => {});
+    const contact = (await this.topCard(page))?.locator(SEL.contactInfoLink).first();
+    if (degree === 1 && contact && (await contact.count())) {
+      await contact.click();
+      const modal = page.locator(SEL.dialog).last();
+      await modal.waitFor({ timeout: 10_000 }).catch(() => {});
       await this.pause(0.8, 1.8);
       email = (await modal.locator('a[href^="mailto:"]').first().innerText({ timeout: 1500 }).catch(() => '')).trim() || null;
       phone = (await modal.locator('section:has(h3:text-is("Phone")) span').first().innerText({ timeout: 1000 }).catch(() => '')).trim() || null;
-      await page.locator(SEL.modalClose).first().click().catch(() => page.keyboard.press('Escape'));
+      const close = modal.locator(SEL.modalClose).first();
+      if (await close.count()) await close.click({ timeout: 3000 }).catch(() => page.keyboard.press('Escape'));
+      else await page.keyboard.press('Escape');
     }
 
     const finalUrl = page.url().split('?')[0];
@@ -247,9 +380,14 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   }
 
   async follow(url: string) {
-    const page = await this.go(url);
-    if (await this.profileAction(page, LABELS.following)) return;
-    const btn = await this.profileAction(page, LABELS.follow);
+    const page = await this.openProfile(url);
+    const name = await this.nameOf(page);
+    if (await this.profileAction(page, LABELS.following, name)) {
+      // Already following; the item may sit in an open menu.
+      await page.keyboard.press('Escape');
+      return;
+    }
+    const btn = await this.profileAction(page, LABELS.follow, name);
     if (!btn) throw new DriverError('NOT_AVAILABLE', 'No Follow option on this profile');
     await btn.click();
     await this.pause();
@@ -282,18 +420,30 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   }
 
   async connect(url: string, note: string): Promise<ConnectResult> {
-    const page = await this.go(url);
+    const page = await this.openProfile(url);
     await this.browse(page);
-    if (/1st/.test(await this.firstText(page, SEL.profileDegree))) return 'already_connected';
-    if (await this.profileAction(page, LABELS.pending)) return 'already_pending';
-    const btn = await this.profileAction(page, LABELS.connect);
+    const { name, degree } = await this.readProfile(page);
+    if (degree === 1) return 'already_connected';
+    if (await this.profileAction(page, LABELS.pending, name)) {
+      await page.keyboard.press('Escape');
+      return 'already_pending';
+    }
+    const btn = await this.profileAction(page, LABELS.connect, name);
     if (!btn) throw new DriverError('NOT_AVAILABLE', 'No Connect option on this profile');
+    // 2026: Connect is a link to /preload/custom-invite/?vanityName=..., which LinkedIn opens as a dialog.
+    const href = await btn.getAttribute('href').catch(() => null);
     await btn.click();
     await this.pause();
 
-    const dialog = page.getByRole('dialog').first();
-    await dialog.waitFor().catch(() => {});
-    if (await page.locator(SEL.inviteEmail).count()) {
+    const dialog = page.locator(SEL.dialog).first();
+    let opened = await dialog.waitFor({ timeout: 10_000 }).then(() => true, () => false);
+    if (!opened && href && /custom-invite/.test(href) && !/custom-invite/.test(page.url())) {
+      // The click did nothing visible: open the invitation page the link points to.
+      await this.go(new URL(href, page.url()).toString());
+      opened = await dialog.waitFor({ timeout: 10_000 }).then(() => true, () => false);
+    }
+    if (!opened) throw new DriverError('NOT_AVAILABLE', 'The invitation dialog did not open');
+    if (await dialog.locator(SEL.inviteEmail).count()) {
       await page.keyboard.press('Escape');
       throw new DriverError('NOT_AVAILABLE', 'LinkedIn requires their email address to connect');
     }
@@ -305,16 +455,16 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
         if (LABELS.premiumNoteUpsell.test(await dialog.innerText().catch(() => ''))) {
           // Free accounts get a few notes per month; fall back to a plain invite.
           await page.keyboard.press('Escape');
-          await btn.click().catch(() => {});
+          await btn.click({ timeout: 5000 }).catch(() => {});
           await this.pause();
         } else {
-          await this.type(page.locator(SEL.inviteNote).first(), note);
+          await this.type(dialog.locator(SEL.inviteNote).first(), note);
           await this.pause();
         }
       }
     }
-    const send = page.getByRole('dialog').first().getByRole('button', { name: note.trim() ? LABELS.sendInvite : LABELS.sendWithoutNote });
-    const fallback = page.getByRole('dialog').first().getByRole('button', { name: LABELS.sendInvite });
+    const send = dialog.getByRole('button', { name: note.trim() ? LABELS.sendInvite : LABELS.sendWithoutNote });
+    const fallback = dialog.getByRole('button', { name: LABELS.sendInvite });
     await ((await send.count()) ? send : fallback).first().click();
     await this.pause(1.5, 3);
     const body = await page.locator('body').innerText().catch(() => '');
@@ -323,57 +473,47 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   }
 
   async withdrawInvite(url: string) {
-    const page = await this.go(url);
-    const pending = await this.profileAction(page, LABELS.pending);
+    const page = await this.openProfile(url);
+    const name = await this.nameOf(page);
+    const pending = await this.profileAction(page, LABELS.pending, name);
     if (!pending) return false;
     await pending.click();
     await this.pause();
-    await page.getByRole('dialog').getByRole('button', { name: LABELS.withdraw }).click();
+    await page.locator(SEL.dialog).getByRole('button', { name: LABELS.withdraw }).first().click();
     await this.pause();
     return true;
   }
 
   async sendMessage(url: string, text: string) {
-    const page = await this.go(url);
-    const btn = await this.profileAction(page, LABELS.message);
+    const page = await this.openProfile(url);
+    const name = await this.nameOf(page);
+    const btn = await this.profileAction(page, LABELS.message, name);
     if (!btn) throw new DriverError('NOT_AVAILABLE', 'No Message option on this profile');
+    const before = await this.composerBaseline(page, SEL.messageBox);
+    // 2026: Message is a link to /messaging/compose/...; LinkedIn opens it as a bubble on the same page.
     await btn.click();
-    const box = page.locator(SEL.messageBox).last();
-    await box.waitFor().catch(() => {
+    const composer = await this.waitForComposer(page, url, SEL.messageBox, before);
+    if (!composer) {
+      await page.keyboard.press('Escape');
       throw new DriverError('NOT_AVAILABLE', 'Messaging is not open for this person (InMail required)');
-    });
+    }
     await this.pause();
     // Shift+Enter keeps paragraphs inside one message instead of sending early.
     const lines = text.split('\n');
     for (let i = 0; i < lines.length; i++) {
-      await this.type(box, lines[i]);
+      await this.type(composer.box, lines[i]);
       if (i < lines.length - 1) await page.keyboard.press('Shift+Enter');
     }
     await this.pause();
-    await page.locator(SEL.messageSend).last().click();
+    await composer.scope.locator(SEL.messageSend).last().click();
     await this.pause(1.5, 3);
-    const close = page.locator(SEL.messageOverlayClose).last();
-    if (await close.count()) await close.click().catch(() => {});
+    await this.closeComposer(composer.scope);
   }
 
   async recentConnections(limit: number): Promise<Person[]> {
     const page = await this.go(URLS.connections);
-    await page.locator('main a[href*="/in/"]').first().waitFor().catch(() => {});
-    const people = await page.evaluate((max) => {
-      const out: { url: string; name: string; occupation: string }[] = [];
-      const seen = new Set<string>();
-      for (const a of Array.from(document.querySelectorAll<HTMLAnchorElement>('main a[href*="/in/"]'))) {
-        const url = a.href.split('?')[0];
-        const name = a.innerText.trim().split('\n')[0];
-        if (!name || seen.has(url)) continue;
-        seen.add(url);
-        const card = a.closest('li');
-        const lines = (card?.innerText ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
-        out.push({ url, name, occupation: lines.find((l) => l !== name && !/^(Message|Connected)/.test(l)) ?? '' });
-        if (out.length >= max) break;
-      }
-      return out;
-    }, limit);
+    await page.locator(SEL.connectionLinks).first().waitFor({ timeout: 15_000 }).catch(() => {});
+    const people = await page.evaluate(connectionRows, limit);
     return people.flatMap((p) => {
       const id = publicIdFromUrl(p.url);
       if (!id) return [];
@@ -394,19 +534,15 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
       const unread = (await item.locator(SEL.threadUnread).count()) > 0;
       await item.click();
       await this.pause(1, 2);
-      const href = (await page.locator(SEL.threadHeaderLink).first().getAttribute('href').catch(() => null)) ?? '';
+      // The thread's own messages, not those of a bubble left open on the page.
+      await page.locator('.msg-thread').locator(SEL.threadEvent).first().waitFor({ timeout: 3000 }).catch(() => {});
+      const raw = await this.threadParticipantHref(page);
+      const href = raw ? new URL(raw, page.url()).toString().split('?')[0] : '';
       const threadId = page.url().match(/thread\/([^/]+)/)?.[1] ?? `idx-${i}`;
-      const events = await page.evaluate((s) => {
-        let sender = '';
-        return Array.from(document.querySelectorAll(s.threadEvent)).flatMap((li) => {
-          sender = (li.querySelector(s.eventSender) as HTMLElement | null)?.innerText.trim() || sender;
-          const body = (li.querySelector(s.eventBody) as HTMLElement | null)?.innerText.trim() ?? '';
-          const urn = li.querySelector(s.eventUrn)?.getAttribute('data-event-urn') ?? '';
-          return body ? [{ sender, body, urn }] : [];
-        });
-      }, SEL);
+      const events = await page.evaluate(threadEvents, { threadEvent: SEL.threadEvent, eventSender: SEL.eventSender, eventBody: SEL.eventBody, eventUrn: SEL.eventUrn, bubble: SEL.overlayBubble });
       const participantId = publicIdFromUrl(href);
-      const other = events.find((e) => e.sender && e.sender !== this.selfName)?.sender ?? '';
+      // The name comes from their messages, else from the thread's title (when only we have written).
+      const other = events.find((e) => e.sender && e.sender !== this.selfName)?.sender || (await this.firstText(page, SEL.threadTitle));
       const now = Date.now();
       threads.push({
         threadId,
@@ -423,6 +559,30 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
       });
     }
     return threads;
+  }
+
+  // The open thread's participant's profile link, or null when it can't be told (the engine then matches
+  // the thread by name). Older threads link the name in the header; a link inside a message is never used.
+  // 2026 threads have no link: the header's name is a button whose hovercard holds it. Best effort: the
+  // hovercard was not captured in the live check.
+  private async threadParticipantHref(page: Page): Promise<string | null> {
+    const direct = await page
+      .locator(SEL.threadHeaderLink)
+      .evaluateAll((els, skip) => els.find((el) => !el.closest(skip))?.getAttribute('href') ?? null, `${SEL.threadEvent}, ${SEL.overlayBubble}`)
+      .catch(() => null);
+    if (direct) return direct;
+    const trigger = page.locator(SEL.threadParticipantTrigger).first();
+    const cardId = (await trigger.count()) ? await trigger.getAttribute('aria-controls') : null;
+    if (!cardId) return null;
+    await trigger.hover({ timeout: 3000 }).catch(() => {});
+    // The card is rendered into the trigger's wrapper, with the id the trigger names.
+    const link = page.locator(`[id="${cardId}"] a[href*="/in/"]`).or(trigger.locator('xpath=..').locator('a[href*="/in/"]')).first();
+    const href = await link.waitFor({ state: 'attached', timeout: 3000 }).then(
+      () => link.getAttribute('href'),
+      () => null,
+    );
+    await page.mouse.move(rand(5, 40), rand(5, 40)).catch(() => {});
+    return href;
   }
 
   async search(url: string, limit: number, onPage?: (found: number) => void): Promise<Person[]> {
@@ -530,10 +690,12 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   // aren't connected to, when the account has credits or the profile is open; otherwise LinkedIn shows a
   // Premium upsell. With Sales Navigator the message is written from the lead's Sales Navigator page.
   async sendInMail(url: string, msg: InMail) {
-    const page = await this.go(url);
+    const page = await this.openProfile(url);
     await this.browse(page);
+    const name = await this.nameOf(page);
+    let before: ComposerBaseline;
     if (msg.via === 'sales_navigator') {
-      const open = await this.profileAction(page, LABELS.viewInSalesNav);
+      const open = await this.profileAction(page, LABELS.viewInSalesNav, name);
       if (!open) throw new DriverError('NOT_AVAILABLE', 'No "View in Sales Navigator" option on this profile (is Sales Navigator active on this account?)');
       await open.click();
       await page.waitForURL(/\/sales\//, { timeout: 20_000 }).catch(() => {
@@ -543,43 +705,44 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
       await this.pause(1.5, 3.5);
       const btn = page.locator('main').getByRole('button', { name: LABELS.message }).first();
       if (!(await btn.count())) throw new DriverError('NOT_AVAILABLE', 'No Message option for this lead in Sales Navigator');
+      before = await this.composerBaseline(page, SEL.inmailBody);
       await btn.click();
     } else {
-      const btn = await this.profileAction(page, LABELS.message);
+      const btn = await this.profileAction(page, LABELS.message, name);
       if (!btn) throw new DriverError('NOT_AVAILABLE', 'No Message option on this profile (InMail needs Premium credits or an open profile)');
+      before = await this.composerBaseline(page, SEL.inmailBody);
       await btn.click();
     }
     await this.pause();
 
     // Either the composer opens or LinkedIn answers with a dialog (Premium upsell, no credits left).
-    const box = page.locator(SEL.inmailBody).last();
-    await box.or(page.getByRole('dialog')).first().waitFor({ timeout: 8000 }).catch(() => {});
+    const composer = await this.waitForComposer(page, url, SEL.inmailBody, before);
     await this.pause(0.5, 1.2);
-    if (!(await box.count())) {
-      const dialog = await page.getByRole('dialog').last().innerText().catch(() => '');
+    if (!composer) {
+      const dialog = await page.locator(SEL.dialog).last().innerText({ timeout: 1000 }).catch(() => '');
       await page.keyboard.press('Escape');
       if (LABELS.inmailNoCredits.test(dialog)) throw new DriverError('LIMIT_REACHED', 'No InMail credits left');
       throw new DriverError('NOT_AVAILABLE', 'No InMail credits and the profile is not open');
     }
-    const subject = page.locator(SEL.inmailSubject).last();
+    const scope = composer.scope;
+    const subject = scope.locator(SEL.inmailSubject).last();
     if (msg.subject.trim() && (await subject.count())) {
       await this.type(subject, msg.subject);
       await this.pause(0.5, 1.2);
     }
     const lines = msg.body.split('\n');
     for (let i = 0; i < lines.length; i++) {
-      await this.type(box, lines[i]);
+      await this.type(composer.box, lines[i]);
       if (i < lines.length - 1) await page.keyboard.press('Shift+Enter');
     }
     await this.pause();
-    const send = page.locator(SEL.messageSend).last();
-    await ((await send.count()) ? send : page.getByRole('button', { name: LABELS.send }).last()).click();
+    const send = scope.locator(SEL.messageSend).last();
+    await ((await send.count()) ? send : scope.getByRole('button', { name: LABELS.send }).last()).click();
     await this.pause(1.5, 3);
-    if (LABELS.inmailNoCredits.test(await page.getByRole('dialog').last().innerText({ timeout: 1000 }).catch(() => ''))) {
+    if (LABELS.inmailNoCredits.test(await page.locator(SEL.dialog).last().innerText({ timeout: 1000 }).catch(() => ''))) {
       throw new DriverError('LIMIT_REACHED', 'No InMail credits left');
     }
-    const close = page.locator(SEL.messageOverlayClose).last();
-    if (await close.count()) await close.click().catch(() => {});
+    await this.closeComposer(composer.scope);
   }
 
   async close() {
@@ -590,21 +753,20 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   }
 }
 
-interface LinkRow {
-  href: string;
-  name: string;
-  lines: string[];
+interface ComposerBaseline {
+  dialogs: number;
+}
+
+// The aria-label of a control, else the first line of its text.
+async function controlLabel(el: Locator): Promise<string> {
+  const aria = await el.getAttribute('aria-label').catch(() => null);
+  if (aria?.trim()) return aria.trim();
+  return ((await el.innerText({ timeout: 1000 }).catch(() => '')) || '').trim().split('\n')[0].trim();
 }
 
 // Profile links on a list page (search results, reactions, comments, members) with their card's text.
 function readLinks(page: Page, selector: string): Promise<LinkRow[]> {
-  return page.evaluate((sel) => {
-    return Array.from(document.querySelectorAll<HTMLAnchorElement>(sel)).map((a) => {
-      const card = a.closest('li, article') ?? a.parentElement;
-      const lines = (card?.textContent ? (card as HTMLElement).innerText : '').split('\n').map((l) => l.trim()).filter(Boolean);
-      return { href: a.href.split('?')[0], name: a.innerText.trim().split('\n')[0], lines };
-    });
-  }, selector);
+  return page.evaluate(profileLinkRows, selector);
 }
 
 // Name from the link, headline (and on search results, location) from the card's next lines. Hidden members ("LinkedIn Member") are skipped.
