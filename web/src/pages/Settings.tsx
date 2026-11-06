@@ -601,7 +601,7 @@ function Profile({ email }: { email: string }) {
   // A real form, so browsers and password managers treat these as password fields and Enter submits.
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (f.next.length >= 8) void run('pw', async () => (await api('/api/auth/password', { body: f }), setF({ current: '', next: '' })), 'Password changed');
+    if (f.next.length >= 8) void run('pw', async () => (await api('/api/auth/password', { body: f }), setF({ current: '', next: '' })), 'Password changed. Your other sessions are signed out.');
   };
   return (
     <form className="card stack" style={{ maxWidth: 420 }} onSubmit={submit}>

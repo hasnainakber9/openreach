@@ -129,6 +129,20 @@ describe('HTTP API', () => {
     expect(w.ctx.db.get('SELECT COUNT(*) AS n FROM login_failures')).toEqual({ n: 0 });
   });
 
+  it('signs out the other sessions when the password changes, keeping the current one', async () => {
+    const { app, call } = await setup();
+    await call('POST', '/api/auth/register', { name: 'Ana', email: 'ana@example.com', password: 'correct-horse' });
+    const login = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'ana@example.com', password: 'correct-horse' } });
+    const elsewhere = String([login.headers['set-cookie']].flat()[0]).split(';')[0];
+    const me = (cookie?: string) => app.inject({ method: 'GET', url: '/api/auth/me', headers: cookie ? { cookie } : {} }).then((r) => r.statusCode);
+    expect(await me(elsewhere)).toBe(200);
+    expect((await call('POST', '/api/auth/password', { current: 'wrong-password', next: 'battery-staple' })).status).toBe(400);
+    expect(await me(elsewhere)).toBe(200);
+    expect((await call('POST', '/api/auth/password', { current: 'correct-horse', next: 'battery-staple' })).status).toBe(200);
+    expect(await me(elsewhere)).toBe(401);
+    expect((await call('GET', '/api/auth/me')).status).toBe(200);
+  });
+
   it('maps common CSV headers', () => {
     const rows = csvToLeads('﻿First Name,Last Name,Profile URL,Job Title,Email Address,Tags\nA,B,https://linkedin.com/in/ab,CEO,a@b.co,vip;warm\n');
     expect(rows[0]).toMatchObject({ firstName: 'A', lastName: 'B', title: 'CEO', email: 'a@b.co', tags: ['vip', 'warm'] });

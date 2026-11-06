@@ -46,6 +46,7 @@ Every external service below is optional. Without keys, a built-in simulator sta
 - **Plans and Stripe billing** for hosted installs (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `BILLING_PLANS` / `BILLING_PLANS_FILE`): Checkout, Customer Portal, signed webhooks and limits on accounts, mailboxes, seats, clients and monthly AI and enrichment credits. Off, and unlimited, without a key.
 - **Postgres** as an optional database (`DATABASE_URL`), with leader election so several instances can share it while one runs the engine.
 - A database-backed job queue for background work (`JOB_CONCURRENCY`).
+- Changing your password signs you out everywhere else; a tab left on another workspace after a switch catches up instead of acting there.
 
 ### Docs
 

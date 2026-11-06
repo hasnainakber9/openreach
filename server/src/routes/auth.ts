@@ -204,7 +204,11 @@ export function authRoutes(app: FastifyInstance, ctx: Ctx) {
     const body = parse(z.object({ current: z.string(), next: z.string().min(8) }), req.body);
     const row = ctx.db.get<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = ?', [u.id])!;
     if (!verifyPassword(body.current, row.password_hash)) throw new HttpError(400, 'Current password is wrong');
-    ctx.db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hashPassword(body.next), u.id]);
+    // Every other session ends, so someone who had the old password (or a stolen cookie) is signed out.
+    ctx.db.tx(() => {
+      ctx.db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hashPassword(body.next), u.id]);
+      ctx.db.run('DELETE FROM sessions WHERE user_id = ? AND token <> ?', [u.id, req.cookies[SESSION_COOKIE] ?? '']);
+    });
     return { ok: true };
   });
 }
