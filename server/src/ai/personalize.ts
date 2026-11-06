@@ -4,6 +4,7 @@ import type { Ctx } from '../context.js';
 import { isVariantNode, nodeVariants, withVariant, type AiVariable, type SeqNode, type VariantId } from '../engine/sequence.js';
 import { aiNamesIn } from '../engine/template.js';
 import { PermanentError, RetryLater, type JobHelpers, type JobInfo } from '../jobs/queue.js';
+import { AI_MAX_TIMEOUT_SECONDS } from '../providers/ai/types.js';
 import { ProviderError } from '../providers/http.js';
 import { logActivity } from '../services/activity.js';
 import { campaignSequence, campaignSettings } from '../services/leads.js';
@@ -18,7 +19,8 @@ export { aiNamesIn };
 // (AI_WAIT_MAX_MIN), then sends with the variable's fallback; one lead's failure never holds up others.
 
 export const AI_RECHECK = 2 * MINUTE;
-export const AI_JOB_OPTIONS = { concurrency: 2, maxAttempts: 3, timeoutMs: 5 * MINUTE };
+// One request may take up to AI_MAX_TIMEOUT_SECONDS (a slow local model), and progress is reported after each.
+export const AI_JOB_OPTIONS = { concurrency: 2, maxAttempts: 3, timeoutMs: AI_MAX_TIMEOUT_SECONDS * 1000 + MINUTE };
 
 export interface AiRow {
   campaign_lead_id: number;

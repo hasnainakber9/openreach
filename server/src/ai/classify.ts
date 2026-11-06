@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import type { JobHelpers, JobInfo } from '../jobs/queue.js';
+import { AI_MAX_TIMEOUT_SECONDS } from '../providers/ai/types.js';
 import { ProviderError } from '../providers/http.js';
 import { logActivity } from '../services/activity.js';
 import { publicLead } from '../services/leads.js';
@@ -18,7 +19,8 @@ import { classifyRequest, type ThreadMessage } from './prompts.js';
 // shows in the inbox, drives reply holds and the reply_sentiment condition, and confident opt-outs
 // suppress the person everywhere.
 
-export const CLASSIFY_JOB_OPTIONS = { concurrency: 2, maxAttempts: 3, timeoutMs: 2 * MINUTE };
+// Room for the slowest allowed AI request (a local model on a laptop CPU) plus the bookkeeping around it.
+export const CLASSIFY_JOB_OPTIONS = { concurrency: 2, maxAttempts: 3, timeoutMs: AI_MAX_TIMEOUT_SECONDS * 1000 + MINUTE };
 // How much of the thread the classifier sees.
 const THREAD_MESSAGES = 10;
 

@@ -20,3 +20,7 @@ export interface AiResult {
 export interface AiProvider extends BaseProvider {
   complete(req: AiRequest): Promise<AiResult>;
 }
+
+// The longest one AI request may take (the OpenAI-compatible provider's timeout setting tops out here, for
+// slow local models on a laptop CPU). AI jobs allow a little more, so a slow answer isn't taken as a stuck run.
+export const AI_MAX_TIMEOUT_SECONDS = 600;
