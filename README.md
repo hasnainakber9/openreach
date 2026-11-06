@@ -279,6 +279,8 @@ Everything in the UI goes through the JSON API under `/api`, authenticated with 
 
 To verify a delivery, compute `sha256=` + HMAC-SHA256(body, secret) and compare it with the `X-OpenReach-Signature` header.
 
+Moving many leads at once (the bulk edit, or deleting a stage) sends one `leads.stage_changed` instead of a `lead.stage_changed` per lead: `data` holds `count`, `leadIds` (the first 1,000), `from` (the deleted stage, or `null`), `to`, `source` and `reason`. Webhooks subscribed to `lead.stage_changed` receive it too.
+
 ## Limitations
 
 - The Hunter, Apollo, ZeroBounce and NeverBounce integrations follow the vendors' public API docs and are tested against fakes, not the live services. Lookups use your own plans' credits (the usage table counts our calls; your vendor dashboard is the authority). Each integration is limited to 2 requests a second; a vendor's rate limit pauses the lookup and retries it later. Hunter needs a company name or domain; Apollo matches on name, company and LinkedIn URL. The simulated verifier only judges made-up `.example` addresses: real ones stay *unknown* until you add a verifier. Simulated company facts are only shown on the lead, never written into its fields.

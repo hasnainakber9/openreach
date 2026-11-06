@@ -7,7 +7,7 @@ import { hunterStatus } from '../src/providers/data/hunter.js';
 import { neverBounceStatus } from '../src/providers/data/neverbounce.js';
 import { zeroBounceStatus } from '../src/providers/data/zerobounce.js';
 import { createIntegration } from '../src/providers/store.js';
-import { emailVerified, enrichmentSettings, EnrichmentSettingsSchema, findEmailWaterfall, startEnrichmentRun } from '../src/services/enrichment.js';
+import { autoEnrichImported, emailVerified, enrichmentSettings, EnrichmentSettingsSchema, findEmailWaterfall, MAX_RUN_LEADS, startEnrichmentRun } from '../src/services/enrichment.js';
 import { setSetting } from '../src/services/settings.js';
 import { monthlyUsage } from '../src/services/usage.js';
 import type { JobRow } from '../src/jobs/queue.js';
@@ -451,12 +451,23 @@ describe('enrichment API', () => {
     void owner;
   });
 
+  it('looks up every lead of an import bigger than one run, in several runs', () => {
+    const w = makeWorld();
+    const ids = Array.from({ length: MAX_RUN_LEADS + 5 }, (_, i) => i + 1);
+    const r = autoEnrichImported(w.ctx, w.workspaceId, ids, null, true)!;
+    expect(r.runIds).toHaveLength(2);
+    expect(r).toMatchObject({ runId: r.runIds[0], total: MAX_RUN_LEADS + 5 });
+    expect(w.ctx.db.all('SELECT total FROM enrichment_runs ORDER BY id')).toEqual([{ total: MAX_RUN_LEADS }, { total: 5 }]);
+    expect(w.ctx.db.get("SELECT COUNT(*) AS n FROM jobs WHERE type = 'enrich.lead'")).toEqual({ n: MAX_RUN_LEADS + 5 });
+    expect(autoEnrichImported(w.ctx, w.workspaceId, ids, null, false)).toBeNull();
+  });
+
   it('marks typed addresses as the user’s own and auto-enriches imports when asked', async () => {
     const { call, register, w } = await makeApi();
     await register();
     const list = (await call('POST', '/api/lists', { name: 'L' })).body.id;
     const r = await call('POST', '/api/leads/import/csv', { listId: list, autoEnrich: true, csv: 'Profile URL,First Name,Last Name,Company\nhttps://www.linkedin.com/in/cy/,Cy,Moe,Initech\n' });
-    expect(r.body).toMatchObject({ added: 1, enrichRunId: expect.any(Number) });
+    expect(r.body).toMatchObject({ added: 1, enrichRunId: expect.any(Number), enrichRunIds: [r.body.enrichRunId] });
     expect(r.body.addedIds).toBeUndefined();
     await drainJobs(w);
     const cy = (await call('GET', `/api/leads?listId=${list}`)).body.items[0];

@@ -27,6 +27,7 @@ Every external service below is optional. Without keys, a built-in simulator sta
 - **Mailboxes** (Gmail, Microsoft 365 or any SMTP/IMAP server with app passwords): daily limits with a warm-up ramp, sending windows, random gaps, signatures, rotation across mailboxes, replies in the same thread.
 - Unsubscribe link and one-click `List-Unsubscribe` headers on every campaign email; reply and bounce detection over IMAP; DNS deliverability check (MX, SPF, DKIM, DMARC); optional open and click tracking, off by default.
 - Email finding (Hunter, Apollo) and verification (Hunter, ZeroBounce, NeverBounce) in an ordered waterfall, per-lead email status and source, *Find email* step, automatic lookup after imports, Apollo company enrichment, monthly usage per provider.
+- A CSV import over 10,000 leads with *Find emails* on is looked up in several runs of up to 10,000, so no imported lead is left out.
 
 ### Multichannel
 
@@ -38,6 +39,8 @@ Every external service below is optional. Without keys, a built-in simulator sta
 - Pipeline stages (editable), automatic forward-only stage moves, a drag-and-drop board with a keyboard-accessible *Move to* menu, owners, colored tags, notes and a lead timeline.
 - One-way sync to **HubSpot** and **Pipedrive**: contacts with a field mapping, notes for replies and other events, optional deals at a chosen stage, a sync log with retries.
 - New webhook events: `lead.classified`, `lead.stage_changed`, `lead.enriched`.
+- Bulk stage moves (the bulk edit, deleting a stage) run as a few statements and send one `leads.stage_changed` webhook with the count and lead ids, instead of one `lead.stage_changed` per lead.
+- Lead CSV export: custom fields come out as `custom_<name>` columns (importing the file restores their names), and cells starting with `=`, `+`, `-` or `@` get a leading `'` so spreadsheets show them as text instead of running them.
 
 ### Teams, agencies and hosting
 

@@ -18,6 +18,8 @@ export const WEBHOOK_EVENTS = [
   'task.completed',
   'lead.enriched',
   'lead.stage_changed',
+  // Many leads moved at once (bulk edit, a deleted stage): { count, leadIds (first 1000), from, to, source, reason }.
+  'leads.stage_changed',
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 export type EventSubscriber = (workspaceId: number, event: WebhookEvent, data: Record<string, unknown>) => void;
@@ -49,10 +51,11 @@ export class Webhooks {
     return () => void (this.subscribers = this.subscribers.filter((s) => s !== fn));
   }
 
-  emit(workspaceId: number, event: WebhookEvent, data: Record<string, unknown>) {
+  // `internal` goes to in-process subscribers only, never into a delivery (for example every row of a bulk change).
+  emit(workspaceId: number, event: WebhookEvent, data: Record<string, unknown>, internal?: Record<string, unknown>) {
     for (const fn of this.subscribers) {
       try {
-        fn(workspaceId, event, data);
+        fn(workspaceId, event, internal ? { ...data, ...internal } : data);
       } catch (e) {
         console.error(`[webhooks] subscriber failed on ${event}`, e);
       }
@@ -60,7 +63,9 @@ export class Webhooks {
     const hooks = this.db.all<HookRow>('SELECT id, url, events, secret FROM webhooks WHERE workspace_id = ? AND active = 1', [workspaceId]);
     for (const h of hooks) {
       const events = json<string[]>(h.events, []);
-      if (!events.includes(event) && !events.includes('*')) continue;
+      // Hooks for single stage moves hear about bulk ones too, so a bulk edit is never missed.
+      const also = event === 'leads.stage_changed' && events.includes('lead.stage_changed');
+      if (!events.includes(event) && !events.includes('*') && !also) continue;
       void this.send(h, { event, occurredAt: new Date().toISOString(), data });
     }
   }

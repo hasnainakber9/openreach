@@ -24,6 +24,9 @@ const FIELD_ALIASES: Record<string, keyof LeadInput | 'fullName'> = {
   email: 'email', emailaddress: 'email', workemail: 'email', phone: 'phone', phonenumber: 'phone', tags: 'tags',
 };
 
+// Custom fields are exported as custom_<name>; importing that file gives them their names back.
+const CUSTOM_PREFIX = 'custom_';
+
 const camel = (s: string) => s.trim().replace(/[^a-zA-Z0-9]+(.)?/g, (_, c: string | undefined) => (c ? c.toUpperCase() : '')).replace(/^./, (c) => c.toLowerCase());
 
 // Turns a CSV export from LinkedIn, Sales Navigator, a CRM or a spreadsheet into leads.
@@ -34,6 +37,10 @@ export function csvToLeads(text: string): LeadInput[] {
     const lead: LeadInput = { profileUrl: '', custom: {} };
     for (const [header, value] of Object.entries(row)) {
       if (!value) continue;
+      if (header.toLowerCase().startsWith(CUSTOM_PREFIX) && camel(header.slice(CUSTOM_PREFIX.length))) {
+        lead.custom![camel(header.slice(CUSTOM_PREFIX.length))] = value;
+        continue;
+      }
       const field = FIELD_ALIASES[header.toLowerCase().replace(/[^a-z]/g, '')];
       if (field === 'fullName') {
         const [first, ...rest] = value.split(/\s+/);
@@ -206,6 +213,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     const q = parse(leadQuery, req.query);
     const { items } = findLeads(req, q, false);
     const stages = listStages(ctx, user(req).workspace_id);
+    // Custom fields get their own column prefix, so one named "email" can't replace the real email column.
     const customKeys = [...new Set(items.flatMap((l) => Object.keys(json(l.custom, {}))))];
     const rows = items.map((l) => {
       const s = serializeLead(l, stages);
@@ -214,7 +222,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
         profile_url: s.profileUrl, first_name: s.firstName, last_name: s.lastName, headline: s.headline, title: s.title, company: s.company,
         location: s.location, email: s.email, email_status: s.emailStatus ?? '', email_source: s.emailSource ?? '', company_domain: s.companyDomain ?? '', phone: s.phone, connection_status: s.connectionStatus,
         connected_at: s.connectedAt ? new Date(s.connectedAt).toISOString() : '', replied_at: s.repliedAt ? new Date(s.repliedAt).toISOString() : '',
-        tags: s.tags.join(';'), stage: s.stage?.name ?? '', ...Object.fromEntries(customKeys.map((k) => [k, custom[k] ?? ''])),
+        tags: s.tags.join(';'), stage: s.stage?.name ?? '', ...Object.fromEntries(customKeys.map((k) => [`${CUSTOM_PREFIX}${k}`, custom[k] ?? ''])),
       };
     });
     return csv(reply, 'leads.csv', rows);
@@ -285,7 +293,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     const { addedIds, ...r } = importLeads(ctx, me.workspace_id, body.listId, leads, { emailSource: 'csv' });
     // Members may import, so they may also start the lookup for what they imported.
     const enrich = autoEnrichImported(ctx, me.workspace_id, addedIds, me.id, body.autoEnrich);
-    return { rows: leads.length, ...r, enrichRunId: enrich?.runId ?? null };
+    return { rows: leads.length, ...r, enrichRunId: enrich?.runId ?? null, enrichRunIds: enrich?.runIds ?? [] };
   });
 
   const account = (req: any, id: number) =>

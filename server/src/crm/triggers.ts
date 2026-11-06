@@ -100,7 +100,7 @@ export function triggerFor(ctx: Ctx, workspaceId: number, event: WebhookEvent, d
   }
 }
 
-const WATCHED = new Set<WebhookEvent>(['lead.replied', 'lead.stage_changed', 'lead.finished', 'lead.connected', 'action.performed']);
+const WATCHED = new Set<WebhookEvent>(['lead.replied', 'lead.stage_changed', 'leads.stage_changed', 'lead.finished', 'lead.connected', 'action.performed']);
 
 // Listens to outgoing events and queues a crm.sync job per CRM that wants them. Called once from buildContext.
 export function registerCrmTriggers(ctx: Ctx) {
@@ -108,10 +108,21 @@ export function registerCrmTriggers(ctx: Ctx) {
     if (!WATCHED.has(event)) return;
     const crms = activeCrms(ctx, workspaceId);
     if (!crms.length) return;
+    if (event === 'leads.stage_changed') return bulkStageSync(ctx, workspaceId, crms, data);
     const t = triggerFor(ctx, workspaceId, event, data);
     if (!t) return;
     for (const row of crms) {
       if (wantsEvent(crmSettingsOf(row), t)) enqueueCrmSync(ctx, workspaceId, { integrationId: row.id, leadId: t.leadId, event: t.event, ref: t.ref });
     }
   });
+}
+
+// A bulk stage move is one event: each moved lead gets the sync a single move would have queued (same ref).
+function bulkStageSync(ctx: Ctx, workspaceId: number, crms: IntegrationRow[], data: Record<string, unknown>) {
+  const stage = (data.to as { slug?: string } | null)?.slug;
+  const changes = data.changes as { leadId: number; historyId: number }[] | undefined;
+  if (!stage || !Array.isArray(changes)) return;
+  const wanting = crms.filter((row) => wantsEvent(crmSettingsOf(row), { event: 'stage', ref: '', stage }));
+  for (const row of wanting)
+    for (const c of changes) enqueueCrmSync(ctx, workspaceId, { integrationId: row.id, leadId: c.leadId, event: 'stage', ref: `stage:${c.historyId}` });
 }

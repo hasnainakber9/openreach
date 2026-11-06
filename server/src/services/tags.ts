@@ -26,9 +26,16 @@ export const hasTag = (l: Pick<LeadRow, 'tags'>, name: string) => leadTags(l).so
 
 const tagRows = (ctx: Ctx, ws: number) => ctx.db.all<TagRow>('SELECT * FROM tags WHERE workspace_id = ? ORDER BY lower(name), id', [ws]);
 
+// Another instance sharing Postgres may have just created the same tag: that row is used instead of failing
+// (a unique violation would also abort the caller's transaction there).
 function createRow(ctx: Ctx, ws: number, name: string, color: string | undefined, existing: number): TagRow {
-  const id = ctx.db.insert('tags', { workspace_id: ws, name, color: color ?? PALETTE[existing % PALETTE.length], created_at: ctx.clock.now() });
-  return ctx.db.get<TagRow>('SELECT * FROM tags WHERE id = ?', [id])!;
+  ctx.db.run('INSERT INTO tags (workspace_id, name, color, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (workspace_id, name) DO NOTHING', [
+    ws,
+    name,
+    color ?? PALETTE[existing % PALETTE.length],
+    ctx.clock.now(),
+  ]);
+  return ctx.db.get<TagRow>('SELECT * FROM tags WHERE workspace_id = ? AND name = ?', [ws, name])!;
 }
 
 // Tag rows, with rows created for names found on leads, and how many leads have each.
@@ -79,21 +86,24 @@ export function canonicalTags(ctx: Ctx, ws: number, names: string[]): string[] {
   return [...out.values()];
 }
 
-// Adds and removes tags on the workspace's leads in `leadIds`. Returns how many leads changed.
-export function applyTags(ctx: Ctx, ws: number, leadIds: number[], add: string[], remove: string[]): number {
+// Adds and removes tags on the workspace's leads in `leadIds` (read 500 at a time). Returns the ids of the
+// leads that changed.
+export function applyTags(ctx: Ctx, ws: number, leadIds: number[], add: string[], remove: string[]): number[] {
   const toAdd = canonicalTags(ctx, ws, add);
   const removeKeys = new Set(remove.map(key));
-  let changed = 0;
+  const changed: number[] = [];
   ctx.db.tx(() => {
-    for (const id of leadIds) {
-      const l = ctx.db.get<{ id: number; tags: string }>('SELECT id, tags FROM leads WHERE id = ? AND workspace_id = ?', [id, ws]);
-      if (!l) continue;
-      const before = leadTags(l);
-      const kept = before.filter((t) => !removeKeys.has(key(t)));
-      const next = [...kept, ...toAdd.filter((t) => !kept.some((k) => key(k) === key(t)))];
-      if (JSON.stringify(next) === JSON.stringify(before)) continue;
-      ctx.db.update('leads', l.id, { tags: JSON.stringify(next) });
-      changed++;
+    for (let i = 0; i < leadIds.length; i += 500) {
+      const chunk = leadIds.slice(i, i + 500);
+      const rows = ctx.db.all<{ id: number; tags: string }>(`SELECT id, tags FROM leads WHERE workspace_id = ? AND id IN (${chunk.map(() => '?').join(',')})`, [ws, ...chunk]);
+      for (const l of rows) {
+        const before = leadTags(l);
+        const kept = before.filter((t) => !removeKeys.has(key(t)));
+        const next = [...kept, ...toAdd.filter((t) => !kept.some((k) => key(k) === key(t)))];
+        if (JSON.stringify(next) === JSON.stringify(before)) continue;
+        ctx.db.update('leads', l.id, { tags: JSON.stringify(next) });
+        changed.push(l.id);
+      }
     }
   });
   return changed;

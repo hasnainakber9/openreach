@@ -60,12 +60,20 @@ export function notFound(what: string): never {
   throw new HttpError(404, `${what} not found`);
 }
 
-export function csv(reply: FastifyReply, filename: string, rows: Record<string, unknown>[]) {
+// One CSV cell. Lead data comes from strangers' LinkedIn profiles, so a value that a spreadsheet would read
+// as a formula (= + - @, or a leading tab or CR) gets a ' in front and stays plain text.
+export function csvCell(v: unknown): string {
+  let s = v == null ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+export function csvBody(rows: Record<string, unknown>[]): string {
   const headers = rows.length ? Object.keys(rows[0]) : [];
-  const esc = (v: unknown) => {
-    const s = v == null ? '' : String(v);
-    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const body = [headers.join(','), ...rows.map((r) => headers.map((h) => esc(r[h])).join(','))].join('\n');
+  return [headers.map(csvCell).join(','), ...rows.map((r) => headers.map((h) => csvCell(r[h])).join(','))].join('\n');
+}
+
+export function csv(reply: FastifyReply, filename: string, rows: Record<string, unknown>[]) {
+  const body = csvBody(rows);
   return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${filename}"`).send(body);
 }
