@@ -8,7 +8,7 @@ Every external service below is optional. Without keys, a built-in simulator sta
 
 ### LinkedIn
 
-- **Sender rotation:** one campaign can send from several LinkedIn accounts. New leads go to the account with the most room left today (or the one they're already connected to) and stay with it; each account keeps its own limits, hours, warm-up and delays. Leads an account hadn't contacted move to the others when it is paused, logged out or removed. Results per sender.
+- **Sender rotation:** one campaign can send from several LinkedIn accounts. New leads go to the account with the most room left today (or the one they're already connected to) and stay with it; each account keeps its own limits, hours, warm-up and delays. Leads an account hadn't contacted move to the others when it is paused, logged out or removed; leads already connected to it (or invited by it) wait for it instead. Results per sender.
 - **A/B testing:** 2 to 5 variants for invitation notes, messages, InMails, emails and SMS, with stable per-lead assignment, per-variant stats, a *Leading* marker once the gap is statistically clear, and manual or automatic winners.
 - **New lead sources:** import the people who reacted to or commented on a post, an event's attendees and a group's members, with live progress, cancelling, per-account daily import limits and deduplication.
 - **InMail steps** (from the profile or from Sales Navigator) with a subject, their own daily limit and credit handling (open profiles are free); already-connected leads get a normal message instead.
@@ -25,7 +25,7 @@ Every external service below is optional. Without keys, a built-in simulator sta
 ### Email
 
 - **Mailboxes** (Gmail, Microsoft 365 or any SMTP/IMAP server with app passwords): daily limits with a warm-up ramp, sending windows, random gaps, signatures, rotation across mailboxes, replies in the same thread.
-- Unsubscribe link and one-click `List-Unsubscribe` headers on every campaign email; reply and bounce detection over IMAP; DNS deliverability check (MX, SPF, DKIM, DMARC); optional open and click tracking, off by default.
+- Unsubscribe link and one-click `List-Unsubscribe` headers on every campaign email; reply and bounce detection over IMAP (out-of-office and other automatic answers show in the thread but don't count as replies); DNS deliverability check (MX, SPF, DKIM, DMARC); optional open and click tracking, off by default.
 - Email finding (Hunter, Apollo) and verification (Hunter, ZeroBounce, NeverBounce) in an ordered waterfall, per-lead email status and source, *Find email* step, automatic lookup after imports, Apollo company enrichment, monthly usage per provider.
 
 ### Multichannel
