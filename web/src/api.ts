@@ -25,6 +25,9 @@ export const setShownWorkspace = (id: number | null) => {
 };
 export const WORKSPACE_CHANGED_EVENT = 'openreach:workspace-changed';
 
+// For plain links (downloads), which can't carry the header.
+export const withWorkspace = (href: string) => (shownWorkspace == null ? href : `${href}${href.includes('?') ? '&' : '?'}workspace=${shownWorkspace}`);
+
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   const headers: Record<string, string> = opts.body !== undefined ? { 'content-type': 'application/json' } : {};
   if (shownWorkspace != null) headers['x-workspace-id'] = String(shownWorkspace);

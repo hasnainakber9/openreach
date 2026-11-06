@@ -117,6 +117,10 @@ describe('memberships', () => {
     expect(stale.json().details).toEqual({ code: 'workspace_changed', workspaceId: b });
     expect((await inA('GET', '/api/campaigns')).statusCode).toBe(409);
     expect(api.w.ctx.db.get('SELECT COUNT(*) AS n FROM lead_lists WHERE name = ?', ['meant for A'])).toEqual({ n: 0 });
+    // Download links can't send headers; they name the workspace in the query instead.
+    const csv = (ws: number) => api.app.inject({ method: 'GET', url: `/api/leads/export.csv?workspace=${ws}`, headers: { cookie: owner.cookie } });
+    expect((await csv(a)).statusCode).toBe(409);
+    expect((await csv(b)).statusCode).toBe(200);
     // What the tab needs to catch up still works, and calls without the header act in the active workspace.
     expect((await inA('GET', '/api/auth/me')).json().user.workspace_id).toBe(b);
     expect((await inA('GET', '/api/workspaces')).statusCode).toBe(200);

@@ -50,7 +50,7 @@ export default function Settings({ me, onMe }: { me: Me; onMe: (me: Me) => void 
       {tab === 'integrations' && (
         <div className="stack">
           <Integrations me={me} />
-          <Webhooks />
+          <Webhooks admin={me.role === 'owner' || me.role === 'admin'} />
         </div>
       )}
       {tab === 'profile' && <Profile email={me.email} />}
@@ -526,7 +526,7 @@ function DoNotContact({ me }: { me: Me }) {
   );
 }
 
-function Webhooks() {
+function Webhooks({ admin }: { admin: boolean }) {
   const hooks = useApi<any[]>('/api/webhooks');
   const events = useApi<string[]>('/api/webhooks/events');
   const [url, setUrl] = useState('');
@@ -573,9 +573,11 @@ function Webhooks() {
           <div className="spread">
             <strong style={{ wordBreak: 'break-all' }}>{h.url}</strong>
             <div className="row">
-              <Button size="sm" busy={busy === `t${h.id}`} onClick={() => run(`t${h.id}`, async () => toast(`Test delivery: ${(await api(`/api/webhooks/${h.id}/test`, { body: {} })).status}`))}>
-                Send test
-              </Button>
+              {admin && (
+                <Button size="sm" busy={busy === `t${h.id}`} onClick={() => run(`t${h.id}`, async () => toast(`Test delivery: ${(await api(`/api/webhooks/${h.id}/test`, { body: {} })).status}`))}>
+                  Send test
+                </Button>
+              )}
               <Button size="sm" variant="danger" onClick={() => confirm('Delete this webhook?') && run(`d${h.id}`, async () => (await api(`/api/webhooks/${h.id}`, { method: 'DELETE' }), hooks.reload()))}>
                 Delete
               </Button>

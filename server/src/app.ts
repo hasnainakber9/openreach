@@ -116,7 +116,8 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
     if (!u) throw new HttpError(401, 'Not signed in');
     req.user = u;
     // A tab still showing another workspace (the session switched in a second tab) must not act in this one.
-    const shown = req.headers[WORKSPACE_HEADER];
+    // Plain links (CSV downloads) can't set headers, so they say it with ?workspace= instead.
+    const shown = req.headers[WORKSPACE_HEADER] ?? (req.query as Record<string, unknown> | undefined)?.workspace;
     if (typeof shown === 'string' && shown && shown !== String(u.workspace_id) && !ANY_WORKSPACE.has(path)) {
       throw new HttpError(409, 'You switched workspace in another tab, so this page was out of date. It now shows the workspace you are in.', {
         code: 'workspace_changed',

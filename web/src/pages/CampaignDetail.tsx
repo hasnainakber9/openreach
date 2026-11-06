@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, REPLY_CATEGORIES, useApi, type AbTestReport, type Account, type Mailbox, type Campaign, type CampaignLead, type LeadList, type ReplyCategory, type SeqNode, type Sequence, type VariantId } from '../api';
+import { api, REPLY_CATEGORIES, useApi, withWorkspace, type AbTestReport, type Account, type Mailbox, type Campaign, type CampaignLead, type LeadList, type ReplyCategory, type SeqNode, type Sequence, type VariantId } from '../api';
 import { Funnel, LineChart } from '../components/LineChart';
 import { AiValueStatus, AiVariablesEditor } from '../components/Ai';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
@@ -633,7 +633,7 @@ function CampaignSettingsTab({ campaign, onSaved, onDeleted }: { campaign: Campa
             >
               Duplicate campaign
             </Button>
-            <a className="btn" href={`/api/leads/export.csv?campaignId=${campaign.id}`}>
+            <a className="btn" href={withWorkspace(`/api/leads/export.csv?campaignId=${campaign.id}`)}>
               Export leads (CSV)
             </a>
           </div>
