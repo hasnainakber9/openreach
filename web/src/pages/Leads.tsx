@@ -540,7 +540,7 @@ function ImportModal({ lists, defaultListId, onClose, onDone }: { lists: LeadLis
         if (tab === 'csv') {
           const r = await api('/api/leads/import/csv', { body: { listId: id, csv: file!.text, autoEnrich: enrichAfter } });
           toast(
-            `Imported ${r.added} of ${r.rows} rows${r.duplicates ? ` · ${r.duplicates} already in your leads` : ''}${r.invalid ? ` · ${r.invalid} without a LinkedIn URL` : ''}${r.enrichRunId ? ' · finding emails in the background' : ''}`,
+            `Imported ${r.added} of ${r.rows} rows${r.duplicates ? ` · ${r.duplicates} already in your leads` : ''}${r.invalid ? ` · ${r.invalid} without a LinkedIn URL` : ''}${r.enrichRunId ? ` · finding emails in the background${r.enrichRunIds?.length > 1 ? ` (${r.enrichRunIds.length} runs of up to 10,000 leads)` : ''}` : ''}`,
           );
           onDone(id);
         } else if (tab === 'linkedin') {

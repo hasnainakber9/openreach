@@ -293,7 +293,7 @@ export function leadRoutes(app: FastifyInstance, ctx: Ctx) {
     const { addedIds, ...r } = importLeads(ctx, me.workspace_id, body.listId, leads, { emailSource: 'csv' });
     // Members may import, so they may also start the lookup for what they imported.
     const enrich = autoEnrichImported(ctx, me.workspace_id, addedIds, me.id, body.autoEnrich);
-    return { rows: leads.length, ...r, enrichRunId: enrich?.runId ?? null };
+    return { rows: leads.length, ...r, enrichRunId: enrich?.runId ?? null, enrichRunIds: enrich?.runIds ?? [] };
   });
 
   const account = (req: any, id: number) =>

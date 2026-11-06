@@ -435,10 +435,15 @@ export function enrichSingleLead(ctx: Ctx, workspaceId: number, leadId: number, 
 }
 
 // Imports: with the workspace's auto-enrich setting (or the import's own choice), added leads get a run.
-export function autoEnrichImported(ctx: Ctx, workspaceId: number, leadIds: number[], createdBy: number | null, choice?: boolean): { runId: number; total: number } | null {
+// A run holds at most MAX_RUN_LEADS leads, so a bigger CSV gets several and every added lead is looked up.
+export function autoEnrichImported(ctx: Ctx, workspaceId: number, leadIds: number[], createdBy: number | null, choice?: boolean): { runId: number; runIds: number[]; total: number } | null {
   const s = enrichmentSettings(ctx, workspaceId);
   if (!(choice ?? s.autoEnrichOnImport) || !leadIds.length) return null;
-  return startEnrichmentRun(ctx, workspaceId, createdBy, leadIds, { find: true, verify: true, company: s.enrichCompany, overwrite: false });
+  const runIds: number[] = [];
+  for (let i = 0; i < leadIds.length; i += MAX_RUN_LEADS) {
+    runIds.push(startEnrichmentRun(ctx, workspaceId, createdBy, leadIds.slice(i, i + MAX_RUN_LEADS), { find: true, verify: true, company: s.enrichCompany, overwrite: false }).runId);
+  }
+  return { runId: runIds[0], runIds, total: leadIds.length };
 }
 
 export function serializeRun(r: EnrichmentRunRow) {

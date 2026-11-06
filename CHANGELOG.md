@@ -27,6 +27,7 @@ Every external service below is optional. Without keys, a built-in simulator sta
 - **Mailboxes** (Gmail, Microsoft 365 or any SMTP/IMAP server with app passwords): daily limits with a warm-up ramp, sending windows, random gaps, signatures, rotation across mailboxes, replies in the same thread.
 - Unsubscribe link and one-click `List-Unsubscribe` headers on every campaign email; reply and bounce detection over IMAP; DNS deliverability check (MX, SPF, DKIM, DMARC); optional open and click tracking, off by default.
 - Email finding (Hunter, Apollo) and verification (Hunter, ZeroBounce, NeverBounce) in an ordered waterfall, per-lead email status and source, *Find email* step, automatic lookup after imports, Apollo company enrichment, monthly usage per provider.
+- A CSV import over 10,000 leads with *Find emails* on is looked up in several runs of up to 10,000, so no imported lead is left out.
 
 ### Multichannel
 
