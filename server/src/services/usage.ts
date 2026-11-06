@@ -15,9 +15,9 @@ export interface UsageInput {
 export const monthOf = (ms: number) => new Date(ms).toISOString().slice(0, 7);
 
 // One row per external call, so plan limits and the usage page can sum credits and tokens per month.
-export function recordUsage(ctx: Ctx, u: UsageInput) {
+export function recordUsage(ctx: Ctx, u: UsageInput): number {
   const now = ctx.clock.now();
-  ctx.db.insert('usage_events', {
+  return ctx.db.insert('usage_events', {
     workspace_id: u.workspaceId,
     kind: u.kind,
     provider: u.provider,
@@ -29,6 +29,16 @@ export function recordUsage(ctx: Ctx, u: UsageInput) {
     month: monthOf(now),
     created_at: now,
   });
+}
+
+// Completes a row recorded before the call (a reserved credit): its token counts, or that it failed.
+export function finishUsage(ctx: Ctx, id: number, u: Pick<UsageInput, 'inputTokens' | 'outputTokens' | 'ok'>) {
+  ctx.db.run('UPDATE usage_events SET input_tokens = ?, output_tokens = ?, ok = ? WHERE id = ?', [
+    Math.max(0, Math.round(u.inputTokens ?? 0)),
+    Math.max(0, Math.round(u.outputTokens ?? 0)),
+    u.ok === false ? 0 : 1,
+    id,
+  ]);
 }
 
 export function monthlyUsage(ctx: Ctx, workspaceId: number, month: string) {

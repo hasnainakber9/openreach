@@ -1,9 +1,9 @@
 import type { z } from 'zod';
-import { assertCredits } from '../billing/limits.js';
+import { reserveCredit } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import type { AiProvider, AiRequest, AiResult } from '../providers/ai/types.js';
 import { ProviderError } from '../providers/http.js';
-import { recordUsage } from '../services/usage.js';
+import { finishUsage, recordUsage } from '../services/usage.js';
 
 export interface AiOutput extends AiResult {
   simulated: boolean;
@@ -19,14 +19,15 @@ export function aiProvider(ctx: Ctx, workspaceId: number): AiProvider {
 // Every AI call goes through here, so token usage is recorded per workspace (failed calls too).
 export async function completeAi(ctx: Ctx, workspaceId: number, req: AiRequest, provider = aiProvider(ctx, workspaceId)): Promise<AiOutput> {
   const usage = { workspaceId, kind: 'ai', provider: provider.providerId, operation: `ai.${req.purpose}` };
-  // Hosted plans include a number of AI calls a month; the simulated provider is free.
-  if (!provider.simulated) assertCredits(ctx, workspaceId, 'aiCreditsMonthly');
+  // Hosted plans include a number of AI calls a month; the simulated provider is free. The row is written before
+  // the call, so a paid one holds its credit while it runs (parallel jobs can't all pass the last one).
+  const id = provider.simulated ? recordUsage(ctx, usage) : reserveCredit(ctx, workspaceId, 'aiCreditsMonthly', () => recordUsage(ctx, usage));
   try {
     const out = await provider.complete(req);
-    recordUsage(ctx, { ...usage, inputTokens: out.inputTokens, outputTokens: out.outputTokens });
+    finishUsage(ctx, id, { inputTokens: out.inputTokens, outputTokens: out.outputTokens });
     return { ...out, simulated: provider.simulated, providerId: provider.providerId };
   } catch (e) {
-    recordUsage(ctx, { ...usage, ok: false });
+    finishUsage(ctx, id, { ok: false });
     throw e;
   }
 }

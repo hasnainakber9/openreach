@@ -225,6 +225,36 @@ describe('plan limits', () => {
     await expect(completeAi(w.ctx, ws, req, { ...paid, providerId: 'simulated', simulated: true } as AiProvider)).resolves.toBeTruthy();
   });
 
+  it('holds an AI credit while the call runs, so parallel calls can’t pass the last one', async () => {
+    const w = makeWorld();
+    enableBilling(w);
+    const ws = w.workspaceId;
+    w.ctx.db.insert('subscriptions', { workspace_id: ws, plan_id: 'pro', status: 'active', updated_at: 1 });
+    // Calls that only answer once all five have started.
+    let release!: () => void;
+    const started = new Promise<void>((r) => (release = r));
+    let running = 0;
+    const paid = {
+      providerId: 'anthropic',
+      simulated: false,
+      complete: async () => (++running === 2 && release(), await started, { text: 'Hi', model: 'm', inputTokens: 3, outputTokens: 4 }),
+    } as unknown as AiProvider;
+    const req = { purpose: 'write', system: '', prompt: 'p', maxTokens: 10, tier: 'writer' } as const;
+    const results = await Promise.allSettled(Array.from({ length: 5 }, () => completeAi(w.ctx, ws, req, paid)));
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+    expect(results.filter((r) => r.status === 'rejected' && r.reason instanceof PlanLimitError)).toHaveLength(3);
+    expect(running).toBe(2);
+    expect(usageOf(w.ctx, ws, 'aiCreditsMonthly')).toBe(2);
+    // Each row got its token counts once the call finished; a failed call gives its credit back.
+    expect(w.ctx.db.all('SELECT input_tokens, output_tokens, ok FROM usage_events WHERE workspace_id = ?', [ws])).toEqual([
+      { input_tokens: 3, output_tokens: 4, ok: 1 },
+      { input_tokens: 3, output_tokens: 4, ok: 1 },
+    ]);
+    w.ctx.db.run('DELETE FROM usage_events');
+    await expect(completeAi(w.ctx, ws, req, { ...paid, complete: async () => Promise.reject(new Error('down')) } as AiProvider)).rejects.toThrow('down');
+    expect(usageOf(w.ctx, ws, 'aiCreditsMonthly')).toBe(0);
+  });
+
   it('turns used-up AI credits into a 402 on AI routes', async () => {
     const w = makeWorld();
     enableBilling(w);

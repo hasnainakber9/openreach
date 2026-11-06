@@ -187,3 +187,13 @@ export function assertCredits(ctx: Ctx, workspaceId: number, key: 'aiCreditsMont
   const over = check(ctx, workspaceId, key, 1);
   if (over) throw new PlanLimitError(over.message, over.details);
 }
+
+// The check and the row that uses the credit, as one step under the plan lock: parallel jobs each see the
+// others' reservations, so they can't all pass the last credit. `reserve` inserts the usage row (counted while
+// the call runs) and returns its id; the caller marks it failed if the call fails.
+export function reserveCredit(ctx: Ctx, workspaceId: number, key: 'aiCreditsMonthly' | 'enrichmentCreditsMonthly', reserve: () => number): number {
+  return withPlanLock(ctx, workspaceId, () => {
+    assertCredits(ctx, workspaceId, key);
+    return reserve();
+  });
+}
