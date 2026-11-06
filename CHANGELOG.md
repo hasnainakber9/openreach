@@ -42,7 +42,7 @@ Every external service below is optional. Without keys, a built-in simulator sta
 ### Teams, agencies and hosting
 
 - People can belong to several workspaces and switch between them; invites by link or email (`SMTP_URL`, `MAIL_FROM`).
-- **Agency mode:** client workspaces with an overview page, a read-only *Client* role, and white-label branding (product name, logo, color, support email, custom domain via `CUSTOM_DOMAINS` and `TRUST_PROXY`).
+- **Agency mode:** client workspaces with an overview page, a read-only *Client* role, and white-label branding (product name, logo, color, support email, custom domain via `PUBLIC_URL`, `CUSTOM_DOMAINS` and `TRUST_PROXY`).
 - **Plans and Stripe billing** for hosted installs (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `BILLING_PLANS` / `BILLING_PLANS_FILE`): Checkout, Customer Portal, signed webhooks and limits on accounts, mailboxes, seats, clients and monthly AI and enrichment credits. Off, and unlimited, without a key.
 - **Postgres** as an optional database (`DATABASE_URL`), with leader election so several instances can share it while one runs the engine.
 - A database-backed job queue for background work (`JOB_CONCURRENCY`).

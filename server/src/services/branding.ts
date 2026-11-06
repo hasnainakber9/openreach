@@ -97,9 +97,12 @@ const publicHost = (ctx: Ctx) => (ctx.config.publicUrl ? hostOf(new URL(ctx.conf
 const LOCAL = /(^|\.)(localhost|local|internal)$/;
 
 // Why a workspace may not use this domain, or null. The installation's own host is never a tenant's:
-// whoever held it would brand everyone's sign-in page. Past that, the operator decides (CUSTOM_DOMAINS).
-export function customDomainProblem(ctx: Ctx, domain: string, requestHost?: string): string | null {
-  const own = publicHost(ctx) || hostOf(requestHost);
+// whoever held it would brand everyone's sign-in page. It comes from PUBLIC_URL only (a request's Host is
+// whatever the client sends), so without PUBLIC_URL there are no custom domains. Past that, the operator
+// decides (CUSTOM_DOMAINS).
+export function customDomainProblem(ctx: Ctx, domain: string): string | null {
+  const own = publicHost(ctx);
+  if (!own) return "Custom domains need PUBLIC_URL on the server (its own address), so it can tell your domain from its own.";
   if (domain === own || LOCAL.test(domain)) return "That is this server's own address. Use a domain of your own, like app.youragency.com.";
   const allowed = ctx.config.customDomains;
   if (!allowed?.length) return ctx.config.allowSignup ? 'Custom domains need to be enabled by the server operator (CUSTOM_DOMAINS).' : null;
@@ -111,7 +114,7 @@ export function workspaceForHost(ctx: Ctx, host: string | undefined): number | n
   const h = hostOf(host);
   if (!h || !HOSTNAME.test(h)) return null;
   const ws = ctx.db.get<{ workspace_id: number }>('SELECT workspace_id FROM branding WHERE custom_domain = ?', [h])?.workspace_id ?? null;
-  // Saved before the rules changed (or before PUBLIC_URL was set): ignored rather than served.
+  // Saved before the rules changed (or with PUBLIC_URL unset or changed): ignored rather than served.
   return ws && !customDomainProblem(ctx, h) ? ws : null;
 }
 

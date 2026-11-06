@@ -248,7 +248,7 @@ Inbound SMS and WhatsApp need `PUBLIC_URL`: Twilio signs each webhook request fo
 
 A custom domain (for example `app.youragency.com`) only selects the branding shown on that host, including the sign-in page; it is the same app and the same accounts. To use one, point the domain's DNS at your server, add it to your reverse proxy with a TLS certificate (Caddy, nginx, Traefik or your host's dashboard), and set `TRUST_PROXY=true` if the proxy forwards the original host in `X-Forwarded-Host`. Links in emails (invites, unsubscribe, tracking) always use `PUBLIC_URL`.
 
-Only the agency owner sets the domain (for the agency and for each client). The server's own host (`PUBLIC_URL`) and local names such as `localhost` are never accepted, and someone signed in to another workspace keeps their own branding on a domain that isn't theirs. With open signup, list the domains you have set up in `CUSTOM_DOMAINS`, so a stranger can't claim one first.
+Custom domains need `PUBLIC_URL`, which tells the server its own host. Only the agency owner sets the domain (for the agency and for each client). The server's own host (`PUBLIC_URL`) and local names such as `localhost` are never accepted, and someone signed in to another workspace keeps their own branding on a domain that isn't theirs. With open signup, list the domains you have set up in `CUSTOM_DOMAINS`, so a stranger can't claim one first.
 
 ### Plans and billing (hosted installs)
 

@@ -122,7 +122,7 @@ export function agencyRoutes(app: FastifyInstance, ctx: Ctx) {
     const domain = body.customDomain === undefined ? undefined : body.customDomain || null;
     if (domain !== undefined && domain !== brandingSettings(ctx, w.id).customDomain) {
       if (!canEditDomain(u.id, w)) throw new HttpError(403, 'Only the agency owner can change the custom domain');
-      const problem = domain && customDomainProblem(ctx, domain, req.host);
+      const problem = domain && customDomainProblem(ctx, domain);
       if (problem) throw new HttpError(400, problem);
     }
     if (saveBranding(ctx, w.id, body) === 'domain_taken') throw new HttpError(409, 'Another workspace already uses that domain');

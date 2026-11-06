@@ -506,6 +506,28 @@ describe('white-label branding', () => {
     expect(await branding('app.agency.test', rival.cookie)).toMatchObject({ productName: 'OpenReach', source: 'workspace' });
     expect(await branding('app.agency.test', clientAdmin.cookie)).toMatchObject({ productName: 'Agency Co', source: 'domain' });
   });
+
+  it("never takes the server's own host from the request, so without PUBLIC_URL there are no custom domains", async () => {
+    const { api, owner } = await agencySetup();
+    const cfg = api.w.ctx.config;
+    cfg.customDomains = ['*.corp.test'];
+    const put = (host: string) =>
+      api.app.inject({ method: 'PUT', url: '/api/agency/branding', payload: { productName: 'Evil', customDomain: 'app.corp.test' }, headers: { cookie: owner.cookie, host } });
+    const signInPage = () => api.app.inject({ method: 'GET', url: '/api/branding', headers: { host: 'app.corp.test' } }).then((r) => r.json());
+    cfg.publicUrl = undefined;
+    // The server runs at app.corp.test; a spoofed Host must not make that look like someone else's domain.
+    expect((await put('app.corp.test')).statusCode).toBe(400);
+    const spoofed = await put('x.corp.test');
+    expect(spoofed.statusCode).toBe(400);
+    expect(spoofed.json().error).toMatch(/PUBLIC_URL/);
+    // Saved anyway (before this rule): not served without PUBLIC_URL.
+    api.w.ctx.db.run("INSERT INTO branding (workspace_id, product_name, custom_domain, updated_at) VALUES (?, 'Evil', 'app.corp.test', 0)", [owner.workspaceId]);
+    expect(await signInPage()).toMatchObject({ productName: 'OpenReach', source: 'default' });
+    cfg.publicUrl = 'https://app.corp.test';
+    expect(await signInPage()).toMatchObject({ source: 'default' });
+    api.w.ctx.db.run('DELETE FROM branding');
+    expect((await put('x.corp.test')).json().error).toMatch(/own address/);
+  });
 });
 
 describe('agency access inside client workspaces', () => {
