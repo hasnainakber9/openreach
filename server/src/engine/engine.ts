@@ -9,10 +9,10 @@ import { MailRunner } from '../mail/runner.js';
 import { MessagingRunner } from '../messaging/runner.js';
 import { newMessageId } from '../mail/compose.js';
 import type { SmtpConfig } from '../services/email.js';
-import { replyDecision, replyHoldDeadline, replySince } from '../services/replies.js';
+import { replyDecision, replyHoldDeadline, replySince, stopCampaignLead } from '../services/replies.js';
 import { suppressionReason } from '../services/suppression.js';
 import { emailVerified, enrichmentSettings, findEmailGate } from '../services/enrichment.js';
-import { skipOpenTasks, taskGate } from '../services/tasks.js';
+import { taskGate } from '../services/tasks.js';
 import { blacklistReason, campaignSequence, campaignSettings, enrichLead, publicLead } from '../services/leads.js';
 import { campaignAccountIds, chooseSender, connectedSender, connectionWith, isLegacy, pinLead, releaseUnstartedLeads, setConnection, type CapacityCache } from '../services/rotation.js';
 import type { AccountRow, CampaignLeadRow, CampaignLeadState, CampaignRow, ConnectionStatus, LeadRow } from '../types.js';
@@ -316,16 +316,22 @@ export class Engine {
     }
   }
 
+  // Only a lead still active moves: one that stopped (a reply, an opt-out) while its action was being sent
+  // stays where it stopped, and the stale copy comes back with its real state so callers walk no further.
   moveTo(campaign: CampaignRow, job: CampaignLeadRow, nextId: string | null): CampaignLeadRow {
     const seq = campaignSequence(campaign);
     const now = this.ctx.clock.now();
     const next = nextId ? seq.nodes[nextId] : undefined;
     if (!next) {
-      this.finish(campaign, job, 'done');
+      if (!this.finish(campaign, job, 'done')) return { ...job, state: this.stateOf(job.id) };
       return { ...job, node_id: null, state: 'done' };
     }
     const patch = { node_id: next.id, node_type: next.type, node_entered_at: now, next_run_at: now, attempts: 0, last_error: null };
-    this.ctx.db.update('campaign_leads', job.id, patch);
+    const moved = this.ctx.db.run(
+      "UPDATE campaign_leads SET node_id = ?, node_type = ?, node_entered_at = ?, next_run_at = ?, attempts = 0, last_error = NULL WHERE id = ? AND state = 'active'",
+      [next.id, next.type, now, now, job.id],
+    );
+    if (!moved.changes) return { ...job, state: this.stateOf(job.id) };
     // Start writing the step's AI variables now, so they are usually ready when it runs.
     prefetchAi(this.ctx, campaign, job, next);
     return { ...job, ...patch };
@@ -348,10 +354,13 @@ export class Engine {
     return true;
   }
 
-  finish(campaign: CampaignRow, job: CampaignLeadRow, state: CampaignLeadState, error?: string) {
-    const now = this.ctx.clock.now();
-    this.ctx.db.update('campaign_leads', job.id, { state, finished_at: now, next_run_at: now, hold_reason: null, ...(error ? { last_error: error } : {}) });
-    skipOpenTasks(this.ctx, job.id, `Lead left the campaign (${state})`);
+  private stateOf(id: number): CampaignLeadState {
+    return this.ctx.db.get<{ state: CampaignLeadState }>('SELECT state FROM campaign_leads WHERE id = ?', [id])?.state ?? 'done';
+  }
+
+  // Ends an active lead; false (and nothing changes) when it already left the campaign another way.
+  finish(campaign: CampaignRow, job: CampaignLeadRow, state: Exclude<CampaignLeadState, 'active'>, error?: string): boolean {
+    if (!stopCampaignLead(this.ctx, job, state, error)) return false;
     if (state === 'done' || state === 'failed') {
       const lead = this.lead(job.lead_id);
       this.ctx.webhooks.emit(campaign.workspace_id, state === 'done' ? 'lead.finished' : 'lead.failed', {
@@ -360,6 +369,7 @@ export class Engine {
         ...(error ? { error } : {}),
       });
     }
+    return true;
   }
 
   // Performs the LinkedIn/email action at the job's node. Returns true if anything was sent
