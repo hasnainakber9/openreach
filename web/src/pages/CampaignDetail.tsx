@@ -4,7 +4,7 @@ import { api, REPLY_CATEGORIES, useApi, type AbTestReport, type Account, type Ma
 import { Funnel, LineChart } from '../components/LineChart';
 import { AiValueStatus, AiVariablesEditor } from '../components/Ai';
 import { SequenceBuilder, summary } from '../components/SequenceBuilder';
-import { Button, CheckList, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
+import { Button, CheckCell, CheckList, Empty, Field, Pager, Pill, Stat, Tabs, Toggle, useAction } from '../components/ui';
 import { ACTION_LABELS, CATEGORY_LABELS, CONDITION_LABELS, fullName, pct, senderSummary, timeAgo } from '../format';
 import { canWrite, useMe } from '../session';
 
@@ -226,10 +226,10 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
           <Empty title="No leads in this campaign">{writer ? 'Pick a lead list above to add people. Duplicates, blacklisted people and leads busy in other campaigns are skipped automatically.' : 'Leads appear here once they are added to the campaign.'}</Empty>
         ) : (
           <div className="table-wrap">
-            <table>
+            <table className="table-cards">
               <thead>
                 <tr>
-                  {writer && <th style={{ width: 32 }} />}
+                  {writer && <th className="cell-check" />}
                   <th>Lead</th>
                   <th>State</th>
                   <th>Current step</th>
@@ -242,39 +242,38 @@ function CampaignLeads({ campaign, onChange }: { campaign: Campaign; onChange: (
                 {leads.data?.items.map((r) => (
                   <tr key={r.lead.id}>
                     {writer && (
-                      <td>
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${fullName(r.lead)}`}
-                          checked={selected.has(r.lead.id)}
-                          onChange={(e) => {
-                            const s = new Set(selected);
-                            e.target.checked ? s.add(r.lead.id) : s.delete(r.lead.id);
-                            setSelected(s);
-                          }}
-                        />
-                      </td>
+                      <CheckCell
+                        label={`Select ${fullName(r.lead)}`}
+                        checked={selected.has(r.lead.id)}
+                        onChange={(on) => {
+                          const s = new Set(selected);
+                          on ? s.add(r.lead.id) : s.delete(r.lead.id);
+                          setSelected(s);
+                        }}
+                      />
                     )}
-                    <td>
+                    <td className="cell-primary">
                       <a href={r.lead.profileUrl} target="_blank" rel="noreferrer" className="cell-title">
                         {fullName(r.lead)}
                       </a>
                       <div className="cell-sub">{r.lead.headline || r.lead.company}</div>
                     </td>
-                    <td>
+                    <td data-label="State">
                       <Pill status={r.state === 'active' ? 'running' : r.state}>{r.state === 'active' ? 'In progress' : undefined}</Pill>
                     </td>
-                    <td>
+                    <td data-label="Current step">
                       {r.state === 'active' ? stepLabel(campaign.sequence, r.nodeId) : '—'}
                       {r.lastError && <div className="cell-sub" style={{ color: 'var(--critical-text)' }}>{r.lastError}</div>}
                     </td>
-                    <td className="muted">{r.state === 'active' ? timeAgo(r.nextRunAt) : '—'}</td>
-                    <td className={r.sender || r.mailbox ? undefined : 'muted'} title={r.sender || r.mailbox ? undefined : 'Assigned when its first LinkedIn or email step runs'}>
+                    <td className="muted" data-label="Next">
+                      {r.state === 'active' ? timeAgo(r.nextRunAt) : '—'}
+                    </td>
+                    <td className={r.sender || r.mailbox ? undefined : 'muted'} data-label="Sender" title={r.sender || r.mailbox ? undefined : 'Assigned when its first LinkedIn or email step runs'}>
                       {r.sender?.name ?? (r.mailbox ? '' : 'Not assigned yet')}
                       {r.mailbox && <div className={r.sender ? 'cell-sub' : undefined}>{r.mailbox.name}</div>}
                       {r.lead.emailStatus === 'invalid' && <div className="cell-sub" style={{ color: 'var(--critical-text)' }} title={r.lead.emailStatusReason ?? undefined}>Email bounced</div>}
                     </td>
-                    <td>
+                    <td data-label="Connection">
                       <Pill status={r.lead.connectionStatus} />
                     </td>
                   </tr>
@@ -336,7 +335,7 @@ function Results({ campaign }: { campaign: Campaign }) {
         <div className="card card-flush">
           <h2 style={{ padding: '16px 16px 4px' }}>By sender</h2>
           <div className="table-wrap">
-            <table>
+            <table className="table-cards">
               <thead>
                 <tr>
                   <th>Account</th>
@@ -350,22 +349,22 @@ function Results({ campaign }: { campaign: Campaign }) {
               <tbody>
                 {s.bySender.map((r) => (
                   <tr key={r.accountId}>
-                    <td>
+                    <td className="cell-primary">
                       <div className="row">
                         <span className="cell-title">{r.name}</span>
                         {r.status !== 'active' && <Pill status={r.status} />}
                       </div>
                       {!campaign.accountIds.includes(r.accountId) && <div className="cell-sub">No longer a sender; finishing its conversations</div>}
                     </td>
-                    <td className="num">
+                    <td className="num" data-label="Leads">
                       {r.leads} <span className="muted">({r.active} in progress)</span>
                     </td>
-                    <td className="num">{r.invited}</td>
-                    <td className="num">
+                    <td className="num" data-label="Invited">{r.invited}</td>
+                    <td className="num" data-label="Accepted">
                       {r.accepted} <span className="muted">({pct(r.acceptanceRate)})</span>
                     </td>
-                    <td className="num">{r.messaged}</td>
-                    <td className="num">
+                    <td className="num" data-label="Messaged">{r.messaged}</td>
+                    <td className="num" data-label="Replied">
                       {r.replied} <span className="muted">({pct(r.replyRate)})</span>
                     </td>
                   </tr>
@@ -383,7 +382,7 @@ function Results({ campaign }: { campaign: Campaign }) {
             {(campaign.settings.trackOpens || campaign.settings.trackClicks) && ` · ${s.email.opened} opened · ${s.email.clicked} clicked (indications only: privacy proxies and scanners open mail too)`}
           </p>
           <div className="table-wrap">
-            <table>
+            <table className="table-cards">
               <thead>
                 <tr>
                   <th>Mailbox</th>
@@ -396,19 +395,19 @@ function Results({ campaign }: { campaign: Campaign }) {
               <tbody>
                 {s.byMailbox.map((r) => (
                   <tr key={r.mailboxId}>
-                    <td>
+                    <td className="cell-primary">
                       <div className="row">
                         <span className="cell-title">{r.name}</span>
                         {r.status !== 'active' && <Pill status={r.status} />}
                       </div>
                       {!campaign.mailboxIds.includes(r.mailboxId) && <div className="cell-sub">No longer used here; finishing its threads</div>}
                     </td>
-                    <td className="num">{r.leads}</td>
-                    <td className="num">{r.sent}</td>
-                    <td className="num">
+                    <td className="num" data-label="Leads">{r.leads}</td>
+                    <td className="num" data-label="Emailed">{r.sent}</td>
+                    <td className="num" data-label="Replied">
                       {r.replied} <span className="muted">({pct(r.replyRate)})</span>
                     </td>
-                    <td className="num">{r.bounced}</td>
+                    <td className="num" data-label="Bounced">{r.bounced}</td>
                   </tr>
                 ))}
               </tbody>
@@ -489,7 +488,7 @@ function AbTests({ campaign }: { campaign: Campaign }) {
                       : t.autoPickAfter
                         ? ` · Once ${t.autoPickAfter} are sent, the variant ahead is picked automatically.`
                         : ''}
-                  {!t.winner && !called && sent > 0 && ' Not enough data to call a winner yet: each variant needs 20 sends and a clear gap.'}
+                  {!t.winner && !called && sent > 0 && ' · Not enough data to call a winner yet: each variant needs 20 sends and a clear gap.'}
                 </p>
               </div>
               {writer && t.winner && (
@@ -499,7 +498,7 @@ function AbTests({ campaign }: { campaign: Campaign }) {
               )}
             </div>
             <div className="table-wrap">
-              <table>
+              <table className="table-cards">
                 <thead>
                   <tr>
                     <th>Variant</th>
@@ -513,7 +512,7 @@ function AbTests({ campaign }: { campaign: Campaign }) {
                 <tbody>
                   {t.variants.map((v) => (
                     <tr key={v.id}>
-                      <td>
+                      <td className="cell-primary">
                         <div className="row">
                           <span className="cell-title">Variant {v.id}</span>
                           {t.winner === v.id ? <Pill status="winner">Winner</Pill> : !t.winner && v.leader && v.significant ? <Pill status="leading">Leading</Pill> : null}
@@ -522,14 +521,14 @@ function AbTests({ campaign }: { campaign: Campaign }) {
                           {variantText(node, v.id)}
                         </div>
                       </td>
-                      <td className="num">{v.sent}</td>
-                      {t.nodeType === 'connect' && <td className="num">{v.accepted}</td>}
-                      <td className="num">{v.replied}</td>
-                      <td className="num">
+                      <td className="num" data-label="Sent">{v.sent}</td>
+                      {t.nodeType === 'connect' && <td className="num" data-label="Accepted">{v.accepted}</td>}
+                      <td className="num" data-label="Replied">{v.replied}</td>
+                      <td className="num" data-label={t.metric === 'accepted' ? 'Acceptance' : 'Reply rate'}>
                         <strong>{pct(v.rate)}</strong>
                         {!t.winner && v.leader && !v.significant && <div className="cell-sub">ahead so far</div>}
                       </td>
-                      <td className="num">
+                      <td className="num cell-action">
                         {writer && t.winner !== v.id && (
                           <Button size="sm" variant="ghost" busy={busy === `${t.nodeId}:${v.id}`} onClick={() => choose(t, v.id)}>
                             Use this variant

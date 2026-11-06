@@ -281,7 +281,7 @@ function UsageCard() {
         </p>
       ) : (
         <div className="table-wrap">
-          <table>
+          <table className="table-cards">
             <thead>
               <tr>
                 <th>Service</th>
@@ -295,12 +295,12 @@ function UsageCard() {
             <tbody>
               {rows.map((r) => (
                 <tr key={`${r.kind}:${r.provider}:${r.operation}`}>
-                  <td>{KIND_LABELS[r.kind] ?? r.kind}</td>
-                  <td>{r.provider === 'simulated' ? 'Built-in simulator' : r.provider}</td>
-                  <td>{USAGE_OPERATION_LABELS[r.operation] ?? r.operation}</td>
-                  <td className="num">{r.calls}</td>
-                  <td className="num">{r.credits}</td>
-                  <td className="num">{r.inputTokens + r.outputTokens ? (r.inputTokens + r.outputTokens).toLocaleString() : '—'}</td>
+                  <td className="cell-primary">{KIND_LABELS[r.kind] ?? r.kind}</td>
+                  <td data-label="Provider">{r.provider === 'simulated' ? 'Built-in simulator' : r.provider}</td>
+                  <td data-label="What">{USAGE_OPERATION_LABELS[r.operation] ?? r.operation}</td>
+                  <td className="num" data-label="Calls">{r.calls}</td>
+                  <td className="num" data-label="Credits">{r.credits}</td>
+                  <td className="num" data-label="Tokens">{r.inputTokens + r.outputTokens ? (r.inputTokens + r.outputTokens).toLocaleString() : '—'}</td>
                 </tr>
               ))}
             </tbody>

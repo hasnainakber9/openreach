@@ -39,7 +39,7 @@ export default function Campaigns({ me }: { me: Me }) {
           </Empty>
         ) : (
           <div className="table-wrap">
-            <table>
+            <table className="table-cards">
               <thead>
                 <tr>
                   <th>Campaign</th>
@@ -58,14 +58,14 @@ export default function Campaigns({ me }: { me: Me }) {
                   const finished = s.done + s.replied + s.failed + s.skipped;
                   return (
                     <tr key={c.id} className="clickable" onClick={() => nav(`/campaigns/${c.id}`)}>
-                      <td>
+                      <td className="cell-primary">
                         <div className="cell-title">{c.name}</div>
                         <div className="cell-sub">{c.accounts.length ? senderSummary(c.accounts) : 'No LinkedIn account selected'}</div>
                       </td>
-                      <td>
+                      <td data-label="Status">
                         <Pill status={c.status} />
                       </td>
-                      <td style={{ minWidth: 140 }}>
+                      <td data-label="Progress" style={{ minWidth: 140 }}>
                         <div className="progress" title={`${finished} of ${s.total} finished`}>
                           <span style={{ width: `${s.total ? (finished / s.total) * 100 : 0}%`, background: 'var(--series-1)' }} />
                         </div>
@@ -73,15 +73,15 @@ export default function Campaigns({ me }: { me: Me }) {
                           {s.active} in progress · {finished} finished
                         </div>
                       </td>
-                      <td className="num">{s.total}</td>
-                      <td className="num">{s.funnel.invited}</td>
-                      <td className="num">
+                      <td className="num" data-label="Leads">{s.total}</td>
+                      <td className="num" data-label="Invited">{s.funnel.invited}</td>
+                      <td className="num" data-label="Accepted">
                         {s.funnel.accepted} <span className="muted">({pct(s.acceptanceRate)})</span>
                       </td>
-                      <td className="num">
+                      <td className="num" data-label="Replied">
                         {s.funnel.replied} <span className="muted">({pct(s.replyRate)})</span>
                       </td>
-                      <td className="num" onClick={(e) => e.stopPropagation()}>
+                      <td className="num cell-action" onClick={(e) => e.stopPropagation()}>
                         {writer && (
                           <Button size="sm" busy={busy === `t${c.id}`} onClick={() => toggle(c)}>
                             {c.status === 'active' ? 'Pause' : 'Start'}

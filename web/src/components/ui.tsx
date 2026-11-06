@@ -63,11 +63,13 @@ const STATUS_TONE: Record<string, string> = {
 
 const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', needs_attention: 'Needs attention', none: 'Not connected', ok: 'Working', untested: 'Not tested' };
 
-export function Pill({ status, children }: { status: string; children?: ReactNode }) {
+// prefix names what the status is about ("Reply:"), in visible text so it reads the same on touch and to screen readers.
+export function Pill({ status, children, prefix }: { status: string; children?: ReactNode; prefix?: string }) {
   const tone = STATUS_TONE[status] ?? 'neutral';
   return (
     <span className={`pill pill-${tone}`}>
       <span className="pill-dot" aria-hidden />
+      {prefix && <span className="pill-prefix">{prefix}</span>}
       {children ?? STATUS_TEXT[status] ?? status.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())}
     </span>
   );
@@ -330,6 +332,24 @@ export function Tabs<T extends string>({ value, onChange, tabs }: { value: T; on
         </button>
       ))}
     </div>
+  );
+}
+
+// A table's row (or "select all") checkbox. The whole cell is the tap target, and clicks stop here
+// so a clickable row does not open. `header` renders the <th>, which on phones reads "Select all".
+export function CheckCell({ label, checked, onChange, header }: { label: string; checked: boolean; onChange: (v: boolean) => void; header?: boolean }) {
+  const Cell = header ? 'th' : 'td';
+  return (
+    <Cell className="cell-check" onClick={(e) => e.stopPropagation()}>
+      <label className="check-hit">
+        <input type="checkbox" aria-label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        {header && (
+          <span className="check-hit-text" aria-hidden>
+            Select all
+          </span>
+        )}
+      </label>
+    </Cell>
   );
 }
 

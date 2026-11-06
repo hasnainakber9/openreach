@@ -216,7 +216,7 @@ function SignIn({ onDone, branding = DEFAULT_BRANDING }: { onDone: (me: Me) => v
 
   if (!status.data) return null;
   return (
-    <div className="auth">
+    <main className="auth">
       <form className="card" onSubmit={submit}>
         <BrandMark name={branding.productName} logoUrl={branding.logoUrl} />
         <div>
@@ -259,6 +259,6 @@ function SignIn({ onDone, branding = DEFAULT_BRANDING }: { onDone: (me: Me) => v
           </button>
         )}
       </form>
-    </div>
+    </main>
   );
 }

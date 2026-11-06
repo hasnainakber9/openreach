@@ -262,6 +262,48 @@ code {
   gap: 12px;
 }
 
+/* Leads: the lead lists beside the table, and the email and status lines in its rows. */
+.lead-lists {
+  padding: 8px;
+}
+.lead-lists > .btn {
+  margin-top: 6px;
+}
+.lead-email {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin-top: 3px;
+  font-size: 13px;
+}
+.lead-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+/* Below 1280px the table no longer fits beside the lists, so they become a wrapped row above it. */
+@media (max-width: 1280px) {
+  .grid-side-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .lead-lists {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+  }
+  .lead-lists .nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+  .lead-lists > .btn {
+    margin-top: 0;
+  }
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -349,6 +391,7 @@ code {
   }
 }
 
+input:not([type]),
 input[type='text'],
 input[type='email'],
 input[type='password'],
@@ -396,6 +439,15 @@ textarea:focus,
 .field-error {
   font-size: 12.5px;
   color: var(--critical-text);
+}
+/* A button beside fields in a grid (align-items: start): the top padding stands in for a one-line field
+   label (keep those labels short), so the button sits on the inputs' line however long the hints are. */
+.field-action {
+  padding-top: calc(13px * 1.45 + 5px);
+}
+.field-action .btn {
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .checklist {
@@ -491,6 +543,9 @@ textarea:focus,
   color: var(--ink-2);
   white-space: nowrap;
 }
+.pill-prefix {
+  font-weight: 500;
+}
 .pill-dot {
   width: 6px;
   height: 6px;
@@ -537,12 +592,33 @@ textarea:focus,
   color: var(--ink);
   border-bottom-color: var(--accent);
 }
+/* Phones: tabs wrap onto a second line rather than scroll, so every tab (and the active one) is in view. */
+@media (max-width: 640px) {
+  .tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+  .tab {
+    padding: 9px 10px;
+  }
+}
 
 /* ---------- Tables ---------- */
 .table-wrap {
   overflow-x: auto;
   /* Contains absolutely positioned children (.sr-only headers), which otherwise widen the page on phones. */
   position: relative;
+  /* Scroll cue: a shadow on each edge that has more columns past it. The two covers scroll with the
+     table (local) and hide the fixed shadows when that edge is reached, so a table that fits shows none. */
+  background:
+    linear-gradient(to right, var(--surface) 30%, transparent) left / 40px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 30%, transparent) right / 40px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) left / 16px 100% no-repeat,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) right / 16px 100% no-repeat;
+}
+/* Headers are see-through so the scroll cue shows on the header row too (the card behind is the same color). */
+.table-wrap th {
+  background: transparent;
 }
 table {
   width: 100%;
@@ -588,6 +664,154 @@ th.num {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A sub-line that may be long (a LinkedIn headline): it wraps to at most two lines and can break anywhere,
+   so it never sets its column's minimum width and the table still fits beside the lead lists. */
+.cell-sub-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Row checkboxes: a bigger box, and the whole cell is the tap target (the label fills it). */
+th.cell-check,
+td.cell-check {
+  width: 44px;
+  padding: 0;
+}
+.check-hit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 13px;
+  cursor: pointer;
+}
+.check-hit input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.check-hit-text {
+  display: none;
+}
+
+/* Phones and tablets: a data table (.table-cards) turns into one card per row. Each cell shows its column's
+   name (data-label); the .cell-primary cell is the card's title, the .cell-action cell spans the card, and
+   the .cell-check box sits at the card's top left. On wider screens these tables are unchanged. */
+@media (max-width: 900px) {
+  .table-cards,
+  .table-cards thead,
+  .table-cards tbody {
+    display: block;
+  }
+  .table-cards thead tr {
+    display: flex;
+  }
+  /* The column names show on each cell (data-label), so the header cells are hidden visually but stay
+     in the accessibility tree, where screen readers still use them as the column headers. */
+  .table-cards thead th:not(.cell-check) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  /* Only "Select all" stays from the header row. */
+  .table-cards thead th.cell-check {
+    display: block;
+    flex: 1;
+    width: auto;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .table-cards thead th.cell-check:empty {
+    display: none;
+  }
+  .table-cards thead .check-hit {
+    justify-content: flex-start;
+  }
+  .table-cards .check-hit-text {
+    display: inline;
+  }
+  .table-cards tbody tr {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .table-cards tbody tr:has(> .cell-check) {
+    padding-left: 48px;
+  }
+  .table-cards tbody tr:last-child {
+    border-bottom: none;
+  }
+  .table-cards td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border-bottom: none;
+  }
+  .table-cards td.num {
+    text-align: left;
+  }
+  .table-cards td:empty {
+    display: none;
+  }
+  .table-cards td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .table-cards td.cell-primary,
+  .table-cards td.cell-action,
+  .table-cards td[colspan] {
+    grid-column: 1 / -1;
+  }
+  .table-cards td.cell-primary:not(:has(.cell-title)) {
+    font-weight: 600;
+  }
+  .table-cards td.cell-action .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  /* A full-width ghost button reads as plain text, so give it an outline in a card. */
+  .table-cards td.cell-action .btn-ghost {
+    border-color: var(--line-strong);
+  }
+  .table-cards td.cell-check {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: auto;
+  }
+  /* Sub-lines wrap inside the card instead of widening it. */
+  .table-cards .cell-sub {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .table-cards .variant-text {
+    max-width: 100%;
+    white-space: nowrap;
+  }
 }
 
 /* ---------- Bits ---------- */
@@ -1227,9 +1451,30 @@ th.num {
   height: calc(100vh - 140px);
   min-height: 480px;
 }
+/* The filters stay put above the conversations, which scroll on their own. */
 .inbox-list {
   border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.inbox-filters {
+  flex: none;
+  padding: 12px;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.inbox-items {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  /* Scroll cue: a shadow at the top or bottom while more conversations are past that edge (as .table-wrap). */
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top / 100% 40px no-repeat local,
+    linear-gradient(to top, var(--surface) 30%, transparent) bottom / 100% 40px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, color-mix(in srgb, var(--ink) 22%, transparent), transparent) top / 100% 14px no-repeat,
+    radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--ink) 22%, transparent), transparent) bottom / 100% 14px no-repeat;
 }
 .inbox-item {
   padding: 12px 14px;
@@ -1383,8 +1628,12 @@ th.num {
 }
 @media (max-width: 800px) {
   /* minmax(0, ...): a plain 1fr track grows to its widest child (a table), and the page scrolled sideways. */
+  /* The top bar keeps its own height and the page takes the rest: implicit rows (and the bar's wrapped
+     lines) would otherwise stretch to fill 100vh on short pages, leaving empty bands in the bar. */
   .shell {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    align-content: start;
   }
   .sidebar {
     position: static;
@@ -1392,6 +1641,7 @@ th.num {
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
+    align-content: flex-start;
     padding: 10px 16px;
   }
   .sidebar .nav {
@@ -1428,14 +1678,33 @@ th.num {
   .grid-side-main {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* Stacked under the fields, the button needs no label-high gap. */
+  .field-action {
+    padding-top: 0;
+  }
+  /* minmax(0, ...) again: nowrap previews and the filters must not widen the inbox past the card. */
   .inbox {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     height: auto;
+    min-height: 0;
   }
   .inbox-list {
-    max-height: 300px;
     border-right: none;
     border-bottom: 1px solid var(--line);
+  }
+  /* Room for several conversations; the open one shows below the list. */
+  .inbox-items {
+    max-height: min(60vh, 560px);
+  }
+  /* With nothing open, the list is the whole inbox: no big empty panel under it. */
+  .inbox-empty {
+    display: none;
+  }
+  .inbox:not(:has(.thread)) .inbox-list {
+    border-bottom: none;
+  }
+  .thread {
+    min-width: 0;
   }
   .funnel-row {
     grid-template-columns: 100px 1fr 70px;

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, assignable, useApi, type Account, type Campaign, type EnrichmentRun, type EnrichmentSettings, type EnrichOptions, type ImportKind, type KindStatus, type Lead, type LeadImport, type LeadList, type ProviderKind, type Stage, type Tag, type TeamMember } from '../api';
 import LeadDrawer from '../components/LeadDrawer';
-import { Button, ColorTag, Empty, ErrorNote, Field, Modal, Pager, Pill, ProgressBar, Tabs, Toggle, useAction, useToast } from '../components/ui';
+import { Button, CheckCell, ColorTag, Empty, ErrorNote, Field, Modal, Pager, Pill, ProgressBar, Tabs, Toggle, useAction, useToast } from '../components/ui';
 import { EMAIL_STATUS_LABELS, emailSourceLabel, ENRICHMENT_STATUS_LABELS, fullName, IMPORT_KIND_LABELS, timeAgo } from '../format';
 
 export default function Leads() {
@@ -77,7 +77,7 @@ export default function Leads() {
       </div>
 
       <div className="grid grid-side-main">
-        <div className="card" style={{ padding: 8 }}>
+        <div className="card lead-lists">
           <nav className="nav">
             <a href="#" className={listId === null ? 'active' : ''} onClick={(e) => (e.preventDefault(), setListId(null), setPage(1))}>
               All leads
@@ -91,7 +91,7 @@ export default function Leads() {
               </a>
             ))}
           </nav>
-          <Button size="sm" variant="ghost" onClick={() => setNewList(true)} style={{ marginTop: 6 }}>
+          <Button size="sm" variant="ghost" onClick={() => setNewList(true)}>
             + New list
           </Button>
         </div>
@@ -200,25 +200,24 @@ export default function Leads() {
               </Empty>
             ) : (
               <div className="table-wrap">
-                <table>
+                {/* Email sits under the name and the latest reply under the connection, so the whole table
+                    fits beside the lists on a desktop screen. */}
+                <table className="table-cards">
                   <thead>
                     <tr>
-                      <th style={{ width: 32 }}>
-                        <input
-                          type="checkbox"
-                          aria-label="Select all on this page"
-                          checked={allOnPage}
-                          onChange={(e) => {
-                            const s = new Set(selected);
-                            leads.data?.items.forEach((l) => (e.target.checked ? s.add(l.id) : s.delete(l.id)));
-                            setSelected(s);
-                          }}
-                        />
-                      </th>
+                      <CheckCell
+                        header
+                        label="Select all on this page"
+                        checked={allOnPage}
+                        onChange={(on) => {
+                          const s = new Set(selected);
+                          leads.data?.items.forEach((l) => (on ? s.add(l.id) : s.delete(l.id)));
+                          setSelected(s);
+                        }}
+                      />
                       <th>Name</th>
                       <th>Company</th>
-                      <th>Email</th>
-                      <th>Connection</th>
+                      <th>Status</th>
                       <th>Stage</th>
                       <th>Campaign</th>
                       <th>Added</th>
@@ -227,21 +226,19 @@ export default function Leads() {
                   <tbody>
                     {leads.data?.items.map((l) => (
                       <tr key={l.id} className="clickable" onClick={() => setOpenLead(l.id)}>
-                        <td onClick={(e) => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            aria-label={`Select ${fullName(l)}`}
-                            checked={selected.has(l.id)}
-                            onChange={(e) => {
-                              const s = new Set(selected);
-                              e.target.checked ? s.add(l.id) : s.delete(l.id);
-                              setSelected(s);
-                            }}
-                          />
-                        </td>
-                        <td>
+                        <CheckCell
+                          label={`Select ${fullName(l)}`}
+                          checked={selected.has(l.id)}
+                          onChange={(on) => {
+                            const s = new Set(selected);
+                            on ? s.add(l.id) : s.delete(l.id);
+                            setSelected(s);
+                          }}
+                        />
+                        <td className="cell-primary">
                           <div className="cell-title">{fullName(l)}</div>
-                          <div className="cell-sub">{l.headline || l.title || l.profileUrl}</div>
+                          <div className="cell-sub cell-sub-clamp">{l.headline || l.title || l.profileUrl}</div>
+                          <EmailLine lead={l} />
                           {!!l.tags.length && (
                             <div className="row tag-row" style={{ marginTop: 4 }}>
                               {l.tags.map((t) => (
@@ -252,28 +249,29 @@ export default function Leads() {
                             </div>
                           )}
                         </td>
-                        <td>
+                        <td data-label="Company">
                           {l.company || <span className="muted">—</span>}
                           {l.companyDomain && <div className="cell-sub">{l.companyDomain}</div>}
                         </td>
-                        <td>
-                          <EmailCell lead={l} />
-                        </td>
-                        <td>
-                          <Pill status={l.connectionStatus} />
-                          {l.repliedAt && (
-                            <span style={{ marginLeft: 6 }}>
-                              {/* What the latest reply meant, once classified. */}
-                              <Pill status={l.replyCategory && l.replyCategory !== 'other' ? l.replyCategory : 'replied'} />
+                        <td data-label="Status">
+                          <div className="lead-status">
+                            <span title="LinkedIn connection">
+                              <Pill status={l.connectionStatus} />
                             </span>
-                          )}
+                            {/* What the latest reply meant, once classified. */}
+                            {l.repliedAt && (
+                              <Pill prefix="Reply:" status={l.replyCategory && l.replyCategory !== 'other' ? l.replyCategory : 'replied'} />
+                            )}
+                          </div>
                         </td>
-                        <td>
+                        <td data-label="Stage">
                           {l.stage ? <ColorTag color={l.stage.color}>{l.stage.name}</ColorTag> : <span className="muted">—</span>}
                           {ownerName(l.ownerId) && <div className="cell-sub">{ownerName(l.ownerId)}</div>}
                         </td>
-                        <td>{l.campaigns?.length ? l.campaigns.map((c) => c.name).join(', ') : <span className="muted">—</span>}</td>
-                        <td className="muted">{timeAgo(l.createdAt)}</td>
+                        <td data-label="Campaign">{l.campaigns?.length ? l.campaigns.map((c) => c.name).join(', ') : <span className="muted">—</span>}</td>
+                        <td className="muted" data-label="Added" style={{ whiteSpace: 'nowrap' }}>
+                          {timeAgo(l.createdAt)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -337,14 +335,23 @@ export default function Leads() {
   );
 }
 
-// The lead's email with its verification status; where it came from and the verifier's reason show on hover.
-function EmailCell({ lead: l }: { lead: Lead }) {
+// The lead's email, under its name in the leads table: the address (which may break after the @ when
+// the column is narrow) and whether it was verified. Nothing when there is no email and no lookup news.
+function EmailLine({ lead: l }: { lead: Lead }) {
   const queued = l.enrichmentStatus === 'queued' && <Pill status="queued">{ENRICHMENT_STATUS_LABELS.queued}</Pill>;
-  if (!l.email) return queued || <span className="muted">{l.enrichmentStatus === 'not_found' ? 'Not found' : '—'}</span>;
+  if (!l.email) {
+    if (queued) return <div className="lead-email">{queued}</div>;
+    return l.enrichmentStatus === 'not_found' ? <div className="cell-sub">No email found</div> : null;
+  }
   const tip = [emailSourceLabel(l.emailSource), l.emailStatusReason].filter(Boolean).join(' · ');
+  const at = l.email.lastIndexOf('@');
   return (
-    <div title={tip}>
-      <div style={{ fontSize: 13 }}>{l.email}</div>
+    <div className="lead-email" title={tip}>
+      <span>
+        {l.email.slice(0, at + 1)}
+        <wbr />
+        {l.email.slice(at + 1)}
+      </span>
       {queued || <Pill status={l.emailStatus ?? 'unknown'}>{EMAIL_STATUS_LABELS[l.emailStatus ?? 'unknown']}</Pill>}
     </div>
   );

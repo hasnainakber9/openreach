@@ -165,7 +165,7 @@ function Deliverability({ mailboxes }: { mailboxes: Mailbox[] }) {
         <h2>Deliverability check</h2>
         <p className="muted" style={{ margin: '4px 0 0' }}>Looks up your sending domain’s DNS records. Fixing what fails here keeps campaign email out of spam folders.</p>
       </div>
-      <div className="grid grid-3" style={{ alignItems: 'end' }}>
+      <div className="grid grid-3" style={{ alignItems: 'start' }}>
         <Field label="Domain">
           <input type="text" list="mailbox-domains" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder={domains[0] ?? 'example.com'} />
           <datalist id="mailbox-domains">
@@ -174,10 +174,10 @@ function Deliverability({ mailboxes }: { mailboxes: Mailbox[] }) {
             ))}
           </datalist>
         </Field>
-        <Field label="DKIM selector (optional)" hint="The s= value in a sent email’s DKIM-Signature header. Leave blank to try common ones.">
+        <Field label="DKIM selector" hint="Optional. The s= value in a sent email’s DKIM-Signature header. Leave blank to try common ones.">
           <input type="text" value={selector} onChange={(e) => setSelector(e.target.value)} placeholder="google" />
         </Field>
-        <div style={{ paddingBottom: 22 }}>
+        <div className="field-action">
           <Button variant="primary" busy={busy === 'check'} disabled={!target} onClick={check}>
             Check DNS
           </Button>

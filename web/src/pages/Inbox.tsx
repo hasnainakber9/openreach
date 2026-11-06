@@ -54,75 +54,78 @@ export default function Inbox({ me }: { me: Me }) {
       <div className="card card-flush">
         <div className="inbox">
           <div className="inbox-list">
-            <div className="stack" style={{ padding: 12, gap: 8, borderBottom: '1px solid var(--line)' }}>
+            {/* One filter per line: side by side, the 340px column cut the select texts short. */}
+            <div className="stack inbox-filters">
               <input type="search" placeholder="Search conversations" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search conversations" />
-              <div className="row" style={{ flexWrap: 'nowrap' }}>
-                <select value={source} onChange={(e) => setSource(e.target.value)} aria-label="Account or mailbox">
-                  <option value="">All accounts and mailboxes</option>
-                  {accounts.data?.map((a) => (
-                    <option key={`a${a.id}`} value={`a${a.id}`}>
-                      {a.name}
-                    </option>
-                  ))}
-                  {mailboxes.data?.map((m) => (
-                    <option key={`m${m.id}`} value={`m${m.id}`}>
-                      {m.name} (email)
-                    </option>
-                  ))}
-                  <option value="c:sms">SMS</option>
-                  <option value="c:whatsapp">WhatsApp</option>
-                </select>
-                <select value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Reply category">
-                  <option value="">All replies</option>
-                  {REPLY_CATEGORIES.map((c) => (
-                    <option key={c} value={c}>
-                      {CATEGORY_LABELS[c]}
-                    </option>
-                  ))}
-                  <option value="none">Not classified</option>
-                </select>
-              </div>
+              <select value={source} onChange={(e) => setSource(e.target.value)} aria-label="Account or mailbox">
+                <option value="">All accounts and mailboxes</option>
+                {accounts.data?.map((a) => (
+                  <option key={`a${a.id}`} value={`a${a.id}`}>
+                    {a.name}
+                  </option>
+                ))}
+                {mailboxes.data?.map((m) => (
+                  <option key={`m${m.id}`} value={`m${m.id}`}>
+                    {m.name} (email)
+                  </option>
+                ))}
+                <option value="c:sms">SMS</option>
+                <option value="c:whatsapp">WhatsApp</option>
+              </select>
+              <select value={category} onChange={(e) => setCategory(e.target.value)} aria-label="Reply category">
+                <option value="">All replies</option>
+                {REPLY_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {CATEGORY_LABELS[c]}
+                  </option>
+                ))}
+                <option value="none">Not classified</option>
+              </select>
               <label className="row" style={{ gap: 4, whiteSpace: 'nowrap', fontSize: 13, flexWrap: 'nowrap' }}>
                 <input type="checkbox" checked={unreadOnly} onChange={(e) => setUnreadOnly(e.target.checked)} /> Unread only
               </label>
             </div>
-            {list.data && !list.data.length && (
-              <p className="muted" style={{ padding: 16 }}>
-                {category || unreadOnly || q || source ? 'No conversations match these filters.' : 'No conversations yet. Messages your campaigns send, and replies, show up here.'}
-              </p>
-            )}
-            {list.data?.map((c) => (
-              <button key={c.id} className={`inbox-item ${openId === c.id ? 'active' : ''} ${c.unread ? 'unread' : ''}`} onClick={() => setOpenId(c.id)}>
-                <div className="spread">
-                  <span className="cell-title row" style={{ gap: 6, flexWrap: 'nowrap' }}>
-                    <span className="muted" title={CHANNEL_LABELS[c.channel] ?? 'LinkedIn'} aria-label={CHANNEL_LABELS[c.channel] ?? 'LinkedIn'}>
-                      <Icon name={c.channel === 'linkedin' ? 'message' : c.channel} size={12} />
+            <div className="inbox-items">
+              {list.data && !list.data.length && (
+                <p className="muted" style={{ padding: 16 }}>
+                  {category || unreadOnly || q || source ? 'No conversations match these filters.' : 'No conversations yet. Messages your campaigns send, and replies, show up here.'}
+                </p>
+              )}
+              {list.data?.map((c) => (
+                <button key={c.id} className={`inbox-item ${openId === c.id ? 'active' : ''} ${c.unread ? 'unread' : ''}`} onClick={() => setOpenId(c.id)}>
+                  <div className="spread">
+                    <span className="cell-title row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+                      <span className="muted" title={CHANNEL_LABELS[c.channel] ?? 'LinkedIn'} aria-label={CHANNEL_LABELS[c.channel] ?? 'LinkedIn'}>
+                        <Icon name={c.channel === 'linkedin' ? 'message' : c.channel} size={12} />
+                      </span>
+                      {c.name || c.participantAddress || 'Unknown'}
                     </span>
-                    {c.name || c.participantAddress || 'Unknown'}
-                  </span>
-                  <span className="muted" style={{ fontSize: 12 }}>
-                    {timeAgo(c.lastMessageAt)}
-                  </span>
-                </div>
-                {c.subject && <div className="cell-sub" style={{ fontWeight: 600 }}>{c.subject}</div>}
-                <div className="cell-sub">
-                  {c.lastDirection === 'out' && 'You: '}
-                  {c.lastMessage}
-                </div>
-                <div className="spread" style={{ marginTop: 4 }}>
-                  <span className="cell-sub" style={{ fontSize: 11.5 }}>
-                    {c.accountName ?? c.mailboxName}
-                    {c.campaignName && ` · ${c.campaignName}`}
-                  </span>
-                  {c.category && <Pill status={c.category}>{CATEGORY_LABELS[c.category]}</Pill>}
-                </div>
-              </button>
-            ))}
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {timeAgo(c.lastMessageAt)}
+                    </span>
+                  </div>
+                  {c.subject && <div className="cell-sub" style={{ fontWeight: 600 }}>{c.subject}</div>}
+                  <div className="cell-sub">
+                    {c.lastDirection === 'out' && 'You: '}
+                    {c.lastMessage}
+                  </div>
+                  <div className="spread" style={{ marginTop: 4 }}>
+                    <span className="cell-sub" style={{ fontSize: 11.5 }}>
+                      {c.accountName ?? c.mailboxName}
+                      {c.campaignName && ` · ${c.campaignName}`}
+                    </span>
+                    {c.category && <Pill status={c.category}>{CATEGORY_LABELS[c.category]}</Pill>}
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
           {openId ? (
             <Thread key={openId} id={openId} onChange={() => list.reload()} writer={writer} />
           ) : (
-            <Empty title="Pick a conversation">Replies are detected and classified automatically, and stop the lead's campaign unless its settings say to keep going.</Empty>
+            <div className="inbox-empty">
+              <Empty title="Pick a conversation">Replies are detected and classified automatically, and stop the lead's campaign unless its settings say to keep going.</Empty>
+            </div>
           )}
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, useApi, type Invite, type InviteRole, type Role, type Suppression, type SuppressionKind, type TeamMember } from '../api';
 import { Button, ConfirmButton, Field, Modal, Pager, Pill, Tabs, useAction, useToast } from '../components/ui';
@@ -53,7 +53,7 @@ export default function Settings({ me, onMe }: { me: Me; onMe: (me: Me) => void 
           <Webhooks />
         </div>
       )}
-      {tab === 'profile' && <Profile />}
+      {tab === 'profile' && <Profile email={me.email} />}
     </>
   );
 }
@@ -456,7 +456,7 @@ function DoNotContact({ me }: { me: Me }) {
           </select>
         </Field>
         <Field label="Value" hint={form.kind === 'phone' ? 'International form, like +44 20 7946 0958' : form.kind === 'linkedin' ? 'Profile URL or slug' : undefined}>
-          <input value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} maxLength={300} />
+          <input type="text" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} maxLength={300} />
         </Field>
         <div>
           <Button variant="primary" disabled={!form.value.trim()} busy={busy === 'add'} onClick={add}>
@@ -477,7 +477,7 @@ function DoNotContact({ me }: { me: Me }) {
           </select>
         </div>
         <div className="table-wrap">
-          <table>
+          <table className="table-cards">
             <thead>
               <tr>
                 <th>Who</th>
@@ -495,20 +495,20 @@ function DoNotContact({ me }: { me: Me }) {
               )}
               {list.data?.items.map((s) => (
                 <tr key={s.id}>
-                  <td>
+                  <td className="cell-primary">
                     <div className="cell-title">{s.leadName?.trim() || s.value}</div>
                     <div className="cell-sub">
                       {SUPPRESSION_KINDS[s.kind] ?? s.kind}: {s.value}
                     </div>
                   </td>
-                  <td>
+                  <td data-label="Why">
                     {REASONS[s.reason] ?? s.reason}
                     <div className="cell-sub">
                       {s.source ? `${s.source} · ` : ''}
                       {timeAgo(s.createdAt)}
                     </div>
                   </td>
-                  <td className="num">
+                  <td className="num cell-action">
                     {admin && (
                       <ConfirmButton size="sm" variant="ghost" onConfirm={() => run(`d${s.id}`, async () => (await api(`/api/suppressions/${s.id}`, { method: 'DELETE' }), list.reload()), 'Removed from the list')}>
                         Remove
@@ -595,23 +595,30 @@ function Webhooks() {
   );
 }
 
-function Profile() {
+function Profile({ email }: { email: string }) {
   const [f, setF] = useState({ current: '', next: '' });
   const { busy, run } = useAction();
+  // A real form, so browsers and password managers treat these as password fields and Enter submits.
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (f.next.length >= 8) void run('pw', async () => (await api('/api/auth/password', { body: f }), setF({ current: '', next: '' })), 'Password changed');
+  };
   return (
-    <div className="card stack" style={{ maxWidth: 420 }}>
+    <form className="card stack" style={{ maxWidth: 420 }} onSubmit={submit}>
       <h2>Change password</h2>
+      {/* Tells password managers which account the new password belongs to. */}
+      <input type="email" value={email} autoComplete="username" readOnly hidden />
       <Field label="Current password">
-        <input type="password" value={f.current} onChange={(e) => setF({ ...f, current: e.target.value })} autoComplete="current-password" />
+        <input type="password" value={f.current} onChange={(e) => setF({ ...f, current: e.target.value })} required autoComplete="current-password" />
       </Field>
       <Field label="New password" hint="At least 8 characters">
-        <input type="password" value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} autoComplete="new-password" />
+        <input type="password" value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} required minLength={8} autoComplete="new-password" />
       </Field>
       <div>
-        <Button variant="primary" busy={busy === 'pw'} disabled={f.next.length < 8} onClick={() => run('pw', async () => (await api('/api/auth/password', { body: f }), setF({ current: '', next: '' })), 'Password changed')}>
+        <Button variant="primary" type="submit" busy={busy === 'pw'} disabled={f.next.length < 8}>
           Update password
         </Button>
       </div>
-    </div>
+    </form>
   );
 }

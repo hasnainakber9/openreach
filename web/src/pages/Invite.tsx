@@ -46,7 +46,7 @@ export default function Invite({ me, onAccepted }: { me: Me | null; onAccepted: 
 
   if (!inv && !info.error) return null;
   return (
-    <div className="auth">
+    <main className="auth">
       <form className="card" onSubmit={submit}>
         <BrandMark name={inv?.branding.productName ?? 'OpenReach'} logoUrl={inv?.branding.logoUrl} />
         {!inv ? (
@@ -95,6 +95,6 @@ export default function Invite({ me, onAccepted }: { me: Me | null; onAccepted: 
           </>
         )}
       </form>
-    </div>
+    </main>
   );
 }
