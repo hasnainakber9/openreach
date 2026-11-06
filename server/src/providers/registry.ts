@@ -26,6 +26,8 @@ export const SIMULATED_FALLBACK: Record<ProviderKind, boolean> = { ai: true, ema
 export interface BaseProvider {
   readonly providerId: string;
   readonly simulated: boolean;
+  // A real provider that costs nothing per call (the Company website enricher): it uses no plan credits.
+  readonly free?: boolean;
   test(): Promise<{ ok: boolean; message: string }>;
 }
 

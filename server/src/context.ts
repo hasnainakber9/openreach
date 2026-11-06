@@ -13,6 +13,7 @@ import { registerProviders } from './providers/index.js';
 import { ProviderResolver } from './providers/store.js';
 import { Sealer } from './services/crypto.js';
 import { smtpMailer, type Mailer } from './services/email.js';
+import { pinnableFetch } from './services/pinned-fetch.js';
 import { Webhooks } from './services/webhooks.js';
 
 export interface Ctx {
@@ -24,7 +25,8 @@ export interface Ctx {
   webhooks: Webhooks;
   mailer: Mailer;
   random: () => number;
-  // All provider HTTP goes through this, so tests can swap in a fake and never touch the network.
+  // All provider HTTP goes through this, so tests can swap in a fake and never touch the network. An init with
+  // `pinnedAddresses` (services/pinned-fetch.ts) connects only to those already-checked addresses.
   fetch: typeof fetch;
   jobs: JobQueue;
   providers: ProviderResolver;
@@ -49,7 +51,7 @@ export function buildContext(config: Config, clock: Clock, overrides: Partial<Ct
     drivers: new DriverPool(db, clock, config, sealer),
     mailer: smtpMailer,
     random: Math.random,
-    fetch: (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => globalThis.fetch(input, init),
+    fetch: pinnableFetch,
     dns: systemResolver(),
     imap: imapflowFactory,
     isLeader: () => true,

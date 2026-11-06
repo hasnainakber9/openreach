@@ -91,10 +91,10 @@ export interface WaterfallResult {
   transient: Error | null;
 }
 
-// Hosted plans include a number of enrichment credits a month; simulated providers are free. Over quota, the
-// call is an error like a vendor's empty balance (the lookup carries on with what it has).
-function chargeable(ctx: Ctx, workspaceId: number, p: { simulated: boolean }) {
-  if (!p.simulated) assertCredits(ctx, workspaceId, 'enrichmentCreditsMonthly');
+// Hosted plans include a number of enrichment credits a month; simulated and free providers cost none. Over
+// quota, the call is an error like a vendor's empty balance (the lookup carries on with what it has).
+function chargeable(ctx: Ctx, workspaceId: number, p: { simulated: boolean; free?: boolean }) {
+  if (!p.simulated && !p.free) assertCredits(ctx, workspaceId, 'enrichmentCreditsMonthly');
 }
 
 // Rate limits end the whole lookup: the job retries it later (no attempt used up), from the first finder again.

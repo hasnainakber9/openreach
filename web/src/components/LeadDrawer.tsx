@@ -5,7 +5,7 @@ import { ACTION_LABELS, CATEGORY_LABELS, CHANNEL_LABELS, dateTime, EMAIL_STATUS_
 import { Button, ColorTag, Field, Modal, Pill, ProviderBadge, useAction } from './ui';
 
 // Company facts an enrichment provider may add, in display order.
-const COMPANY_FACTS: Record<string, string> = { industry: 'Industry', companySize: 'Employees', website: 'Website', companyLinkedin: 'Company LinkedIn', foundedYear: 'Founded', seniority: 'Seniority' };
+const COMPANY_FACTS: Record<string, string> = { industry: 'Industry', companySize: 'Employees', website: 'Website', companyLinkedin: 'Company LinkedIn', foundedYear: 'Founded', headquarters: 'Headquarters', companyDescription: 'About', seniority: 'Seniority' };
 
 type LeadDetail = Lead & { owner: { id: number; name: string } | null; campaigns: any[] };
 
