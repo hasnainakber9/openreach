@@ -13,6 +13,7 @@ import {
   pipelineSettings,
   PipelineSettingsSchema,
   serializeStage,
+  moveLeadsToStage,
   setStage,
   STAGE_KINDS,
   stageWhere,
@@ -213,22 +214,23 @@ export function pipelineRoutes(app: FastifyInstance, ctx: Ctx) {
     );
     const stage = b.stageId ? loadStage(req, b.stageId) : null;
     checkOwner(u.workspace_id, b.ownerId);
-    const leads = ctx.db.all<LeadRow>(`SELECT * FROM leads WHERE workspace_id = ? AND id IN (${[...new Set(b.leadIds)].join(',')})`, [u.workspace_id]);
+    // Set-based, so 5,000 leads take a few statements instead of several queries (and a webhook) each.
+    const leads = ctx.db.all<{ id: number }>(`SELECT id FROM leads WHERE workspace_id = ? AND id IN (${[...new Set(b.leadIds)].join(',')})`, [u.workspace_id]);
+    const ids = leads.map((l) => Number(l.id));
+    const inList = `id IN (${ids.join(',')})`;
     const changed = new Set<number>();
-    ctx.db.tx(() => {
-      if (stage) for (const l of leads) if (setStage(ctx, l, stage.id, { source: 'manual', userId: u.id })) changed.add(l.id);
-      if (b.ownerId !== undefined)
-        for (const l of leads)
-          if (l.owner_id !== b.ownerId) {
-            ctx.db.update('leads', l.id, { owner_id: b.ownerId });
-            changed.add(l.id);
-          }
-      if (b.addTags.length || b.removeTags.length) {
-        const before = new Map(leads.map((l) => [l.id, ctx.db.get<{ tags: string }>('SELECT tags FROM leads WHERE id = ?', [l.id])!.tags]));
-        applyTags(ctx, u.workspace_id, leads.map((l) => l.id), b.addTags, b.removeTags);
-        for (const l of leads) if (ctx.db.get<{ tags: string }>('SELECT tags FROM leads WHERE id = ?', [l.id])!.tags !== before.get(l.id)) changed.add(l.id);
-      }
-    });
+    if (ids.length)
+      ctx.db.tx(() => {
+        if (stage) for (const id of moveLeadsToStage(ctx, u.workspace_id, stage, { sql: inList, params: [] }, { source: 'manual', userId: u.id })) changed.add(id);
+        if (b.ownerId !== undefined) {
+          const owner = b.ownerId;
+          const differ = owner === null ? 'owner_id IS NOT NULL' : '(owner_id IS NULL OR owner_id <> ?)';
+          const params = owner === null ? [u.workspace_id] : [u.workspace_id, owner];
+          for (const r of ctx.db.all<{ id: number }>(`SELECT id FROM leads WHERE workspace_id = ? AND ${inList} AND ${differ}`, params)) changed.add(r.id);
+          ctx.db.run(`UPDATE leads SET owner_id = ? WHERE workspace_id = ? AND ${inList} AND ${differ}`, [owner, ...params]);
+        }
+        if (b.addTags.length || b.removeTags.length) for (const id of applyTags(ctx, u.workspace_id, ids, b.addTags, b.removeTags)) changed.add(id);
+      });
     return { updated: changed.size, matched: leads.length };
   });
 

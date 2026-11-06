@@ -3,7 +3,7 @@ import { applyCategory } from '../src/ai/classify.js';
 import { DAY, MINUTE } from '../src/clock.js';
 import { DB } from '../src/db/db.js';
 import type { Sequence } from '../src/engine/sequence.js';
-import { autoAdvance, listStages, setStage, stageOf } from '../src/services/pipeline.js';
+import { autoAdvance, BULK_EVENT_MAX_IDS, deleteStage, listStages, setStage, stageOf } from '../src/services/pipeline.js';
 import { handleInboundReply } from '../src/services/replies.js';
 import { setSetting } from '../src/services/settings.js';
 import { PipelineSettingsSchema } from '../src/services/pipeline.js';
@@ -442,5 +442,103 @@ describe('pipeline API', () => {
       before = page.nextBefore;
     }
     expect(seen).toEqual(all.items.map((i: any) => `${i.kind}:${i.id}`));
+  });
+});
+
+describe('bulk stage moves', () => {
+  // Counts the statements `fn` sends: bulk moves must not cost queries per lead.
+  async function countQueries(w: World, fn: () => unknown) {
+    const db = w.ctx.db as any;
+    const orig = { get: db.get, all: db.all, run: db.run };
+    let n = 0;
+    for (const k of ['get', 'all', 'run'] as const)
+      db[k] = function (this: unknown, ...args: unknown[]) {
+        n++;
+        return (orig[k] as Function).apply(this, args);
+      };
+    try {
+      await fn();
+    } finally {
+      Object.assign(db, orig);
+    }
+    return n;
+  }
+
+  it('deletes a big stage with a few statements, a history row per lead and one event', async () => {
+    const w = makeWorld();
+    const ids = addLeads(w, BULK_EVENT_MAX_IDS + 50);
+    const mine = addLeads(w, 2, 'mine');
+    setStage(w.ctx, lead(w, mine[0]), stage(w, 'replied').id, { source: 'auto' });
+    // A lead in another stage stays; one put in the first stage explicitly moves like those without a stage.
+    setStage(w.ctx, lead(w, mine[1]), stage(w, 'new').id, { source: 'manual' });
+    w.ctx.db.insert('webhooks', { workspace_id: w.workspaceId, url: 'https://hooks.example/x', events: '["lead.stage_changed"]', secret: 's', created_at: 1 });
+    const single = stageEvents(w);
+    const bulk: any[] = [];
+    w.ctx.webhooks.subscribe((_ws, event, data) => event === 'leads.stage_changed' && bulk.push(data));
+    w.ctx.clock.advance(MINUTE);
+    const userId = w.ctx.db.insert('users', { workspace_id: w.workspaceId, email: 'a@b.co', name: 'Ana', password_hash: 'x', created_at: 1 });
+
+    const newId = stage(w, 'new').id;
+    let moved = 0;
+    const queries = await countQueries(w, () => (moved = deleteStage(w.ctx, w.workspaceId, stage(w, 'new'), stage(w, 'contacted'), userId)));
+    expect(moved).toBe(ids.length + 1);
+    expect(queries).toBeLessThan(40);
+
+    const contacted = stage(w, 'contacted').id;
+    expect(w.ctx.db.get('SELECT COUNT(*) AS n FROM leads WHERE stage_id = ? AND stage_manual = 1 AND stage_changed_at = ?', [contacted, w.ctx.clock.now()])).toEqual({ n: ids.length + 1 });
+    expect(slugOf(w, mine[0])).toBe('replied');
+    const h = w.ctx.db.all<any>('SELECT lead_id, from_stage_id, to_stage_id, source, reason, user_id FROM lead_stage_history WHERE to_stage_id = ? ORDER BY lead_id', [contacted]);
+    expect(h).toHaveLength(ids.length + 1);
+    expect(h[0]).toMatchObject({ to_stage_id: contacted, source: 'manual', reason: 'Stage "New" was deleted', user_id: userId });
+    expect(h.find((r) => r.lead_id === ids[0]).from_stage_id).toBe(newId);
+    expect(h.find((r) => r.lead_id === mine[1]).from_stage_id).toBe(newId);
+
+    // One event for the whole move: a summary for webhooks (hooks for single moves get it too), every row for subscribers.
+    expect(single).toEqual([]);
+    expect(bulk).toHaveLength(1);
+    expect(bulk[0]).toMatchObject({ count: ids.length + 1, from: { slug: 'new' }, to: { slug: 'contacted' }, source: 'manual' });
+    expect(bulk[0].leadIds).toHaveLength(BULK_EVENT_MAX_IDS);
+    expect(bulk[0].changes).toHaveLength(ids.length + 1);
+    const sent = w.ctx.webhooks.sent.filter((s) => s.event === 'leads.stage_changed');
+    expect(sent).toHaveLength(1);
+    expect((sent[0].body as any).data.changes).toBeUndefined();
+    expect((sent[0].body as any).data.count).toBe(ids.length + 1);
+
+    // The timeline shows the move like a single one.
+    const tl = w.ctx.db.get<any>("SELECT fs.name AS f, ts.name AS t FROM lead_stage_history h LEFT JOIN pipeline_stages fs ON fs.id = h.from_stage_id LEFT JOIN pipeline_stages ts ON ts.id = h.to_stage_id WHERE h.lead_id = ?", [ids[0]]);
+    // The deleted stage's name is gone, as with single moves out of a stage that was later deleted.
+    expect(tl).toEqual({ f: null, t: 'Contacted' });
+  });
+
+  it('moves, assigns and tags many leads in bulk with one event and no per-lead queries', async () => {
+    const api = await makeApi(makeWorld());
+    const owner = await api.register('Acme');
+    const ws = owner.workspaceId;
+    const list = api.w.ctx.db.insert('lead_lists', { workspace_id: ws, name: 'L', created_at: 1 });
+    const now = api.w.ctx.clock.now();
+    for (let i = 0; i < 300; i++) api.w.ctx.db.insert('leads', { workspace_id: ws, list_id: list, public_id: `b${i}`, profile_url: `https://www.linkedin.com/in/b${i}/`, created_at: now });
+    const leadIds = api.w.ctx.db.all<{ id: number }>('SELECT id FROM leads WHERE workspace_id = ? ORDER BY id', [ws]).map((r) => r.id);
+    const stages = (await api.call('GET', '/api/pipeline/stages')).body as any[];
+    const won = stages.find((s) => s.slug === 'won').id;
+    await api.call('POST', `/api/leads/${leadIds[0]}/stage`, { stageId: won });
+    const bulk: any[] = [];
+    api.w.ctx.webhooks.subscribe((_ws, event, data) => event === 'leads.stage_changed' && bulk.push(data));
+
+    let r: any;
+    const queries = await countQueries(api.w, async () => (r = await api.call('POST', '/api/leads/bulk', { leadIds, stageId: won, ownerId: owner.id })));
+    expect(r.body).toEqual({ updated: 300, matched: 300 });
+    expect(queries).toBeLessThan(60);
+    expect(bulk).toHaveLength(1);
+    expect(bulk[0]).toMatchObject({ count: 299, from: null, to: { slug: 'won' } });
+    expect(bulk[0].leadIds).not.toContain(leadIds[0]);
+    expect(api.w.ctx.db.get('SELECT COUNT(*) AS n FROM leads WHERE workspace_id = ? AND stage_id = ? AND owner_id = ?', [ws, won, owner.id])).toEqual({ n: 300 });
+    expect(api.w.ctx.db.get('SELECT COUNT(*) AS n FROM lead_stage_history WHERE workspace_id = ? AND to_stage_id = ? AND user_id = ?', [ws, won, owner.id])).toEqual({ n: 300 });
+
+    // Repeating it changes nothing; clearing the owner and tagging only touch leads that change.
+    expect((await api.call('POST', '/api/leads/bulk', { leadIds, stageId: won, ownerId: owner.id })).body).toEqual({ updated: 0, matched: 300 });
+    expect((await api.call('POST', '/api/leads/bulk', { leadIds: leadIds.slice(0, 10), ownerId: null })).body).toEqual({ updated: 10, matched: 10 });
+    expect((await api.call('POST', '/api/leads/bulk', { leadIds: leadIds.slice(0, 20), addTags: ['vip'] })).body).toEqual({ updated: 20, matched: 20 });
+    expect((await api.call('POST', '/api/leads/bulk', { leadIds: leadIds.slice(0, 20), addTags: ['VIP'], ownerId: null })).body).toEqual({ updated: 10, matched: 20 });
+    expect(bulk).toHaveLength(1);
   });
 });

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { SUGGESTED_STAGE, type ReplyCategory } from '../ai/categories.js';
 import type { Ctx } from '../context.js';
+import type { SqlValue } from '../db/database.js';
 import type { LeadRow, StageKind, StageRow } from '../types.js';
 import { CONTACT_ACTIVITY_TYPES } from './activity.js';
 import { publicLead } from './leads.js';
@@ -109,6 +110,47 @@ export function setStage(ctx: Ctx, lead: LeadRow, stageId: number, o: StageChang
   return true;
 }
 
+// How many lead ids a leads.stage_changed event lists; `count` always has the full number.
+export const BULK_EVENT_MAX_IDS = 1000;
+
+// Moves many leads at once (deleting a stage, the bulk edit) with one history INSERT and one UPDATE instead
+// of setStage per lead, which on a big stage held the server for minutes, and announces it with a single
+// leads.stage_changed event. Same rules as setStage: a lead's current stage is its own or the first one;
+// leads already there get the explicit id but no history row. `where` picks leads by plain column names
+// (the caller has made it safe: its numbers are ids, never user text). Returns the lead ids that moved.
+export function moveLeadsToStage(ctx: Ctx, ws: number, to: StageRow, where: { sql: string; params: SqlValue[] }, o: StageChange & { from?: StageRow }): number[] {
+  const stages = listStages(ctx, ws);
+  if (!stages.some((s) => s.id === to.id)) return [];
+  const ids = stages.map((s) => Number(s.id)).join(',');
+  const current = `CASE WHEN stage_id IN (${ids}) THEN stage_id ELSE ${Number(stages[0].id)} END`;
+  const now = ctx.clock.now();
+  const moved = ctx.db.tx(() => {
+    // Typed parameters: Postgres can't infer a type for a bare parameter in an INSERT's SELECT list.
+    const rows = ctx.db.all<{ id: number; lead_id: number }>(
+      `INSERT INTO lead_stage_history (workspace_id, lead_id, from_stage_id, to_stage_id, source, reason, user_id, created_at)
+       SELECT workspace_id, id, ${current}, CAST(? AS BIGINT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS BIGINT), CAST(? AS BIGINT)
+       FROM leads WHERE workspace_id = ? AND (${where.sql}) AND ${current} <> ? RETURNING id, lead_id`,
+      [to.id, o.source, o.reason?.slice(0, 300) ?? null, o.userId ?? null, now, ws, ...where.params, to.id],
+    );
+    ctx.db.run(`UPDATE leads SET stage_id = ?, stage_changed_at = ?, stage_manual = ? WHERE workspace_id = ? AND (${where.sql}) AND (stage_id IS NULL OR stage_id <> ?)`, [
+      to.id,
+      now,
+      o.source === 'manual' ? 1 : 0,
+      ws,
+      ...where.params,
+      to.id,
+    ]);
+    return rows;
+  });
+  if (!moved.length) return [];
+  const leadIds = moved.map((r) => r.lead_id).sort((a, b) => a - b);
+  const data = { count: leadIds.length, leadIds: leadIds.slice(0, BULK_EVENT_MAX_IDS), from: stageRef(o.from), to: stageRef(to), source: o.source, reason: o.reason ?? null };
+  // Webhooks get the summary; in-process subscribers (CRM sync) also get every history row.
+  const changes = moved.map((r) => ({ leadId: r.lead_id, historyId: r.id }));
+  ctx.db.afterCommit(() => ctx.webhooks.emit(ws, 'leads.stage_changed', data, { changes }));
+  return leadIds;
+}
+
 // Automation: moves a lead to the stage with `slug`, but only forward (by position), never out of a
 // won/lost stage, and not at all when the workspace deleted that stage. A manual stage is kept unless
 // the automatic one is further along.
@@ -160,24 +202,22 @@ export function writeOrder(ctx: Ctx, ws: number, ids: number[]) {
   ctx.db.tx(() => ids.forEach((id, i) => ctx.db.run('UPDATE pipeline_stages SET position = ? WHERE id = ? AND workspace_id = ?', [i, id, ws])));
 }
 
-// Deletes a stage after moving its leads (history and webhooks included) to another one.
+// Deletes a stage after moving its leads (history rows and one leads.stage_changed event) to another one.
 export function deleteStage(ctx: Ctx, ws: number, stage: StageRow, moveTo: StageRow, userId: number | null): number {
   const stages = listStages(ctx, ws);
   const first = stages[0];
-  const leads = ctx.db.all<LeadRow>(
-    `SELECT * FROM leads WHERE workspace_id = ? AND (stage_id = ?${first.id === stage.id ? ' OR stage_id IS NULL OR stage_id NOT IN (SELECT id FROM pipeline_stages WHERE workspace_id = leads.workspace_id)' : ''})`,
-    [ws, stage.id],
-  );
-  ctx.db.tx(() => {
-    for (const l of leads) setStage(ctx, l, moveTo.id, { source: 'manual', userId, reason: `Stage "${stage.name}" was deleted` });
+  // The first stage also holds leads without one (or with a deleted one).
+  const sql = `stage_id = ?${first.id === stage.id ? ' OR stage_id IS NULL OR stage_id NOT IN (SELECT id FROM pipeline_stages WHERE workspace_id = leads.workspace_id)' : ''}`;
+  return ctx.db.tx(() => {
+    const moved = moveLeadsToStage(ctx, ws, moveTo, { sql, params: [stage.id] }, { source: 'manual', userId, reason: `Stage "${stage.name}" was deleted`, from: stage });
     ctx.db.run('DELETE FROM pipeline_stages WHERE id = ? AND workspace_id = ?', [stage.id, ws]);
     writeOrder(
       ctx,
       ws,
       stages.filter((s) => s.id !== stage.id).map((s) => s.id),
     );
+    return moved.length;
   });
-  return leads.length;
 }
 
 // SQL for "the lead is in this stage" (the first stage also holds leads without one).

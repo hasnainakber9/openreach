@@ -5,7 +5,7 @@ import type { JobRow } from '../src/jobs/queue.js';
 import { crmSettingsSchema, HUBSPOT_MAPPING, mappedProperties, noteHtml } from '../src/providers/crm/types.js';
 import { createIntegration, loadIntegration, updateIntegration } from '../src/providers/store.js';
 import { handleInboundReply } from '../src/services/replies.js';
-import { listStages, setStage } from '../src/services/pipeline.js';
+import { deleteStage, listStages, moveLeadsToStage, setStage } from '../src/services/pipeline.js';
 import type { LeadRow } from '../src/types.js';
 import { HOUR } from '../src/clock.js';
 import type { Sequence } from '../src/engine/sequence.js';
@@ -463,6 +463,20 @@ describe('triggers', () => {
     w.ctx.clock.advance(1000);
     reply(w, id, 'Again');
     expect(crmJobs(w)).toHaveLength(1);
+  });
+
+  it('queues the same per-lead stage syncs for a bulk move as for single moves', () => {
+    const w = makeWorld();
+    const ids = addLeads(w, 5);
+    const crm = createIntegration(w.ctx, w.workspaceId, { kind: 'crm', provider: 'simulated', settings: { triggers: { ...QUIET.triggers, onStageChange: ['interested'] } } });
+    const st = (slug: string) => listStages(w.ctx, w.workspaceId).find((s) => s.slug === slug)!;
+    // A stage the CRM doesn't watch queues nothing.
+    moveLeadsToStage(w.ctx, w.workspaceId, st('contacted'), { sql: `id IN (${ids.join(',')})`, params: [] }, { source: 'manual' });
+    expect(crmJobs(w)).toHaveLength(0);
+    deleteStage(w.ctx, w.workspaceId, st('contacted'), st('interested'), null);
+    const history = w.ctx.db.all<{ id: number; lead_id: number }>('SELECT id, lead_id FROM lead_stage_history WHERE to_stage_id = ? ORDER BY lead_id', [st('interested').id]);
+    expect(history).toHaveLength(5);
+    expect(crmJobs(w).map((j) => JSON.parse(j.payload)).sort((a, b) => a.leadId - b.leadId)).toEqual(history.map((h) => ({ integrationId: crm.id, leadId: h.lead_id, event: 'stage', ref: `stage:${h.id}` })));
   });
 
   it('adds a note when a lead finishes a campaign, if asked', async () => {

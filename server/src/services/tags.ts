@@ -79,21 +79,24 @@ export function canonicalTags(ctx: Ctx, ws: number, names: string[]): string[] {
   return [...out.values()];
 }
 
-// Adds and removes tags on the workspace's leads in `leadIds`. Returns how many leads changed.
-export function applyTags(ctx: Ctx, ws: number, leadIds: number[], add: string[], remove: string[]): number {
+// Adds and removes tags on the workspace's leads in `leadIds` (read 500 at a time). Returns the ids of the
+// leads that changed.
+export function applyTags(ctx: Ctx, ws: number, leadIds: number[], add: string[], remove: string[]): number[] {
   const toAdd = canonicalTags(ctx, ws, add);
   const removeKeys = new Set(remove.map(key));
-  let changed = 0;
+  const changed: number[] = [];
   ctx.db.tx(() => {
-    for (const id of leadIds) {
-      const l = ctx.db.get<{ id: number; tags: string }>('SELECT id, tags FROM leads WHERE id = ? AND workspace_id = ?', [id, ws]);
-      if (!l) continue;
-      const before = leadTags(l);
-      const kept = before.filter((t) => !removeKeys.has(key(t)));
-      const next = [...kept, ...toAdd.filter((t) => !kept.some((k) => key(k) === key(t)))];
-      if (JSON.stringify(next) === JSON.stringify(before)) continue;
-      ctx.db.update('leads', l.id, { tags: JSON.stringify(next) });
-      changed++;
+    for (let i = 0; i < leadIds.length; i += 500) {
+      const chunk = leadIds.slice(i, i + 500);
+      const rows = ctx.db.all<{ id: number; tags: string }>(`SELECT id, tags FROM leads WHERE workspace_id = ? AND id IN (${chunk.map(() => '?').join(',')})`, [ws, ...chunk]);
+      for (const l of rows) {
+        const before = leadTags(l);
+        const kept = before.filter((t) => !removeKeys.has(key(t)));
+        const next = [...kept, ...toAdd.filter((t) => !kept.some((k) => key(k) === key(t)))];
+        if (JSON.stringify(next) === JSON.stringify(before)) continue;
+        ctx.db.update('leads', l.id, { tags: JSON.stringify(next) });
+        changed.push(l.id);
+      }
     }
   });
   return changed;
