@@ -57,9 +57,12 @@ export function setCampaignAccounts(ctx: Ctx, campaignId: number, accountIds: nu
   });
 }
 
+// A lead connected to the account (or with its invitation pending) stays too, though nothing was sent yet: no
+// other sender could message them, so it waits for this one. Retiring an account drops its connections first.
 export function releaseUnstartedLeads(ctx: Ctx, accountId: number, campaignId?: number) {
   const r = ctx.db.run(
-    `UPDATE campaign_leads SET account_id = NULL WHERE account_id = ? AND state = 'active' AND contacted_at IS NULL${campaignId ? ' AND campaign_id = ?' : ''}`,
+    `UPDATE campaign_leads SET account_id = NULL WHERE account_id = ? AND state = 'active' AND contacted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM lead_connections lc WHERE lc.lead_id = campaign_leads.lead_id AND lc.account_id = campaign_leads.account_id AND lc.status IN ('connected', 'pending'))${campaignId ? ' AND campaign_id = ?' : ''}`,
     campaignId ? [accountId, campaignId] : [accountId],
   );
   return r.changes;
@@ -142,13 +145,14 @@ export function refreshConnectionStatus(ctx: Ctx, leadId: number, whenNoRows?: C
   ctx.db.update('leads', leadId, { connection_status: status, ...(status === 'connected' ? { connected_at: ctx.clock.now() } : {}) });
 }
 
-// The campaign sender a lead is connected to (or has a pending invite from), connected first.
+// The campaign sender a lead is connected to (or has a pending invite from), connected first, then active ones.
+// A paused or logged-out sender still counts: the lead waits for it, since another sender couldn't message them.
 export function connectedSender(ctx: Ctx, leadId: number, accountIds: number[], statuses: ConnectionStatus[] = ['connected']): number | null {
   if (!accountIds.length) return null;
   const row = ctx.db.get<{ account_id: number }>(
     `SELECT lc.account_id FROM lead_connections lc JOIN accounts a ON a.id = lc.account_id
-     WHERE lc.lead_id = ? AND a.status = 'active' AND lc.account_id IN (${inList(accountIds)}) AND lc.status IN (${inList(statuses)})
-     ORDER BY CASE WHEN lc.status = 'connected' THEN 0 ELSE 1 END, lc.updated_at DESC, lc.account_id LIMIT 1`,
+     WHERE lc.lead_id = ? AND lc.account_id IN (${inList(accountIds)}) AND lc.status IN (${inList(statuses)})
+     ORDER BY CASE WHEN lc.status = 'connected' THEN 0 ELSE 1 END, CASE WHEN a.status = 'active' THEN 0 ELSE 1 END, lc.updated_at DESC, lc.account_id LIMIT 1`,
     [leadId, ...accountIds, ...statuses],
   );
   return row?.account_id ?? null;
@@ -169,7 +173,7 @@ function capacityOf(ctx: Ctx, a: AccountRow, cache: CapacityCache): SenderCapaci
 }
 
 // Picks the account that should take an unassigned lead's next action, or null if none can now.
-// 1. A sender the lead is already connected to (or invited by) keeps them, even when it is busy.
+// 1. A sender the lead is already connected to (or invited by) keeps them, even when it is busy or paused.
 // 2. Otherwise the active sender, inside working hours and under its limit for this action, with
 //    the most spare capacity: remaining today minus leads already queued for it at this action type
 //    (across all campaigns). Ties go to the sender with fewer leads, then the lower id.

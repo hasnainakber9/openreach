@@ -167,7 +167,7 @@ export class Engine {
   }
 
   // Session problems stop the account until the user reconnects it. Leads it hasn't contacted
-  // yet go back to the pool so the campaign's other senders can take them.
+  // yet (and isn't connected to) go back to the pool so the campaign's other senders can take them.
   private async guarded<T>(a: AccountRow, fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();

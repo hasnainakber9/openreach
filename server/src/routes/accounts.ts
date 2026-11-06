@@ -166,7 +166,7 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     const a = load(req);
     ctx.db.tx(() => {
       ctx.db.run("UPDATE accounts SET status = 'paused' WHERE id = ?", [a.id]);
-      // Leads it hasn't contacted yet can go out from the campaign's other senders meanwhile.
+      // Leads it hasn't contacted yet can go out from the campaign's other senders meanwhile (not those connected to it).
       releaseUnstartedLeads(ctx, a.id);
     });
     return { ok: true };

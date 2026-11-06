@@ -6,6 +6,7 @@ import { DriverError, type LinkedInDriver } from '../src/drivers/types.js';
 import type { Sequence } from '../src/engine/sequence.js';
 import { syncAccount } from '../src/engine/sync.js';
 import { campaignStats } from '../src/routes/campaigns.js';
+import { addLeadsToCampaign } from '../src/services/leads.js';
 import { chooseSender, connectionWith, releaseUnstartedLeads, setCampaignAccounts, setConnection } from '../src/services/rotation.js';
 import type { CampaignLeadRow, CampaignRow, LeadRow } from '../src/types.js';
 import { addAccount, addLeads, makeApi, makeCampaign, makeWorld, runFor, type World } from './helpers.js';
@@ -242,6 +243,45 @@ describe('sender rotation', () => {
     await runFor(w, 3 * HOUR);
     expect(campaignLead(w, id, l1)).toMatchObject({ node_id: 'w', state: 'active', account_id: b.id });
     expect(campaignLead(w, id, l2)).toMatchObject({ state: 'done', account_id: w.accountId });
+  });
+
+  it('keeps leads connected to a paused sender waiting for it instead of handing them to one that can’t message them', async () => {
+    const w = makeWorld({ acceptRate: 0, replyRate: 0 });
+    const b = addAccount(w);
+    const [pinned, unassigned] = addLeads(w, 2);
+    for (const l of [pinned, unassigned]) {
+      simConnect(w, w.accountId, l);
+      setConnection(w.ctx, l, w.accountId, 'connected');
+    }
+    const seq: Sequence = {
+      start: 'q',
+      nodes: {
+        q: { id: 'q', type: 'condition', kind: 'is_connected', withinDays: 7, yes: 'w', no: null },
+        w: { id: 'w', type: 'wait', days: 1, hours: 0, next: 'm' },
+        m: { id: 'm', type: 'message', text: 'Hi again', next: null },
+      },
+    };
+    const { id } = makeCampaign(w, seq, {}, [pinned], [w.accountId, b.id]);
+    w.engine.advanceFreeSteps();
+    // Pinned by the condition, though A hasn't sent them anything yet.
+    expect(campaignLead(w, id, pinned)).toMatchObject({ account_id: w.accountId, contacted_at: null, node_id: 'w' });
+    // A is paused (as POST /api/accounts/:id/pause does); a lead connected only to A joins meanwhile.
+    w.ctx.db.run("UPDATE accounts SET status = 'paused' WHERE id = ?", [w.accountId]);
+    releaseUnstartedLeads(w.ctx, w.accountId);
+    addLeadsToCampaign(w.ctx, w.ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [id])!, [unassigned]);
+
+    await runFor(w, 2 * DAY, 5 * MINUTE);
+    expect(w.ctx.db.all("SELECT 1 FROM activity WHERE type = 'message'")).toEqual([]);
+    for (const l of [pinned, unassigned]) expect(campaignLead(w, id, l)).toMatchObject({ account_id: w.accountId, state: 'active' });
+
+    // Back from the pause, A messages both.
+    w.ctx.db.run("UPDATE accounts SET status = 'active' WHERE id = ?", [w.accountId]);
+    await runFor(w, 2 * DAY, 5 * MINUTE);
+    const sent = w.ctx.db.all<{ lead_id: number; account_id: number; status: string }>("SELECT lead_id, account_id, status FROM activity WHERE type = 'message' ORDER BY lead_id");
+    expect(sent).toEqual([
+      { lead_id: pinned, account_id: w.accountId, status: 'ok' },
+      { lead_id: unassigned, account_id: w.accountId, status: 'ok' },
+    ]);
   });
 
   it('keeps a lead released mid-action away from other senders and pinned to the one that contacted it', async () => {
