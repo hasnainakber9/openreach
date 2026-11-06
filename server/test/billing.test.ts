@@ -3,8 +3,11 @@ import { join } from 'node:path';
 import Stripe from 'stripe';
 import { describe, expect, it } from 'vitest';
 import { completeAi } from '../src/ai/complete.js';
-import { assertCredits, currentPlan, PlanLimitError, subscriptionOf, usageOf } from '../src/billing/limits.js';
-import { ensureLegacyMailboxes } from '../src/mail/mailboxes.js';
+import { assertCredits, currentPlan, overPlanIds, PlanLimitError, subscriptionOf, usageOf } from '../src/billing/limits.js';
+import type { Sequence } from '../src/engine/sequence.js';
+import { ensureLegacyMailboxes, serializeMailbox, setCampaignMailboxes } from '../src/mail/mailboxes.js';
+import { serializeAccount } from '../src/routes/accounts.js';
+import type { MailboxRow } from '../src/types.js';
 import { isBlockedAddress } from '../src/services/hosts.js';
 import { parsePlans, type PlanLimits } from '../src/billing/plans.js';
 import type { CheckoutInput, StripeLike } from '../src/billing/stripe.js';
@@ -13,7 +16,8 @@ import { hashPassword } from '../src/services/crypto.js';
 import { addMembership } from '../src/services/memberships.js';
 import { recordUsage } from '../src/services/usage.js';
 import type { AiProvider } from '../src/providers/ai/types.js';
-import { fakeFetch, fakeImap, mailerOf, makeApi, makeWorld, type World } from './helpers.js';
+import { HOUR } from '../src/clock.js';
+import { addAccount, addLeads, fakeFetch, fakeImap, mailerOf, makeApi, makeCampaign, makeWorld, runFor, type World } from './helpers.js';
 
 const SECRET = 'whsec_test_openreach';
 const WEBHOOK = '/api/public/stripe/webhook';
@@ -150,6 +154,56 @@ describe('plan limits', () => {
       ['free', false],
       ['pro', true],
     ]);
+  });
+
+  it('runs only the oldest accounts and mailboxes the plan allows after a cancellation, and all of them again after an upgrade', async () => {
+    // Small daily limits, so the first account and mailbox can't do all the work on their own.
+    const w = makeWorld({ acceptRate: 0 }, { delay_min_sec: 30, delay_max_sec: 60, limits: JSON.stringify({ connect: 3 }) });
+    enableBilling(w);
+    const b = addAccount(w, { delay_min_sec: 30, delay_max_sec: 60 });
+    const box = (name: string) =>
+      w.ctx.db.insert('mailboxes', {
+        workspace_id: w.workspaceId,
+        name,
+        provider: 'simulated',
+        from_name: 'S',
+        from_email: `${name}@sender.example`,
+        work_days: '[0,1,2,3,4,5,6]',
+        daily_limit: 3,
+        warmup: 0,
+        gap_min_sec: 60,
+        gap_max_sec: 120,
+        created_at: w.ctx.clock.now(),
+      });
+    const [m1, m2] = [box('one'), box('two')];
+    w.ctx.db.insert('subscriptions', { workspace_id: w.workspaceId, plan_id: 'pro', status: 'canceled', updated_at: 1 });
+    const leads = addLeads(w, 12);
+    leads.forEach((l, i) => w.ctx.db.run('UPDATE leads SET email = ? WHERE id = ?', [`p${i}@acme.dev`, l]));
+    const seq: Sequence = { start: 'c', nodes: { c: { id: 'c', type: 'connect', note: '', next: 'e' }, e: { id: 'e', type: 'email', subject: 'Hi', body: 'Hi', next: null } } };
+    const { id } = makeCampaign(w, seq, {}, leads, [w.accountId, b.id]);
+    setCampaignMailboxes(w.ctx, id, [m1, m2]);
+    const by = (col: string, type: string) =>
+      Object.fromEntries(w.ctx.db.all<{ k: number; n: number }>(`SELECT ${col} AS k, COUNT(*) AS n FROM activity WHERE type = ? AND status = 'ok' GROUP BY ${col}`, [type]).map((r) => [r.k, r.n]));
+
+    // Cancelled: the free plan allows one account and one mailbox, so the newer ones stand still.
+    await runFor(w, 3 * HOUR);
+    expect(Object.keys(by('account_id', 'connect'))).toEqual([String(w.accountId)]);
+    expect(Object.keys(by('mailbox_id', 'email'))).toEqual([String(m1)]);
+    expect(serializeAccount(w.ctx, b.row())).toMatchObject({ status: 'active', overPlan: true, statusMessage: expect.stringMatching(/not running: your plan allows 1 LinkedIn account/) });
+    expect(serializeAccount(w.ctx, w.account())).toMatchObject({ overPlan: false, statusMessage: null });
+    const mbRow = (mid: number) => w.ctx.db.get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', [mid])!;
+    expect(serializeMailbox(w.ctx, mbRow(m2))).toMatchObject({ overPlan: true, statusMessage: expect.stringMatching(/not running: your plan allows 1 mailbox/) });
+
+    // Subscribed again: both run, with no other change.
+    w.ctx.db.run("UPDATE subscriptions SET status = 'active' WHERE workspace_id = ?", [w.workspaceId]);
+    await runFor(w, 3 * HOUR);
+    expect(by('account_id', 'connect')[b.id]).toBeGreaterThan(0);
+    expect(by('mailbox_id', 'email')[m2]).toBeGreaterThan(0);
+    expect(serializeAccount(w.ctx, b.row())).toMatchObject({ overPlan: false, statusMessage: null });
+
+    // Self-hosted (billing off): nothing is ever over a plan.
+    w.ctx.stripe = null as any;
+    expect(overPlanIds(w.ctx, 'linkedinAccounts').size).toBe(0);
   });
 
   it('asks for a plan when there is no default plan', async () => {

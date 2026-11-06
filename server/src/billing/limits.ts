@@ -187,3 +187,45 @@ export function assertCredits(ctx: Ctx, workspaceId: number, key: 'aiCreditsMont
   const over = check(ctx, workspaceId, key, 1);
   if (over) throw new PlanLimitError(over.message, over.details);
 }
+
+// ---- Over the limit after a downgrade or cancellation -------------------------------------------------
+
+// Limits are only checked when something is added, so a workspace whose plan shrank can hold more LinkedIn
+// accounts or mailboxes than it allows. Nothing is deleted or paused: the oldest ones the plan allows keep
+// working (per billing root) and the newer ones stand still, until the plan grows again or some are removed.
+export type RunningLimitKey = 'linkedinAccounts' | 'mailboxes';
+const RUNNING_TABLES: Record<RunningLimitKey, string> = { linkedinAccounts: 'accounts', mailboxes: 'mailboxes' };
+
+// Ids of the accounts (or mailboxes) past their plan's limit, across every workspace, or within one billing
+// tree. Always empty with billing off.
+export function overPlanIds(ctx: Ctx, key: RunningLimitKey, workspaceId?: number): Set<number> {
+  const over = new Set<number>();
+  if (!billingEnabled(ctx)) return over;
+  const root = workspaceId == null ? null : billingRoot(ctx, workspaceId);
+  const rows = ctx.db.all<{ id: number; root: number }>(
+    `SELECT t.id, COALESCE(w.parent_id, w.id) AS root FROM ${RUNNING_TABLES[key]} t JOIN workspaces w ON w.id = t.workspace_id
+     ${root == null ? '' : 'WHERE w.id = ? OR w.parent_id = ?'} ORDER BY t.created_at, t.id`,
+    root == null ? [] : [root, root],
+  );
+  const seen = new Map<number, { allowed: number | null; n: number }>();
+  for (const r of rows) {
+    let s = seen.get(r.root);
+    if (!s) {
+      const plan = currentPlan(ctx, r.root);
+      s = { allowed: plan ? plan.limits[key] : 0, n: 0 };
+      seen.set(r.root, s);
+    }
+    if (s.allowed !== null && ++s.n > s.allowed) over.add(r.id);
+  }
+  return over;
+}
+
+// Why an account or mailbox past the limit doesn't run, for the status line the web app shows.
+export function overPlanMessage(ctx: Ctx, key: RunningLimitKey, workspaceId: number): string {
+  const plan = currentPlan(ctx, billingRoot(ctx, workspaceId));
+  const allowed = plan ? (plan.limits[key] ?? 0) : 0;
+  const [one, many] = NOUNS[key];
+  const what = key === 'linkedinAccounts' ? 'This account' : 'This mailbox';
+  if (!plan) return `${what} is not running: choose a plan to use ${many}.`;
+  return `${what} is not running: your plan allows ${allowed} ${allowed === 1 ? one : many} and older ones use them. Upgrade, or remove one you no longer need, to start it again.`;
+}

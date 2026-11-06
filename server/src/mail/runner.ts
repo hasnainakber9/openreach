@@ -1,4 +1,5 @@
 import { AI_RECHECK, aiNamesIn, nodeTexts, resolveAiVars } from '../ai/personalize.js';
+import { overPlanIds } from '../billing/limits.js';
 import { MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -24,6 +25,7 @@ import {
   mailboxSchedule,
   needsPublicUrl,
   pinMailbox,
+  releaseUnstartedMailboxLeads,
   remainingToday,
   smtpTransport,
   type MailboxCapacityCache,
@@ -54,6 +56,8 @@ export class MailRunner {
   // Ticks overlap (setInterval) while SMTP is slow; a mailbox already sending is skipped.
   private busy = new Set<number>();
   private capacity: MailboxCapacityCache = new Map();
+  // Mailboxes past their plan's limit (hosted installs after a downgrade): they send nothing this tick.
+  private overPlan = new Set<number>();
 
   constructor(
     private ctx: Ctx,
@@ -62,11 +66,15 @@ export class MailRunner {
 
   async tick(): Promise<void> {
     this.capacity = new Map();
+    this.overPlan = overPlanIds(this.ctx, 'mailboxes');
+    // Leads such a mailbox hasn't emailed yet go to the campaign's other mailboxes meanwhile. Replies are
+    // still read, so a lead it already emailed stops when they answer.
+    for (const id of this.overPlan) releaseUnstartedMailboxLeads(this.ctx, id);
     const boxes = this.ctx.db.all<MailboxRow>("SELECT * FROM mailboxes WHERE status IN ('active', 'paused')");
     this.scheduleSyncs(boxes);
     await Promise.all(
       boxes
-        .filter((mb) => mb.status === 'active' && !this.busy.has(mb.id))
+        .filter((mb) => mb.status === 'active' && !this.overPlan.has(mb.id) && !this.busy.has(mb.id))
         .map(async (mb) => {
           this.busy.add(mb.id);
           try {
@@ -123,7 +131,7 @@ export class MailRunner {
     for (const job of rows) {
       if (job.mailbox_id === mb.id) return job;
       const campaign = ctx.db.get<CampaignRow>('SELECT * FROM campaigns WHERE id = ?', [job.campaign_id])!;
-      const chosen = chooseMailbox(ctx, campaign, { id: job.lead_id }, this.capacity, job.account_id);
+      const chosen = chooseMailbox(ctx, campaign, { id: job.lead_id }, this.capacity, job.account_id, this.overPlan);
       if (chosen == null || !pinMailbox(ctx, job.id, chosen)) continue;
       if (chosen === mb.id) return { ...job, mailbox_id: mb.id };
     }

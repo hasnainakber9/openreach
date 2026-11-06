@@ -1,5 +1,5 @@
 import { AI_RECHECK, aiNamesIn, nodeTexts, prefetchAi, resolveAiVars } from '../ai/personalize.js';
-import { billingEnabled } from '../billing/limits.js';
+import { billingEnabled, overPlanIds } from '../billing/limits.js';
 import { DAY, HOUR, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
@@ -47,6 +47,8 @@ export class Engine {
   private running = new Set<Promise<void>>();
   private gate: () => boolean = () => true;
   private capacity: CapacityCache = new Map();
+  // LinkedIn accounts past their plan's limit (hosted installs after a downgrade): they stand still this tick.
+  private overPlan = new Set<number>();
   // Email steps of campaigns that have mailboxes (they don't wait for a LinkedIn account).
   readonly mail: MailRunner;
   // SMS and WhatsApp steps, sent through the workspace's SMS provider.
@@ -88,8 +90,11 @@ export class Engine {
   // randomized delay. Background jobs run in the same pass, so they only run where the engine runs.
   async tick(): Promise<void> {
     this.capacity = new Map();
+    this.overPlan = overPlanIds(this.ctx, 'linkedinAccounts');
+    // Like a paused sender: leads it hasn't started go to the campaign's other senders meanwhile.
+    for (const id of this.overPlan) releaseUnstartedLeads(this.ctx, id);
     this.advanceFreeSteps();
-    const accounts = this.ctx.db.all<AccountRow>("SELECT * FROM accounts WHERE status = 'active'");
+    const accounts = this.ctx.db.all<AccountRow>("SELECT * FROM accounts WHERE status = 'active'").filter((a) => !this.overPlan.has(a.id));
     await Promise.all([
       this.ctx.jobs.tick().catch((e) => console.error('[jobs] tick failed', e)),
       this.mail.tick().catch((e) => console.error('[mail] tick failed', e)),
@@ -196,14 +201,16 @@ export class Engine {
   // Waits and conditions only read the database, so they advance immediately, any time of day.
   // A lead whose sender is paused or logged out stays frozen (its sync isn't running, so an
   // "accepted within" deadline must not run out); unassigned leads move while any sender is active.
+  // Accounts past their plan's limit count as paused here.
   advanceFreeSteps() {
     const types = [...FREE_NODE_TYPES];
+    const running = this.overPlan.size ? `a.status = 'active' AND a.id NOT IN (${[...this.overPlan].map(Number).join(',')})` : "a.status = 'active'";
     const jobs = this.ctx.db.all<CampaignLeadRow>(
       `SELECT cl.* FROM campaign_leads cl JOIN campaigns c ON c.id = cl.campaign_id
        WHERE c.status = 'active' AND cl.state = 'active' AND cl.next_run_at <= ?
          AND (cl.node_type IN (${types.map(() => '?').join(',')}) OR cl.node_type IS NULL)
-         AND ((cl.account_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = cl.account_id AND a.status = 'active'))
-           OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_accounts ca JOIN accounts a ON a.id = ca.account_id WHERE ca.campaign_id = c.id AND a.status = 'active'))
+         AND ((cl.account_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = cl.account_id AND ${running}))
+           OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_accounts ca JOIN accounts a ON a.id = ca.account_id WHERE ca.campaign_id = c.id AND ${running}))
            OR (cl.account_id IS NULL AND EXISTS (SELECT 1 FROM campaign_mailboxes cm JOIN mailboxes m ON m.id = cm.mailbox_id WHERE cm.campaign_id = c.id AND m.status = 'active'))
            OR NOT EXISTS (SELECT 1 FROM campaign_accounts ca WHERE ca.campaign_id = c.id))
        ORDER BY cl.next_run_at, cl.id LIMIT ${FREE_STEPS_PER_TICK}`,
@@ -230,7 +237,7 @@ export class Engine {
     );
     for (const job of candidates) {
       if (job.account_id === a.id) return job;
-      const sender = chooseSender(this.ctx, this.campaign(job.campaign_id), this.lead(job.lead_id), job.node_type as ActionType, this.capacity);
+      const sender = chooseSender(this.ctx, this.campaign(job.campaign_id), this.lead(job.lead_id), job.node_type as ActionType, this.capacity, this.overPlan);
       if (sender == null || !pinLead(this.ctx, job.id, sender)) continue;
       if (sender === a.id) return { ...job, account_id: a.id };
     }

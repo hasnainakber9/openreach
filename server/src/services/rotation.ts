@@ -177,7 +177,8 @@ function capacityOf(ctx: Ctx, a: AccountRow, cache: CapacityCache): SenderCapaci
 // 2. Otherwise the active sender, inside working hours and under its limit for this action, with
 //    the most spare capacity: remaining today minus leads already queued for it at this action type
 //    (across all campaigns). Ties go to the sender with fewer leads, then the lower id.
-export function chooseSender(ctx: Ctx, campaign: CampaignRow, lead: LeadRow, actionType: ActionType, cache: CapacityCache): number | null {
+// Accounts in `skip` (past their plan's limit) take no new leads.
+export function chooseSender(ctx: Ctx, campaign: CampaignRow, lead: LeadRow, actionType: ActionType, cache: CapacityCache, skip: ReadonlySet<number> = new Set()): number | null {
   const ids = campaignAccountIds(ctx, campaign.id);
   if (!ids.length) return null;
   const known = connectedSender(ctx, lead.id, ids, ['connected', 'pending']);
@@ -185,12 +186,13 @@ export function chooseSender(ctx: Ctx, campaign: CampaignRow, lead: LeadRow, act
   // A legacy connection belongs to the campaign's first sender (see connectionWith).
   if (campaign.account_id != null && ids.includes(campaign.account_id) && isLegacy(ctx, lead)) {
     const first = ctx.db.get<{ status: string }>('SELECT status FROM accounts WHERE id = ?', [campaign.account_id]);
-    if (first?.status === 'active') return campaign.account_id;
+    if (first?.status === 'active' && !skip.has(campaign.account_id)) return campaign.account_id;
   }
 
   const accounts = ctx.db.all<AccountRow>(`SELECT * FROM accounts WHERE id IN (${inList(ids)}) AND workspace_id = ? AND status = 'active'`, [...ids, campaign.workspace_id]);
   let best: { id: number; score: number; load: number } | null = null;
   for (const a of accounts) {
+    if (skip.has(a.id)) continue;
     const cap = capacityOf(ctx, a, cache);
     if (!cap.working || cap.exhausted.includes(actionType)) continue;
     const waiting = ctx.db.get<{ n: number }>(
