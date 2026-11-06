@@ -38,6 +38,7 @@ Every external service below is optional. Without keys, a built-in simulator sta
 - Pipeline stages (editable), automatic forward-only stage moves, a drag-and-drop board with a keyboard-accessible *Move to* menu, owners, colored tags, notes and a lead timeline.
 - One-way sync to **HubSpot** and **Pipedrive**: contacts with a field mapping, notes for replies and other events, optional deals at a chosen stage, a sync log with retries.
 - New webhook events: `lead.classified`, `lead.stage_changed`, `lead.enriched`.
+- Lead CSV export: custom fields come out as `custom_<name>` columns (importing the file restores their names), and cells starting with `=`, `+`, `-` or `@` get a leading `'` so spreadsheets show them as text instead of running them.
 
 ### Teams, agencies and hosting
 

