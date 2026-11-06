@@ -132,7 +132,8 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
 
   private async go(url: string): Promise<Page> {
     const page = await this.open();
-    const res = await page.goto(url, { waitUntil: 'domcontentloaded' }).catch((e: Error) => {
+    // LinkedIn's pages are heavy; on a busy laptop the first load can take well over 20 s.
+    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((e: Error) => {
       // An invalid li_at typically sends LinkedIn into a login redirect loop.
       if (/ERR_TOO_MANY_REDIRECTS/.test(e.message)) throw new DriverError('SESSION_EXPIRED', `LinkedIn keeps redirecting, so it does not accept this session in OpenReach's browser. ${RELOGIN_HINT}`);
       throw new DriverError('TRANSIENT', `Navigation failed: ${e.message.split('\n')[0]}`);

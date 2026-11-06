@@ -16,7 +16,8 @@ export const BLOCKED_PATHS = {
 };
 
 export const SEL = {
-  profileName: 'main h1',
+  // LinkedIn's 2026 profile layout has no h1: the name is the first h2 in main. Old layout: main h1 (comes first).
+  profileName: 'main h1, main h2',
   profileHeadline: ['main section .text-body-medium', 'main section div[data-generated-suggestion-target]'],
   profileLocation: ['main section span.text-body-small.inline', 'main section .pv-text-details__left-panel span.text-body-small'],
   profileDegree: ['main section .dist-value', 'main section span.distance-badge'],
