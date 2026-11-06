@@ -137,6 +137,28 @@ describe('integrations API', () => {
     expect((await call('GET', '/api/integrations')).body).toEqual([]);
   });
 
+  it('keeps a saved key only for the same base URL, so it can’t be sent to another host', async () => {
+    const { w, call, addUser, as } = await setup();
+    const created = await call('POST', '/api/integrations', { kind: 'ai', provider: 'openai_compat', credentials: { apiKey: KEY }, settings: { baseUrl: 'https://api.openai.com/v1', writerModel: 'gpt-test' } });
+    expect(created.status).toBe(200);
+    const fetch = fakeFetch([{ url: /\/models$/, reply: () => ({ json: { data: [] } }) }]);
+    w.ctx.fetch = fetch;
+    // An admin sees only the mask; moving the base URL needs the key typed again.
+    as(await addUser('admin'));
+    const moved = await call('PATCH', `/api/integrations/${created.body.id}`, { settings: { baseUrl: 'https://evil.example/v1' } });
+    expect(moved.status).toBe(400);
+    expect(moved.body.error).toMatch(/^credentials\.apiKey: Enter it again/);
+    expect((await call('PATCH', `/api/integrations/${created.body.id}`, { settings: { baseUrl: 'https://evil.example/v1' }, credentials: { apiKey: '' } })).status).toBe(400);
+    await call('POST', `/api/integrations/${created.body.id}/test`);
+    expect(fetch.calls.map((c) => [c.url, c.headers.authorization])).toEqual([['https://api.openai.com/v1/models', `Bearer ${KEY}`]]);
+    // The same URL (written differently) or other settings keep it.
+    expect((await call('PATCH', `/api/integrations/${created.body.id}`, { settings: { baseUrl: 'https://api.openai.com/v1/', writerModel: 'gpt-other' } })).status).toBe(200);
+    // With the key given again, the move is fine.
+    expect((await call('PATCH', `/api/integrations/${created.body.id}`, { settings: { baseUrl: 'https://llm.example/v1' }, credentials: { apiKey: OTHER_KEY } })).status).toBe(200);
+    await call('POST', `/api/integrations/${created.body.id}/test`);
+    expect(fetch.calls.at(-1)).toMatchObject({ url: 'https://llm.example/v1/models', headers: { authorization: `Bearer ${OTHER_KEY}` } });
+  });
+
   it('validates kind, provider, credentials and settings against the provider definition', async () => {
     const { call } = await setup();
     expect((await call('POST', '/api/integrations', { kind: 'fax', provider: 'testvendor' })).status).toBe(400);
