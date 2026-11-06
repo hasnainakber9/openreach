@@ -100,7 +100,9 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
   });
 
   app.addHook('onRequest', async (req) => {
-    const path = req.url.split('?')[0];
+    // The matched route's pattern, not the raw URL: the router decodes the path, so /%61pi/... reaches the
+    // /api/... routes and a check on the raw URL would wave it through. Unmatched URLs fall back to the path.
+    const path = req.routeOptions.url ?? req.url.split('?')[0];
     if (!acceptsForm(path) && req.headers['content-type']?.toLowerCase().startsWith('application/x-www-form-urlencoded')) throw new HttpError(415, 'Send JSON');
     if (!path.startsWith('/api/') || isPublic(path)) return;
     const u = sessionUser(ctx, req.cookies[SESSION_COOKIE]);

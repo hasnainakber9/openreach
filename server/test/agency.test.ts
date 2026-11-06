@@ -349,6 +349,22 @@ describe('invites', () => {
     expect((await accept(api, first.token, { name: 'Twice', password: 'correct-horse' })).statusCode).toBe(404);
   });
 
+  it('refuses form posts to the invite link, also through a percent-encoded /api path', async () => {
+    const api = await makeApi();
+    await api.register('Attacker');
+    const victim = await api.register('Victim');
+    api.as(await signIn(api, 'owner1@example.com'));
+    const inv = await invite(api, 'owner2@example.com');
+    const form = (url: string) =>
+      api.app.inject({ method: 'POST', url, payload: 'x=1', headers: { cookie: victim.cookie, 'content-type': 'application/x-www-form-urlencoded' } });
+    expect((await form(`/api/public/invites/${inv.token}/accept`)).statusCode).toBe(415);
+    // The router decodes /%61pi to /api: the checks follow the route, not the raw URL.
+    expect((await form(`/%61pi/public/invites/${inv.token}/accept`)).statusCode).toBe(415);
+    expect((await api.call('GET', '/api/auth/me', undefined, victim)).body.user.workspace_name).toBe('Victim');
+    expect((await api.app.inject({ method: 'GET', url: '/%61pi/campaigns' })).statusCode).toBe(401);
+    expect((await api.call('GET', '/%61pi/campaigns', undefined, victim)).status).toBe(200);
+  });
+
   it("can't touch another workspace's invites, and refuses members", async () => {
     const api = await makeApi();
     await api.register('Alpha');
