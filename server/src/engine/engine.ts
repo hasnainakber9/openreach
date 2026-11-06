@@ -47,7 +47,7 @@ export class Engine {
   private running = new Set<Promise<void>>();
   private gate: () => boolean = () => true;
   private capacity: CapacityCache = new Map();
-  // LinkedIn accounts past their plan's limit (hosted installs after a downgrade): they stand still this tick.
+  // LinkedIn accounts past their plan's limit (hosted installs after a downgrade): they sync but don't act this tick.
   private overPlan = new Set<number>();
   // Email steps of campaigns that have mailboxes (they don't wait for a LinkedIn account).
   readonly mail: MailRunner;
@@ -94,7 +94,7 @@ export class Engine {
     // Like a paused sender: leads it hasn't started go to the campaign's other senders meanwhile.
     for (const id of this.overPlan) releaseUnstartedLeads(this.ctx, id);
     this.advanceFreeSteps();
-    const accounts = this.ctx.db.all<AccountRow>("SELECT * FROM accounts WHERE status = 'active'").filter((a) => !this.overPlan.has(a.id));
+    const accounts = this.ctx.db.all<AccountRow>("SELECT * FROM accounts WHERE status = 'active'");
     await Promise.all([
       this.ctx.jobs.tick().catch((e) => console.error('[jobs] tick failed', e)),
       this.mail.tick().catch((e) => console.error('[mail] tick failed', e)),
@@ -155,7 +155,8 @@ export class Engine {
       this.advanceFreeSteps();
     }
 
-    if (a.next_action_at > now) return;
+    // Past the plan's limit an account still syncs (replies stop its leads, acceptances are recorded) but acts on nothing.
+    if (a.next_action_at > now || this.overPlan.has(a.id)) return;
     // A lead still waiting for its AI text is parked for a moment and the next candidate gets the
     // turn, so a slow AI provider never idles the sender.
     for (let tries = 0; tries < ACTION_CANDIDATES; tries++) {

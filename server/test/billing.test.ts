@@ -16,7 +16,7 @@ import { hashPassword } from '../src/services/crypto.js';
 import { addMembership } from '../src/services/memberships.js';
 import { recordUsage } from '../src/services/usage.js';
 import type { AiProvider } from '../src/providers/ai/types.js';
-import { HOUR } from '../src/clock.js';
+import { DAY, HOUR } from '../src/clock.js';
 import { addAccount, addLeads, fakeFetch, fakeImap, mailerOf, makeApi, makeCampaign, makeWorld, runFor, type World } from './helpers.js';
 
 const SECRET = 'whsec_test_openreach';
@@ -189,10 +189,10 @@ describe('plan limits', () => {
     await runFor(w, 3 * HOUR);
     expect(Object.keys(by('account_id', 'connect'))).toEqual([String(w.accountId)]);
     expect(Object.keys(by('mailbox_id', 'email'))).toEqual([String(m1)]);
-    expect(serializeAccount(w.ctx, b.row())).toMatchObject({ status: 'active', overPlan: true, statusMessage: expect.stringMatching(/not running: your plan allows 1 LinkedIn account/) });
+    expect(serializeAccount(w.ctx, b.row())).toMatchObject({ status: 'active', overPlan: true, statusMessage: expect.stringMatching(/sends nothing: your plan allows 1 LinkedIn account/) });
     expect(serializeAccount(w.ctx, w.account())).toMatchObject({ overPlan: false, statusMessage: null });
     const mbRow = (mid: number) => w.ctx.db.get<MailboxRow>('SELECT * FROM mailboxes WHERE id = ?', [mid])!;
-    expect(serializeMailbox(w.ctx, mbRow(m2))).toMatchObject({ overPlan: true, statusMessage: expect.stringMatching(/not running: your plan allows 1 mailbox/) });
+    expect(serializeMailbox(w.ctx, mbRow(m2))).toMatchObject({ overPlan: true, statusMessage: expect.stringMatching(/sends nothing: your plan allows 1 mailbox/) });
 
     // Subscribed again: both run, with no other change.
     w.ctx.db.run("UPDATE subscriptions SET status = 'active' WHERE workspace_id = ?", [w.workspaceId]);
@@ -204,6 +204,37 @@ describe('plan limits', () => {
     // Self-hosted (billing off): nothing is ever over a plan.
     w.ctx.stripe = null as any;
     expect(overPlanIds(w.ctx, 'linkedinAccounts').size).toBe(0);
+  });
+
+  it('keeps syncing an account past the limit, so a reply meanwhile still stops its lead', async () => {
+    const w = makeWorld({ acceptRate: 0, replyRate: 0 }, { limits: JSON.stringify({ connect: 2 }) });
+    enableBilling(w);
+    const b = addAccount(w);
+    w.ctx.db.insert('subscriptions', { workspace_id: w.workspaceId, plan_id: 'pro', status: 'active', updated_at: 1 });
+    const leads = addLeads(w, 4);
+    const seq: Sequence = { start: 'c', nodes: { c: { id: 'c', type: 'connect', note: '', next: 'w' }, w: { id: 'w', type: 'wait', days: 1, hours: 0, next: 'f' }, f: { id: 'f', type: 'follow', next: null } } };
+    const { id } = makeCampaign(w, seq, {}, leads, [w.accountId, b.id]);
+    await runFor(w, 3 * HOUR);
+    const mine = w.ctx.db.all<{ lead_id: number }>('SELECT lead_id FROM campaign_leads WHERE campaign_id = ? AND account_id = ? AND contacted_at IS NOT NULL', [id, b.id]);
+    expect(mine.length).toBeGreaterThan(0);
+    const replier = mine[0].lead_id;
+
+    // Cancelled: B is past the free plan's single account. Its lead answers on LinkedIn meanwhile.
+    w.ctx.db.run("UPDATE subscriptions SET status = 'canceled' WHERE workspace_id = ?", [w.workspaceId]);
+    const before = w.ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM activity WHERE account_id = ? AND status = 'ok' AND type IN ('connect', 'follow')", [b.id])!.n;
+    const pub = w.ctx.db.get<{ public_id: string }>('SELECT public_id FROM leads WHERE id = ?', [replier])!.public_id;
+    w.ctx.db.run('UPDATE sim_people SET connected = 1, reply_at = ? WHERE account_id = ? AND public_id = ?', [w.ctx.clock.now(), b.id, pub]);
+    await runFor(w, 2 * DAY, 5 * 60_000);
+    expect(w.ctx.db.get('SELECT state FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?', [id, replier])).toEqual({ state: 'replied' });
+    // It read the reply but acted on nothing.
+    expect(w.ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM activity WHERE account_id = ? AND status = 'ok' AND type IN ('connect', 'follow')", [b.id])!.n).toBe(before);
+    expect(serializeAccount(w.ctx, b.row()).statusMessage).toMatch(/sends nothing/);
+
+    // Upgraded again: B follows up its other leads, never the one who replied.
+    w.ctx.db.run("UPDATE subscriptions SET status = 'active' WHERE workspace_id = ?", [w.workspaceId]);
+    await runFor(w, DAY, 5 * 60_000);
+    expect(w.ctx.db.all("SELECT 1 FROM activity WHERE lead_id = ? AND type = 'follow'", [replier])).toEqual([]);
+    expect(w.ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM activity WHERE account_id = ? AND status = 'ok' AND type = 'follow'", [b.id])!.n).toBeGreaterThan(0);
   });
 
   it('asks for a plan when there is no default plan', async () => {

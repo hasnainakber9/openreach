@@ -67,9 +67,9 @@ export default function Mailboxes({ me }: { me: Me }) {
                     {!m.simulated && ` · ${presets.data?.find((p) => p.id === m.preset)?.label ?? 'SMTP'}`}
                   </div>
                 </div>
-                <Pill status={m.status} />
+                {m.overPlan ? <Pill status="paused">Over plan limit</Pill> : <Pill status={m.status} />}
               </div>
-              {m.statusMessage && <div className="note note-error">{m.statusMessage}</div>}
+              {m.statusMessage && <div className={`note ${m.overPlan ? 'note-warning' : 'note-error'}`}>{m.statusMessage}</div>}
               {m.simulated && <div className="note">Simulated: emails are recorded but never delivered, and made-up replies and bounces come back so you can try the whole flow.</div>}
               {!m.simulated && !m.hasImap && <div className="note note-warning">No IMAP settings: replies and bounces from this mailbox aren’t detected, so sequences won’t stop when people answer.</div>}
               <Meter label="Sent today" used={m.sentToday} limit={m.effectiveLimit} />
