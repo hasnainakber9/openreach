@@ -17,10 +17,20 @@ export const PLAN_LIMIT_EVENT = 'openreach:plan-limit';
 export const isPlanLimit = (e: unknown): e is ApiError & { details: PlanLimitDetails } =>
   e instanceof ApiError && e.status === 402 && (e.details as PlanLimitDetails | undefined)?.code === 'plan_limit';
 
+// The workspace this tab shows. The server keeps the active workspace per session, so every call says which
+// one the page is about; after a switch in another tab the server answers 409 instead of acting in the other one.
+let shownWorkspace: number | null = null;
+export const setShownWorkspace = (id: number | null) => {
+  shownWorkspace = id;
+};
+export const WORKSPACE_CHANGED_EVENT = 'openreach:workspace-changed';
+
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
+  const headers: Record<string, string> = opts.body !== undefined ? { 'content-type': 'application/json' } : {};
+  if (shownWorkspace != null) headers['x-workspace-id'] = String(shownWorkspace);
   const res = await fetch(path, {
     method: opts.method ?? (opts.body !== undefined ? 'POST' : 'GET'),
-    headers: opts.body !== undefined ? { 'content-type': 'application/json' } : {},
+    headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     credentials: 'same-origin',
   });
@@ -29,6 +39,7 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
     if (res.status === 401 && !path.startsWith('/api/auth/')) window.dispatchEvent(new Event('openreach:signed-out'));
     const err = new ApiError(res.status, (data && data.error) || res.statusText, data?.details);
     if (isPlanLimit(err)) window.dispatchEvent(new CustomEvent(PLAN_LIMIT_EVENT, { detail: err.message }));
+    if (res.status === 409 && data?.details?.code === 'workspace_changed') window.dispatchEvent(new Event(WORKSPACE_CHANGED_EVENT));
     throw err;
   }
   return data as T;

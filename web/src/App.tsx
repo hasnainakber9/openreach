@@ -1,6 +1,6 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { api, PLAN_LIMIT_EVENT, syncClock, useApi, type Branding, type Role, type TaskCounts, type WorkspaceItem } from './api';
+import { api, PLAN_LIMIT_EVENT, setShownWorkspace, syncClock, useApi, WORKSPACE_CHANGED_EVENT, type Branding, type Role, type TaskCounts, type WorkspaceItem } from './api';
 import { DEFAULT_BRANDING, refreshBranding, useBranding } from './branding';
 import { BrandMark, Button, ErrorNote, Field, useToast } from './components/ui';
 import { canWrite, MeContext, type Me } from './session';
@@ -48,9 +48,17 @@ const NAV: NavItem[] = [
 ];
 
 export default function App() {
-  const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const [me, setMeState] = useState<Me | null | undefined>(undefined);
   const branding = useBranding();
   const location = useLocation();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const catchingUp = useRef(false);
+  // Set before rendering, so the first calls of the new workspace's pages already carry it.
+  const setMe = (u: Me | null) => {
+    setShownWorkspace(u?.workspace_id ?? null);
+    setMeState(u);
+  };
 
   useEffect(() => {
     void syncClock().catch(() => {});
@@ -61,6 +69,28 @@ export default function App() {
     window.addEventListener('openreach:signed-out', out);
     return () => window.removeEventListener('openreach:signed-out', out);
   }, []);
+
+  // Another tab switched the session to a different workspace: show that one here too instead of the stale page.
+  useEffect(() => {
+    const changed = async () => {
+      if (catchingUp.current) return;
+      catchingUp.current = true;
+      try {
+        const r = await api<{ user: Me }>('/api/auth/me');
+        if (r.user.workspace_id !== me?.workspace_id) {
+          navigate('/');
+          signedIn(r.user);
+          toast(`You switched to ${r.user.workspace_name} in another tab, so this tab shows it now.`);
+        }
+      } catch {
+        // Signed out meanwhile: the 401 handler takes over.
+      } finally {
+        catchingUp.current = false;
+      }
+    };
+    window.addEventListener(WORKSPACE_CHANGED_EVENT, changed);
+    return () => window.removeEventListener(WORKSPACE_CHANGED_EVENT, changed);
+  });
 
   // Signing in or out, or switching workspace, can change the branding (a client of an agency).
   const signedIn = (u: Me | null) => {

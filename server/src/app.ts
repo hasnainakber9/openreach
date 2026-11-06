@@ -37,6 +37,13 @@ const isPublic = (path: string) => PUBLIC.has(path) || path.startsWith('/api/pub
 const FORM_PREFIXES = ['/api/public/twilio/'];
 const acceptsForm = (path: string) => !path.startsWith('/api/') || FORM_PREFIXES.some((p) => path.startsWith(p));
 
+// The workspace a page shows, sent by the web app with every call. The active workspace belongs to the session,
+// so without it a tab left open on one client would read and write another after a switch in a second tab.
+// Calls without the header (scripts, API clients) act in the active workspace as before.
+export const WORKSPACE_HEADER = 'x-workspace-id';
+// Calls that don't act inside a workspace: the signed-in user, signing out, the password, and switching.
+const ANY_WORKSPACE = new Set(['/api/auth/me', '/api/auth/logout', '/api/auth/password', '/api/workspaces', '/api/workspaces/switch']);
+
 // What the read-only `client` role may call (route patterns). Everything else is 403, so a route added
 // later is closed to clients until it is listed here.
 export const CLIENT_ALLOWED = new Set([
@@ -108,6 +115,14 @@ export async function buildApp(ctx: Ctx, opts: { logger?: boolean } = {}) {
     const u = sessionUser(ctx, req.cookies[SESSION_COOKIE]);
     if (!u) throw new HttpError(401, 'Not signed in');
     req.user = u;
+    // A tab still showing another workspace (the session switched in a second tab) must not act in this one.
+    const shown = req.headers[WORKSPACE_HEADER];
+    if (typeof shown === 'string' && shown && shown !== String(u.workspace_id) && !ANY_WORKSPACE.has(path)) {
+      throw new HttpError(409, 'You switched workspace in another tab, so this page was out of date. It now shows the workspace you are in.', {
+        code: 'workspace_changed',
+        workspaceId: u.workspace_id,
+      });
+    }
   });
 
   // Clients (read-only portal users) only reach the allowlist. Matched on the route pattern, so ids in

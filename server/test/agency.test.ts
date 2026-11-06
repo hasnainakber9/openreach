@@ -104,6 +104,27 @@ describe('memberships', () => {
     expect((await api.call('POST', '/api/workspaces/switch', { workspaceId: other })).status).toBe(404);
   });
 
+  it("refuses calls from a tab that still shows the workspace another tab switched away from", async () => {
+    const { api, owner, a, b } = await agencySetup();
+    const inA = (method: string, url: string, payload?: unknown) =>
+      api.app.inject({ method: method as any, url, payload: payload as any, headers: { cookie: owner.cookie, 'x-workspace-id': String(a) } });
+    await api.call('POST', '/api/workspaces/switch', { workspaceId: a });
+    expect((await inA('POST', '/api/lists', { name: 'A leads' })).statusCode).toBe(200);
+    // Another tab switches the session to client B; the first tab still shows A.
+    await api.call('POST', '/api/workspaces/switch', { workspaceId: b });
+    const stale = await inA('POST', '/api/lists', { name: 'meant for A' });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().details).toEqual({ code: 'workspace_changed', workspaceId: b });
+    expect((await inA('GET', '/api/campaigns')).statusCode).toBe(409);
+    expect(api.w.ctx.db.get('SELECT COUNT(*) AS n FROM lead_lists WHERE name = ?', ['meant for A'])).toEqual({ n: 0 });
+    // What the tab needs to catch up still works, and calls without the header act in the active workspace.
+    expect((await inA('GET', '/api/auth/me')).json().user.workspace_id).toBe(b);
+    expect((await inA('GET', '/api/workspaces')).statusCode).toBe(200);
+    expect((await inA('POST', '/api/workspaces/switch', { workspaceId: a })).statusCode).toBe(200);
+    expect((await inA('POST', '/api/lists', { name: 'A again' })).statusCode).toBe(200);
+    expect((await api.call('GET', '/api/lists')).body.map((l: any) => l.name)).toEqual(['A again', 'A leads']);
+  });
+
   it('edits roles, keeps one owner and removes memberships without deleting other workspaces', async () => {
     const api = await makeApi();
     const owner = await api.register('Alpha');
