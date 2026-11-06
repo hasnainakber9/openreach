@@ -1,5 +1,6 @@
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
+import { discardAccountBrowser } from '../drivers/browser-login.js';
 import { contactTypesSql } from './activity.js';
 import type { WorkspaceRow } from './memberships.js';
 import { ensureStages } from './pipeline.js';
@@ -35,8 +36,8 @@ export async function deleteWorkspace(ctx: Ctx, id: number) {
     ctx.db.run('DELETE FROM imports WHERE workspace_id = ?', [id]);
     ctx.db.run('DELETE FROM workspaces WHERE id = ?', [id]);
   });
-  // Close any browser the deleted accounts had open.
-  await Promise.all(accounts.map((a) => ctx.drivers.drop(a)));
+  // Close any browser or sign-in window the deleted accounts had open, and remove their browser profiles.
+  await Promise.all(accounts.map((a) => discardAccountBrowser(ctx, a)));
 }
 
 export interface ClientOverview {

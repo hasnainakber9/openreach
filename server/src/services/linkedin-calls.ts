@@ -72,6 +72,9 @@ async function check(ctx: Ctx, a: AccountRow) {
   try {
     const info = await ctx.drivers.use(a, (d) => d.checkSession());
     ctx.db.run("UPDATE accounts SET linkedin_name = ?, linkedin_url = ?, status = CASE WHEN status = 'paused' THEN 'paused' ELSE 'active' END, status_message = NULL WHERE id = ?", [info.name, info.profileUrl, a.id]);
+    // The session works, so an earlier sign-in window's failure no longer describes it (one still under way,
+    // which runs this check itself, stays).
+    if (ctx.drivers.signIns.get(a.id)?.state !== 'waiting') ctx.drivers.signIns.delete(a.id);
     return { ok: true, ...info };
   } catch (e) {
     const msg = (e as Error).message;
@@ -101,7 +104,7 @@ async function reply(ctx: Ctx, workspaceId: number, conversationId: number, text
   if (!c) throw new HttpError(404, 'Conversation not found');
   const a = ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ? AND workspace_id = ?', [c.account_id, workspaceId]);
   if (!a) throw new HttpError(409, 'This conversation has no LinkedIn account to reply from');
-  if (a.status === 'needs_login') throw new HttpError(409, 'This LinkedIn account needs a fresh session cookie before it can send');
+  if (a.status === 'needs_login') throw new HttpError(409, 'This LinkedIn account needs to sign in to LinkedIn again before it can send');
   try {
     await ctx.drivers.use(a, (d) => d.sendMessage(c.participant_url, text));
   } catch (e) {

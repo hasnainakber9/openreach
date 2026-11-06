@@ -8,6 +8,8 @@ export interface AccountRow {
   status: 'active' | 'paused' | 'needs_login' | 'error';
   status_message: string | null;
   session_enc: string | null;
+  // 'pasted' (li_at copied in), 'browser' (signed in in the account's own browser window), null without a session.
+  session_origin: 'pasted' | 'browser' | null;
   proxy_url: string | null;
   timezone: string;
   work_days: string;

@@ -829,4 +829,11 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE subscriptions ADD COLUMN checkout_starting_until INTEGER;
   ALTER TABLE accounts ADD COLUMN busy_until INTEGER;
   `,
+  // browser-login: where the account's LinkedIn session came from. 'pasted' (an li_at copied from another
+  // browser) is put into the profile on every start; 'browser' (signed in inside the account's own browser
+  // window) lives in the profile, which keeps it current, so it is never overwritten with the stored copy.
+  `
+  ALTER TABLE accounts ADD COLUMN session_origin TEXT;
+  UPDATE accounts SET session_origin = 'pasted' WHERE session_enc IS NOT NULL;
+  `,
 ];

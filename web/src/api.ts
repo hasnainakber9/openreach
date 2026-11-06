@@ -340,6 +340,14 @@ export interface CampaignLead {
   mailbox: { id: number; name: string } | null;
 }
 
+export interface BrowserLogin {
+  state: 'waiting' | 'done' | 'failed';
+  message: string;
+  startedAt: number;
+  // False once signed in and the session is being checked: the window is closed, nothing left to cancel.
+  cancellable: boolean;
+}
+
 export interface Account {
   id: number;
   name: string;
@@ -364,6 +372,10 @@ export interface Account {
   cooldowns: Record<string, number>;
   linkedinName: string | null;
   linkedinUrl: string | null;
+  // 'browser' when signed in with the sign-in window, 'pasted' for a copied li_at cookie.
+  sessionOrigin: 'pasted' | 'browser' | null;
+  // The "Sign in in a browser window" progress on the server (null when none was opened since it started).
+  browserLogin: BrowserLogin | null;
   working: boolean;
   nextWorkingAt: number;
   nextActionAt: number;

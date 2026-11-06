@@ -20,6 +20,8 @@ export interface Config {
   simLatencyMs: number;
   headless: boolean;
   executablePath?: string;
+  // Whether a visible browser window can open here (the sign-in window needs one; a Docker image has no screen).
+  hasDisplay: boolean;
   webDist: string;
   runWorker: boolean;
   publicUrl?: string;
@@ -61,6 +63,7 @@ export function loadConfig(env = process.env): Config {
     simLatencyMs: Number(env.SIM_LATENCY_MS ?? 150),
     headless: env.PLAYWRIGHT_HEADLESS !== 'false',
     executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined,
+    hasDisplay: hasDisplay(process.platform, env),
     // fileURLToPath, not URL.pathname: on Windows the pathname is /C:/..., which resolve() mangles, and the app wasn't served.
     webDist: resolve(env.WEB_DIST ?? fileURLToPath(new URL('../../web/dist', import.meta.url))),
     runWorker: env.RUN_WORKER !== 'false',
@@ -91,6 +94,13 @@ function billingConfig(env: Record<string, string | undefined>): Pick<Config, 's
   const plans = loadPlans(env);
   if (stripeSecretKey && !plans.length) throw new Error('STRIPE_SECRET_KEY is set but no plans are defined. Set BILLING_PLANS or BILLING_PLANS_FILE.');
   return { stripeSecretKey, stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET?.trim() || undefined, plans };
+}
+
+// Windows and macOS always have a screen to show a window on. Linux and the BSDs need an X or Wayland
+// display, which servers and Docker containers (the Playwright image included) don't have.
+export function hasDisplay(platform: string, env: Record<string, string | undefined>): boolean {
+  if (platform === 'win32' || platform === 'darwin') return true;
+  return !!(env.DISPLAY?.trim() || env.WAYLAND_DISPLAY?.trim());
 }
 
 // 'true' means the one proxy in front of us. Trusting every hop would let a client pick its own IP (the

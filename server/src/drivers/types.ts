@@ -102,3 +102,12 @@ export function publicIdFromUrl(url: string): string | null {
 export function profileUrl(publicId: string): string {
   return `https://www.linkedin.com/in/${encodeURIComponent(publicId)}/`;
 }
+
+// The account's browser profile is open in a sign-in window (drivers/browser-login.ts), so no automated
+// browser may start on it until the user finishes or cancels. Callers wait and try again.
+export class SignInOpen extends DriverError {
+  constructor() {
+    super('TRANSIENT', 'A LinkedIn sign-in window is open for this account. Finish signing in there, or cancel it, then try again.');
+    this.name = 'SignInOpen';
+  }
+}

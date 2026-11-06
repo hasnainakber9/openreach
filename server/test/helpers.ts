@@ -89,6 +89,7 @@ export function testConfig(): Config {
     syncIntervalMin: 30,
     simLatencyMs: 0,
     headless: true,
+    hasDisplay: true,
     webDist: '/nonexistent',
     runWorker: false,
     publicUrl: 'http://localhost:8787',

@@ -1,17 +1,35 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, serverNow, useApi, type Account } from '../api';
-import { Button, Empty, ErrorNote, Field, Meter, Modal, Pill, Toggle, useAction } from '../components/ui';
+import { Button, Empty, ErrorNote, Field, Meter, Modal, Pill, Toggle, useAction, useToast } from '../components/ui';
 import { ACTION_LABELS, timeAgo, WEEKDAYS } from '../format';
+import { useMe } from '../session';
 
 const LIMIT_KEYS = ['connect', 'connect_weekly', 'message', 'view_profile', 'follow', 'like_post', 'endorse', 'withdraw_invite', 'email', 'inmail', 'scrape'] as const;
 const LIMIT_LABEL: Record<string, string> = { ...ACTION_LABELS, connect: 'Invites / day', connect_weekly: 'Invites / week', message: 'Messages / day', inmail: 'InMails / day', scrape: 'Profiles imported / day' };
 const DEFAULTS: Record<string, number> = { view_profile: 80, follow: 30, endorse: 20, like_post: 30, connect: 20, connect_weekly: 100, message: 50, email: 60, withdraw_invite: 20, inmail: 10, scrape: 1000 };
 
 export default function Accounts() {
-  const accounts = useApi<Account[]>('/api/accounts', 10_000);
+  // Faster while a sign-in window is open, so the page notices soon after the user has signed in.
+  const [signingIn, setSigningIn] = useState(false);
+  const accounts = useApi<Account[]>('/api/accounts', signingIn ? 3_000 : 10_000);
   const [editing, setEditing] = useState<Account | 'new' | null>(null);
   const { busy, run } = useAction();
+  const toast = useToast();
+  const browserSignIn = !!useMe().features?.browserSignIn;
+
+  // Says how a sign-in ended once the window it was waiting on is done.
+  const waiting = useRef(new Set<number>());
+  useEffect(() => {
+    const now = new Set<number>();
+    for (const a of accounts.data ?? []) {
+      const s = a.browserLogin;
+      if (s?.state === 'waiting') now.add(a.id);
+      else if (s && waiting.current.has(a.id)) toast(s.message, s.state === 'done' ? 'ok' : 'error');
+    }
+    waiting.current = now;
+    setSigningIn(now.size > 0);
+  }, [accounts.data, toast]);
 
   const act = (a: Account, what: 'check' | 'sync' | 'pause' | 'resume') =>
     run(
@@ -39,7 +57,7 @@ export default function Accounts() {
       {accounts.data && !accounts.data.length && (
         <div className="card">
           <Empty title="No LinkedIn accounts yet" action={<Button variant="primary" onClick={() => setEditing('new')}>Add account</Button>}>
-            Connect a LinkedIn account with its session cookie, or add a simulated account to try campaigns end to end without touching LinkedIn.
+            Connect a LinkedIn account by signing in to it, or add a simulated account to try campaigns end to end without touching LinkedIn.
           </Empty>
         </div>
       )}
@@ -58,6 +76,8 @@ export default function Accounts() {
               {a.overPlan ? <Pill status="paused">Over plan limit</Pill> : <Pill status={a.status} />}
             </div>
             {a.statusMessage && <div className={`note ${a.overPlan ? 'note-warning' : 'note-error'}`}>{a.statusMessage}</div>}
+            {/* A failed attempt matters on the card only while the account still has to sign in. */}
+            {(a.browserLogin?.state === 'waiting' || a.status === 'needs_login' || !a.hasSession) && <SignInStatus account={a} onChanged={accounts.reload} />}
             {Object.entries(a.cooldowns).some(([, t]) => t > serverNow()) && (
               <div className="note note-warning">LinkedIn pushed back on {Object.keys(a.cooldowns).map((k) => ACTION_LABELS[k as keyof typeof ACTION_LABELS] ?? k).join(', ')}; that action is paused for 24 hours.</div>
             )}
@@ -76,6 +96,9 @@ export default function Accounts() {
               {a.workDays.map((d) => WEEKDAYS[d]).join(', ')} · {a.workStart}–{a.workEnd} ({a.timezone}) · {a.working ? 'working now' : `next window ${timeAgo(a.nextWorkingAt)}`} · last sync {timeAgo(a.lastSyncAt || null)}
             </div>
             <div className="row">
+              {browserSignIn && a.driver === 'playwright' && (a.status === 'needs_login' || !a.hasSession) && a.browserLogin?.state !== 'waiting' && (
+                <SignInButton account={a} variant="primary" onChanged={accounts.reload} />
+              )}
               <Button size="sm" onClick={() => setEditing(a)}>
                 Edit
               </Button>
@@ -98,12 +121,81 @@ export default function Accounts() {
           </div>
         ))}
       </div>
-      {editing && <AccountModal account={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={() => (setEditing(null), accounts.reload())} />}
+      {editing && (
+        <AccountModal
+          // The live copy, so the sign-in progress shows while the form is open (the form keeps its own edits).
+          account={editing === 'new' ? null : (accounts.data?.find((x) => x.id === editing.id) ?? editing)}
+          browserSignIn={browserSignIn}
+          onClose={() => setEditing(null)}
+          onSaved={() => (setEditing(null), accounts.reload())}
+          onChanged={accounts.reload}
+        />
+      )}
     </>
   );
 }
 
-function AccountModal({ account, onClose, onSaved }: { account: Account | null; onClose: () => void; onSaved: () => void }) {
+// Opens LinkedIn's sign-in page in a window on the computer running OpenReach; the user signs in there.
+function SignInButton({ account, variant, onChanged }: { account: Account; variant?: 'primary'; onChanged: () => void }) {
+  const { busy, run } = useAction();
+  return (
+    <Button
+      size="sm"
+      variant={variant}
+      busy={busy === 'start'}
+      onClick={() =>
+        run('start', async () => {
+          await api(`/api/accounts/${account.id}/browser-login`, { body: {} });
+          onChanged();
+        })
+      }
+    >
+      Sign in in a browser window
+    </Button>
+  );
+}
+
+// While the sign-in window is open: what it is waiting for, and a way to close it. A failed attempt says why.
+function SignInStatus({ account, onChanged }: { account: Account; onChanged: () => void }) {
+  const { busy, run } = useAction();
+  const s = account.browserLogin;
+  if (s?.state === 'failed') return <div className="note note-error">{s.message}</div>;
+  if (s?.state !== 'waiting') return null;
+  return (
+    <div className="note spread" style={{ gap: 12 }}>
+      <span>{s.message}</span>
+      {/* Not once signed in and checking the session: the window is closed already. */}
+      {s.cancellable && (
+        <Button
+          size="sm"
+          busy={busy === 'cancel'}
+          onClick={() =>
+            run('cancel', async () => {
+              await api(`/api/accounts/${account.id}/browser-login/cancel`, { body: {} });
+              onChanged();
+            })
+          }
+        >
+          Cancel
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function AccountModal({
+  account,
+  browserSignIn,
+  onClose,
+  onSaved,
+  onChanged,
+}: {
+  account: Account | null;
+  browserSignIn: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+  onChanged: () => void;
+}) {
   const [f, setF] = useState({
     name: account?.name ?? '',
     driver: account?.driver ?? ('playwright' as Account['driver']),
@@ -120,7 +212,9 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
   });
   const [error, setError] = useState<string | null>(null);
   const { busy, run } = useAction();
+  const toast = useToast();
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF({ ...f, [k]: v });
+  const signInAfterSave = browserSignIn && !account && f.driver === 'playwright' && !f.liAt.trim();
 
   const save = () =>
     run('save', async () => {
@@ -140,7 +234,15 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
       if (f.liAt.trim()) body.liAt = f.liAt.trim();
       if (f.proxyUrl.trim()) body.proxyUrl = f.proxyUrl.trim();
       try {
-        await api(account ? `/api/accounts/${account.id}` : '/api/accounts', { method: account ? 'PATCH' : 'POST', body });
+        const saved = await api<Account>(account ? `/api/accounts/${account.id}` : '/api/accounts', { method: account ? 'PATCH' : 'POST', body });
+        // A new real account without a cookie is signed in with the browser window straight away.
+        if (signInAfterSave) {
+          try {
+            await api(`/api/accounts/${saved.id}/browser-login`, { body: {} });
+          } catch (e) {
+            toast(`Saved, but the sign-in window did not open: ${(e as Error).message}`, 'error');
+          }
+        }
         onSaved();
       } catch (e) {
         setError((e as Error).message);
@@ -169,7 +271,7 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
           )}
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" busy={busy === 'save'} disabled={!f.name.trim()} onClick={save}>
-            Save
+            {signInAfterSave ? 'Save and sign in' : 'Save'}
           </Button>
         </>
       }
@@ -188,8 +290,23 @@ function AccountModal({ account, onClose, onSaved }: { account: Account | null; 
 
       {f.driver === 'playwright' ? (
         <>
+          {browserSignIn && (
+            <div className="field">
+              <span className="field-label">Sign in to LinkedIn</span>
+              {account && (account.browserLogin?.state === 'waiting' ? <SignInStatus account={account} onChanged={onChanged} /> : (
+                <div className="row">
+                  <SignInButton account={account} onChanged={onChanged} />
+                </div>
+              ))}
+              {account?.browserLogin?.state === 'failed' && <SignInStatus account={account} onChanged={onChanged} />}
+              <span className="field-hint">
+                A LinkedIn window opens on this computer; sign in there. This is more reliable than pasting a cookie, because LinkedIn keeps a session tied to the browser it was signed in with.
+                {!account && ' Leave the cookie below empty and choose "Save and sign in".'}
+              </span>
+            </div>
+          )}
           <Field
-            label={account?.hasSession ? 'Replace li_at session cookie' : 'li_at session cookie'}
+            label={browserSignIn ? (account?.hasSession ? 'Or replace the li_at session cookie' : 'Or paste the li_at session cookie') : account?.hasSession ? 'Replace li_at session cookie' : 'li_at session cookie'}
             hint={
               <>
                 Log in to linkedin.com in your browser, open Developer Tools → Application → Cookies → www.linkedin.com, and copy the value of <code>li_at</code>. It is encrypted before it is stored.

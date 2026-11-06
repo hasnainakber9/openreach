@@ -1,7 +1,7 @@
 import { DAY, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { DriverError, type LinkedInDriver, type Person } from '../drivers/types.js';
+import { DriverError, SignInOpen, type LinkedInDriver, type Person } from '../drivers/types.js';
 import { nextWorkingDay } from '../engine/capacity.js';
 import { accountLimits, accountNeedsLogin, isSessionError, schedule, usage } from '../engine/engine.js';
 import { isWorkingTime, localParts, nextWorkingTime, randomDelay } from '../engine/limits.js';
@@ -149,6 +149,10 @@ export async function importJob(job: JobInfo<{ importId: number }>, h: JobHelper
     });
   } catch (e) {
     if (e instanceof RetryLater || e instanceof PermanentError) throw e;
+    if (e instanceof SignInOpen) {
+      note(`Waiting for ${account.name} to finish signing in`);
+      throw new RetryLater(2 * MINUTE, e.message);
+    }
     if (isSessionError(e)) {
       // The account stops like it does after a failed action; the import resumes once it is reconnected.
       await accountNeedsLogin(ctx, account, e.message);

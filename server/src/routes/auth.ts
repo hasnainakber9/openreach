@@ -4,6 +4,7 @@ import { assertWithinPlan, billingEnabled, billingRoot, seatsNeeded, withPlanLoc
 import { DAY } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { timingSafeEqual } from 'node:crypto';
+import { browserWindowUnavailable } from '../drivers/browser-login.js';
 import { hashPassword, token, verifyPassword } from '../services/crypto.js';
 import { addMembership, agencyOf, directRole, ensureLegacyMembership, ownerCount, resolveSession, ROLES, workspaceRow } from '../services/memberships.js';
 import { ensureStages } from '../services/pipeline.js';
@@ -57,6 +58,9 @@ export function meOf(ctx: Ctx, u: SessionUser) {
   if (agency) features.agency = true;
   // Hosted installs only, and only for the owner of the workspace that pays (the agency, for its clients).
   if (billingEnabled(ctx) && directRole(ctx, u.id, billingRoot(ctx, w.id)) === 'owner') features.billing = true;
+  // "Sign in in a browser window" opens LinkedIn on the server's screen, so only installs that serve just
+  // their owner, on a computer with a screen, offer it (see drivers/browser-login.ts).
+  if (!browserWindowUnavailable(ctx)) features.browserSignIn = true;
   return {
     user: {
       id: u.id,

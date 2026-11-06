@@ -97,12 +97,17 @@ To build from source instead, run `docker build -t openreach .`.
 ## Connecting a real LinkedIn account
 
 1. Install the browser once: `npx playwright install chromium` (the Docker image already includes it).
-2. Log in to linkedin.com in your normal browser. Open Developer Tools, then Application (Storage), then Cookies, then `https://www.linkedin.com`, and copy the value of **`li_at`**.
-3. In OpenReach, go to **LinkedIn accounts → Add account**, choose *Real LinkedIn*, and paste the cookie. It is encrypted at rest with AES-256-GCM.
-4. Add a **proxy** in the account's home country. A residential proxy is best, so that LinkedIn always sees the same location.
-5. Press **Test connection**. The account card then shows the LinkedIn name it is signed in as.
+2. In OpenReach, go to **LinkedIn accounts → Add account** and choose *Real LinkedIn*. Add a **proxy** in the account's home country if you use one (a residential proxy is best, so that LinkedIn always sees the same location).
+3. Leave the cookie empty and press **Save and sign in** (on a server or in Docker, paste the cookie instead; see below). A LinkedIn window opens on the computer running OpenReach. Sign in there yourself, including any verification LinkedIn asks for; OpenReach never sees or types your password. When LinkedIn shows your feed, OpenReach closes the window, stores the session (encrypted at rest with AES-256-GCM), checks it, and the account card shows the LinkedIn name it is signed in as. The window gives up after 10 minutes, and **Cancel** on the card closes it; either way the account stays as it was. Once you have signed in, the card says it is checking the session for a few seconds; there is nothing left to cancel then.
+4. Press **Test connection** whenever you want to check the session again.
 
-If LinkedIn logs the session out or asks for a verification check, the account switches to **Needs login** and stops. Its campaigns keep their place. Paste a fresh cookie and press **Resume**.
+**Sign in in a browser window** is also on the card of an account that needs a login, and in its edit form. Use it rather than a pasted cookie when you can: LinkedIn ties a session to the browser that created it, so a cookie copied from Chrome often makes LinkedIn redirect in a loop in OpenReach's browser while Chrome stays signed in. A session signed in this way belongs to the account's own browser profile, which keeps it current: OpenReach never overwrites it with its stored copy, and stores the new value when LinkedIn renews it. While the window is open, the account's campaign actions, imports and checks wait for it.
+
+The window opens on the machine that runs the server, so it is only offered when OpenReach runs on your own computer: not on installations with billing on or `ALLOW_SIGNUP=true`, and not where there is no screen to show it on, such as the Docker image, the Render blueprint or any Linux server without a desktop (`DISPLAY` or `WAYLAND_DISPLAY` unset). There, and anywhere else you prefer it, paste the cookie instead: log in to linkedin.com in your normal browser, open Developer Tools, then Application (Storage), then Cookies, then `https://www.linkedin.com`, copy the value of **`li_at`**, and paste it in the account's form. A pasted cookie is put into OpenReach's browser every time it starts.
+
+Removing an account also deletes its browser profile (`DATA_DIR/browsers/<id>`), which holds its LinkedIn cookies.
+
+If LinkedIn logs the session out or asks for a verification check, the account switches to **Needs login** and stops. Its campaigns keep their place. Sign in again in the browser window (or paste a fresh cookie) and press **Resume** if the account does not start again by itself.
 
 Recommended starting limits for an established account: 15–25 invites/day (≤100/week), 30–50 messages/day, and 60–80 profile views/day. For new or quiet accounts, keep warm-up on.
 

@@ -18,17 +18,66 @@ import { BLOCKED_PATHS, LABELS, SEL, URLS } from './selectors.js';
 // its own persistent profile directory and (optionally) its own proxy, and every step is paced
 // with small randomized pauses, scrolling and per-key typing so it reads as a person using the site.
 
-export interface PlaywrightOptions {
-  liAt: string;
+export interface BrowserSpec {
   userDataDir: string;
   proxyUrl?: string | null;
   headless?: boolean;
   executablePath?: string;
   timezone?: string;
+}
+
+export type ContextOptions = ReturnType<typeof contextOptions>;
+export type ContextLauncher = (userDataDir: string, options: ContextOptions) => Promise<BrowserContext>;
+
+export interface PlaywrightOptions extends BrowserSpec {
+  liAt: string;
+  // 'browser': the session was signed in inside this profile (drivers/browser-login.ts). The profile's own
+  // li_at is then the live one: LinkedIn ties a session to the browser that created it and rotates the
+  // cookie, so putting the stored copy back would only break it. 'pasted' (the default) adds the stored one.
+  sessionOrigin?: 'pasted' | 'browser' | null;
+  // Called with the profile's li_at when a browser-owned session no longer matches the stored one, and the
+  // value the driver last knew to be stored (what the new one replaces).
+  onSessionCookie?: (liAt: string, previous: string) => void;
+  // Opens the persistent context; tests pass a fake so no browser starts.
+  launch?: ContextLauncher;
   // Tests use this to route linkedin.com to local fixtures.
   onContext?: (ctx: BrowserContext) => Promise<void>;
   // Multiplies every human-like pause (tests use 0).
   pace?: number;
+}
+
+// What a session problem tells the user to do. A pasted cookie often stops working in OpenReach's browser
+// while the browser it came from stays signed in, so signing in inside OpenReach's own window comes first.
+export const RELOGIN_HINT = 'Use "Sign in in a browser window" on the Accounts page, or paste a fresh li_at cookie.';
+
+// The automated session and the sign-in window open the same profile with the same options, so LinkedIn
+// sees one device.
+export function contextOptions(o: Omit<BrowserSpec, 'userDataDir'>) {
+  return {
+    headless: o.headless ?? true,
+    executablePath: o.executablePath,
+    proxy: o.proxyUrl ? parseProxy(o.proxyUrl) : undefined,
+    viewport: { width: 1366, height: 860 },
+    locale: 'en-US',
+    timezoneId: o.timezone,
+    args: ['--disable-blink-features=AutomationControlled'],
+  };
+}
+
+export const launchContext: ContextLauncher = async (userDataDir, options) => {
+  let pw: typeof import('playwright');
+  try {
+    pw = await import('playwright');
+  } catch {
+    throw new DriverError('TRANSIENT', 'Playwright is not installed. Run `npm install playwright` in server/.');
+  }
+  return pw.chromium.launchPersistentContext(userDataDir, options);
+};
+
+// The li_at the profile holds for linkedin.com, if any.
+export async function profileLiAt(ctx: Pick<BrowserContext, 'cookies'>): Promise<string | null> {
+  const cookies = await ctx.cookies('https://www.linkedin.com/');
+  return cookies.find((c) => c.name === 'li_at' && /(^|\.)linkedin\.com$/.test(c.domain.replace(/^\./, '')) && c.value)?.value ?? null;
 }
 
 const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
@@ -37,34 +86,44 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   private ctx: BrowserContext | null = null;
   private page: Page | null = null;
   private selfName = '';
+  // The li_at last known to be stored for the account; a browser-owned session reports changes against it.
+  private known: string;
 
-  constructor(private o: PlaywrightOptions) {}
+  constructor(private o: PlaywrightOptions) {
+    this.known = o.liAt;
+  }
 
   private async open(): Promise<Page> {
     if (this.page && !this.page.isClosed()) return this.page;
-    let pw: typeof import('playwright');
-    try {
-      pw = await import('playwright');
-    } catch {
-      throw new DriverError('TRANSIENT', 'Playwright is not installed. Run `npm install playwright` in server/.');
+    // A context left from a closed page is replaced, not leaked.
+    if (this.ctx) await this.ctx.close().catch(() => {});
+    this.ctx = await (this.o.launch ?? launchContext)(this.o.userDataDir, contextOptions(this.o));
+    // A browser-owned session stays as the profile has it; the stored copy only fills in a profile without one.
+    const own = this.o.sessionOrigin === 'browser' ? await profileLiAt(this.ctx).catch(() => null) : null;
+    if (own) this.report(own);
+    else {
+      await this.ctx.addCookies([
+        { name: 'li_at', value: this.o.liAt, domain: '.linkedin.com', path: '/', httpOnly: true, secure: true, sameSite: 'None' },
+      ]);
     }
-    const proxy = this.o.proxyUrl ? parseProxy(this.o.proxyUrl) : undefined;
-    this.ctx = await pw.chromium.launchPersistentContext(this.o.userDataDir, {
-      headless: this.o.headless ?? true,
-      executablePath: this.o.executablePath,
-      proxy,
-      viewport: { width: 1366, height: 860 },
-      locale: 'en-US',
-      timezoneId: this.o.timezone,
-      args: ['--disable-blink-features=AutomationControlled'],
-    });
-    await this.ctx.addCookies([
-      { name: 'li_at', value: this.o.liAt, domain: '.linkedin.com', path: '/', httpOnly: true, secure: true, sameSite: 'None' },
-    ]);
     await this.o.onContext?.(this.ctx);
     this.page = this.ctx.pages()[0] ?? (await this.ctx.newPage());
     this.page.setDefaultTimeout(20_000);
     return this.page;
+  }
+
+  private report(liAt: string) {
+    if (liAt === this.known) return;
+    const previous = this.known;
+    this.known = liAt;
+    this.o.onSessionCookie?.(liAt, previous);
+  }
+
+  // LinkedIn rotates li_at now and then; a browser-owned session's new value is handed back to be stored.
+  private async syncCookie() {
+    if (this.o.sessionOrigin !== 'browser' || !this.ctx) return;
+    const v = await profileLiAt(this.ctx).catch(() => null);
+    if (v) this.report(v);
   }
 
   private async pause(lo = 0.8, hi = 2.4) {
@@ -75,7 +134,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     const page = await this.open();
     const res = await page.goto(url, { waitUntil: 'domcontentloaded' }).catch((e: Error) => {
       // An invalid li_at typically sends LinkedIn into a login redirect loop.
-      if (/ERR_TOO_MANY_REDIRECTS/.test(e.message)) throw new DriverError('SESSION_EXPIRED', 'LinkedIn keeps redirecting; the session cookie is probably invalid');
+      if (/ERR_TOO_MANY_REDIRECTS/.test(e.message)) throw new DriverError('SESSION_EXPIRED', `LinkedIn keeps redirecting, so it does not accept this session in OpenReach's browser. ${RELOGIN_HINT}`);
       throw new DriverError('TRANSIENT', `Navigation failed: ${e.message.split('\n')[0]}`);
     });
     this.guard(page);
@@ -88,8 +147,8 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
 
   private guard(page: Page) {
     const path = new URL(page.url()).pathname;
-    if (BLOCKED_PATHS.checkpoint.test(path)) throw new DriverError('CHECKPOINT', 'LinkedIn is asking for a security verification; log in manually once');
-    if (BLOCKED_PATHS.sessionExpired.test(path)) throw new DriverError('SESSION_EXPIRED', 'The li_at session cookie is no longer valid');
+    if (BLOCKED_PATHS.checkpoint.test(path)) throw new DriverError('CHECKPOINT', `LinkedIn is asking for a security verification. ${RELOGIN_HINT}`);
+    if (BLOCKED_PATHS.sessionExpired.test(path)) throw new DriverError('SESSION_EXPIRED', `The LinkedIn session is no longer valid. ${RELOGIN_HINT}`);
   }
 
   private async browse(page: Page) {
@@ -146,9 +205,10 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     const name = await this.firstText(page, SEL.profileName);
     if (!name) {
       const where = new URL(page.url()).pathname;
-      throw new DriverError('SESSION_EXPIRED', `Could not read the logged-in profile (LinkedIn showed ${where}). Copy a fresh li_at cookie and try again.`);
+      throw new DriverError('SESSION_EXPIRED', `Could not read the logged-in profile (LinkedIn showed ${where}). ${RELOGIN_HINT}`);
     }
     this.selfName = name;
+    await this.syncCookie();
     return { name, profileUrl: page.url().split('?')[0] };
   }
 
@@ -522,6 +582,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   }
 
   async close() {
+    await this.syncCookie();
     await this.ctx?.close().catch(() => {});
     this.ctx = null;
     this.page = null;
