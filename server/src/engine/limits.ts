@@ -1,7 +1,8 @@
 import { DAY, MINUTE } from '../clock.js';
 import type { ActionType } from './sequence.js';
 
-export type Limits = Record<ActionType, number> & { connect_weekly: number };
+// `scrape` is not an action: it caps how many profiles imports may collect per day (posts, events, groups, searches).
+export type Limits = Record<ActionType, number> & { connect_weekly: number; scrape: number };
 
 // Conservative defaults, well under what LinkedIn tolerates for an established account.
 export const DEFAULT_LIMITS: Limits = {
@@ -14,6 +15,9 @@ export const DEFAULT_LIMITS: Limits = {
   message: 50,
   email: 60,
   withdraw_invite: 20,
+  // InMail spends paid credits (open profiles excepted), so keep it well under a month's allowance.
+  inmail: 10,
+  scrape: 1000,
 };
 
 export interface Schedule {

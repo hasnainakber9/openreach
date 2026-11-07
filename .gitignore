@@ -1,6 +1,8 @@
 node_modules/
 dist/
 data/
+# Provider modules for the email finder/verifier/enrichment kinds are source code, not a data directory.
+!server/src/providers/data/
 *.db
 *.db-*
 .env
