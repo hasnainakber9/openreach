@@ -33,6 +33,8 @@ export interface MockPerson {
   // 2026: the new message bubble shows its composer before its profile card (so nothing in it links to
   // the person yet).
   lateCard?: boolean;
+  // Clicking Message opens nothing (the page is too slow, say): no bubble, no dialog.
+  noComposer?: boolean;
 }
 
 export interface MockState {
@@ -228,7 +230,7 @@ document.addEventListener('click', (ev) => {
     const d = dialog('<p>Withdraw invitation?</p><button>Withdraw</button>');
     d.querySelector('button').onclick = () => { log({ type: 'withdraw', slug }); d.remove(); };
   }
-  if (act === 'message') {
+  if (act === 'message' && !person.noComposer) {
     const kind = person.degree === '1st' ? 'message' : 'inmail';
     bubble(slug, name, { subject: kind === 'inmail', card: !person.lateCard, onSend: (m) => log(kind === 'inmail' ? { type: kind, slug, subject: m.subject, text: m.text } : { type: kind, slug, text: m.text }) });
   }

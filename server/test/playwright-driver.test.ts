@@ -20,6 +20,7 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       // 2026 layout (the mock's default).
       'jane-doe': { name: 'Jane Doe', degree: '1st', email: 'jane@northwind.example', staleBubble: true },
       'lucy-late': { name: 'Lucy Late', degree: '1st', staleBubble: true, lateCard: true },
+      'sam-slow': { name: 'Sam Slow', degree: '1st', noComposer: true },
       'max-mueller': { name: 'Max Mueller', degree: '2nd', staleBubble: true },
       'lena-hidden': { name: 'Lena Hidden', degree: '2nd', connectInMoreMenu: true },
       'nina-navigate': { name: 'Nina Navigate', degree: '2nd', invitePage: true },
@@ -47,6 +48,7 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     executablePath,
     pace: 0,
     readyTimeoutMs: 5000,
+    composerTimeoutMs: 6000,
     onContext: async (ctx) => {
       await ctx.route('https://www.linkedin.com/**', async (route) => {
         const url = new URL(route.request().url());
@@ -133,6 +135,11 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     expect(events('message').at(-1)).toEqual({ type: 'message', slug: 'carl-classic', text: 'Hello Carl,\nthanks.' });
   }, 60_000);
 
+  it('reports a message box that never opens as worth retrying, not as "can\'t message this person"', async () => {
+    await expect(driver.sendMessage(url('sam-slow'), 'Hello Sam')).rejects.toMatchObject({ code: 'TRANSIENT' });
+    expect(events('message').filter((e) => e.slug === 'sam-slow')).toEqual([]);
+  }, 60_000);
+
   it('follows, endorses and likes, leaving people already followed alone', async () => {
     await driver.follow(url('lena-hidden'));
     await driver.follow(url('jane-doe'));
@@ -158,6 +165,7 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     expect(conns.map((c) => [c.publicId, c.firstName, c.headline])).toEqual([
       ['jane-doe', 'Jane', 'Head of Growth at Northwind'],
       ['lucy-late', 'Lucy', 'Head of Growth at Northwind'],
+      ['sam-slow', 'Sam', 'Head of Growth at Northwind'],
       ['carl-classic', 'Carl', 'Head of Growth at Northwind'],
     ]);
     const threads = await driver.inbox(0);

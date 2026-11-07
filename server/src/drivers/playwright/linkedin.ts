@@ -59,6 +59,8 @@ export interface PlaywrightOptions extends BrowserSpec {
   pace?: number;
   // How long to wait for a profile's card to render (default 15 s; tests shorten it).
   readyTimeoutMs?: number;
+  // How long to wait for the message composer after clicking Message (default 20 s; tests shorten it).
+  composerTimeoutMs?: number;
 }
 
 // What a session problem tells the user to do. A pasted cookie often stops working in OpenReach's browser
@@ -287,15 +289,16 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   // pages, so a bubble whose own profile card or header links to this person comes first (a link further
   // down, in a message or a shared profile, can be anyone), then a new dialog holding a composer (Sales
   // Navigator), then a composer that was not there before. A new dialog without one (an InMail upsell,
-  // say) is LinkedIn's answer instead: null. The profile URL may have redirected (a URN to the vanity
-  // name), so both ids count.
-  private async waitForComposer(page: Page, url: string, boxSel: string, before: ComposerBaseline): Promise<{ box: Locator; scope: Locator } | null> {
+  // say) is LinkedIn's answer instead: 'declined'. Nothing at all before the deadline is null: on a busy
+  // computer the bubble can be slow, and that is worth another try, not a verdict on the person. The
+  // profile URL may have redirected (a URN to the vanity name), so both ids count.
+  private async waitForComposer(page: Page, url: string, boxSel: string, before: ComposerBaseline): Promise<{ box: Locator; scope: Locator } | 'declined' | null> {
     const ids = [...new Set([publicIdFromUrl(url), publicIdFromUrl(page.url())].filter((id): id is string => !!id))];
     const own = ids.map((id) => SEL.bubbleOwnerLink(encodeURIComponent(id))).join(', ');
     const bubble = own ? page.locator(SEL.messageBubble).filter({ has: page.locator(own) }) : null;
     const fresh = page.locator(boxSel).and(page.locator(':not([data-or-seen])'));
     const dialogs = page.locator(SEL.dialog);
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + (this.o.composerTimeoutMs ?? 20_000);
     let answeredAt = 0;
     while (Date.now() < deadline) {
       if (bubble && (await bubble.locator(boxSel).count())) return this.pinComposer(page, bubble.last().locator(boxSel).last());
@@ -303,7 +306,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
         const d = dialogs.last();
         if (await d.locator(boxSel).count()) return this.pinComposer(page, d.locator(boxSel).last());
         answeredAt ||= Date.now();
-        if (Date.now() - answeredAt > 1500) return null;
+        if (Date.now() - answeredAt > 1500) return 'declined';
       }
       if (await fresh.count()) return this.pinComposer(page, fresh.first());
       await new Promise((r) => setTimeout(r, 250));
@@ -493,8 +496,9 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     // 2026: Message is a link to /messaging/compose/...; LinkedIn opens it as a bubble on the same page.
     await btn.click();
     const composer = await this.waitForComposer(page, url, SEL.messageBox, before);
-    if (!composer) {
+    if (!composer || composer === 'declined') {
       await page.keyboard.press('Escape');
+      if (!composer) throw new DriverError('TRANSIENT', 'The message box did not open in time');
       throw new DriverError('NOT_AVAILABLE', 'Messaging is not open for this person (InMail required)');
     }
     await this.pause();
@@ -719,6 +723,10 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     const composer = await this.waitForComposer(page, url, SEL.inmailBody, before);
     await this.pause(0.5, 1.2);
     if (!composer) {
+      await page.keyboard.press('Escape');
+      throw new DriverError('TRANSIENT', 'The InMail composer did not open in time');
+    }
+    if (composer === 'declined') {
       const dialog = await page.locator(SEL.dialog).last().innerText({ timeout: 1000 }).catch(() => '');
       await page.keyboard.press('Escape');
       if (LABELS.inmailNoCredits.test(dialog)) throw new DriverError('LIMIT_REACHED', 'No InMail credits left');
