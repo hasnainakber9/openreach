@@ -446,11 +446,16 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
       opened = await dialog.waitFor({ timeout: 10_000 }).then(() => true, () => false);
     }
     if (!opened) throw new DriverError('NOT_AVAILABLE', 'The invitation dialog did not open');
+    // 2026: the dialog appears first and draws its buttons a moment later. Read it only once they are there,
+    // or a slow dialog looks empty: no "Add a note" (the note is dropped) and no "Send without a note".
+    const inviteButton = new RegExp([LABELS.addNote, LABELS.sendWithoutNote, LABELS.sendInvite].map((r) => r.source).join('|'), 'i');
+    await dialog.getByRole('button', { name: inviteButton }).first().waitFor({ timeout: 15_000 }).catch(() => {});
     if (await dialog.locator(SEL.inviteEmail).count()) {
       await page.keyboard.press('Escape');
       throw new DriverError('NOT_AVAILABLE', 'LinkedIn requires their email address to connect');
     }
-    if (note.trim()) {
+    let withNote = !!note.trim();
+    if (withNote) {
       const add = dialog.getByRole('button', { name: LABELS.addNote });
       if (await add.count()) {
         await add.click();
@@ -460,15 +465,22 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
           await page.keyboard.press('Escape');
           await btn.click({ timeout: 5000 }).catch(() => {});
           await this.pause();
+          withNote = false;
         } else {
           await this.type(dialog.locator(SEL.inviteNote).first(), note);
           await this.pause();
         }
       }
     }
-    const send = dialog.getByRole('button', { name: note.trim() ? LABELS.sendInvite : LABELS.sendWithoutNote });
-    const fallback = dialog.getByRole('button', { name: LABELS.sendInvite });
-    await ((await send.count()) ? send : fallback).first().click();
+    const send = dialog
+      .getByRole('button', { name: withNote ? LABELS.sendInvite : LABELS.sendWithoutNote })
+      .or(dialog.getByRole('button', { name: LABELS.sendInvite }))
+      .first();
+    if (!(await send.waitFor({ timeout: 15_000 }).then(() => true, () => false))) {
+      await page.keyboard.press('Escape').catch(() => {});
+      throw new DriverError('TRANSIENT', 'The invitation dialog showed no Send button');
+    }
+    await send.click();
     await this.pause(1.5, 3);
     const body = await page.locator('body').innerText().catch(() => '');
     if (LABELS.weeklyLimit.test(body)) throw new DriverError('LIMIT_REACHED', 'LinkedIn weekly invitation limit reached');

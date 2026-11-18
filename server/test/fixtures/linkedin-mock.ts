@@ -35,6 +35,8 @@ export interface MockPerson {
   lateCard?: boolean;
   // Clicking Message opens nothing (the page is too slow, say): no bubble, no dialog.
   noComposer?: boolean;
+  // 2026: the invitation dialog appears empty and draws its buttons a moment later, as LinkedIn's does.
+  slowInvite?: boolean;
 }
 
 export interface MockState {
@@ -65,13 +67,18 @@ ${script}
 
 // The invitation dialog, as LinkedIn has shown it so far (not seen in the 2026 snapshots).
 const inviteDialogScript = `
-const inviteDialog = (slug, first) => {
-  const d = dialog('<p>You can add a note to personalize your invitation to ' + first + '.</p><button aria-label="Add a note" id="addnote">Add a note</button><button aria-label="Send without a note" id="nonote">Send without a note</button>');
-  d.querySelector('#nonote').onclick = () => { log({ type: 'connect', slug, text: '' }); d.remove(); };
-  d.querySelector('#addnote').onclick = () => {
-    d.innerHTML = '<textarea name="message"></textarea><button aria-label="Send invitation" id="send">Send</button>';
-    d.querySelector('#send').onclick = () => { log({ type: 'connect', slug, text: d.querySelector('textarea').value }); d.remove(); };
+const inviteDialog = (slug, first, slow) => {
+  const d = dialog(slow ? '<p>Loading…</p>' : '');
+  const fill = () => {
+    d.innerHTML = '<p>You can add a note to personalize your invitation to ' + first + '.</p><button aria-label="Add a note" id="addnote">Add a note</button><button aria-label="Send without a note" id="nonote">Send without a note</button>';
+    d.querySelector('#nonote').onclick = () => { log({ type: 'connect', slug, text: '' }); d.remove(); };
+    d.querySelector('#addnote').onclick = () => {
+      d.innerHTML = '<textarea name="message"></textarea><button aria-label="Send invitation" id="send">Send</button>';
+      d.querySelector('#send').onclick = () => { log({ type: 'connect', slug, text: d.querySelector('textarea').value }); d.remove(); };
+    };
   };
+  if (slow) setTimeout(fill, 1500);
+  else fill();
 };`;
 
 // ---- 2026 layout ----
@@ -225,7 +232,7 @@ document.addEventListener('click', (ev) => {
     dialog('<section><h3>Email</h3><a href="mailto:${p?.email ?? ''}">${p?.email ?? ''}</a></section><button aria-label="Dismiss" onclick="this.parentElement.remove()">x</button>');
   }
   if (act === 'follow') { log({ type: 'follow', slug }); t.querySelector('p').textContent = 'Following'; }
-  if (act === 'connect') inviteDialog(slug, first);
+  if (act === 'connect') inviteDialog(slug, first, !!person.slowInvite);
   if (act === 'pending') {
     const d = dialog('<p>Withdraw invitation?</p><button>Withdraw</button>');
     d.querySelector('button').onclick = () => { log({ type: 'withdraw', slug }); d.remove(); };
