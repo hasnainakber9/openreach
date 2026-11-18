@@ -1,27 +1,31 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { Database, Params, Row } from './database.js';
 import { MIGRATIONS } from './schema.js';
 
-export type Params = Record<string, SQLInputValue> | SQLInputValue[];
-export type Row = Record<string, any>;
+export type { Database, Params, Row } from './database.js';
 
-export class DB {
+// SQLite through node:sqlite: the default database.
+export class DB implements Database {
+  readonly dialect = 'sqlite' as const;
   readonly raw: DatabaseSync;
   private depth = 0;
+  private pending: (() => void)[] = [];
 
-  constructor(path: string) {
+  // `migrateTo` (tests only) stops after the entries with index < migrateTo; a later migrate() runs the rest.
+  constructor(path: string, opts: { migrateTo?: number } = {}) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.raw = new DatabaseSync(path);
     this.raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-    this.migrate();
+    this.migrate(opts.migrateTo);
   }
 
-  private migrate() {
+  migrate(upTo = MIGRATIONS.length) {
     this.raw.exec('CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY)');
     const done = new Set(this.raw.prepare('SELECT id FROM migrations').all().map((r: any) => r.id as number));
     MIGRATIONS.forEach((sql, i) => {
-      if (done.has(i)) return;
+      if (done.has(i) || i >= upTo) return;
       this.tx(() => {
         this.raw.exec(sql);
         this.raw.prepare('INSERT INTO migrations (id) VALUES (?)').run(i);
@@ -59,17 +63,49 @@ export class DB {
     if (this.depth > 0) return fn();
     this.depth++;
     this.raw.exec('BEGIN IMMEDIATE');
+    let out: T;
     try {
-      const out = fn();
+      out = fn();
       this.raw.exec('COMMIT');
-      return out;
     } catch (e) {
+      this.pending = [];
       this.raw.exec('ROLLBACK');
       throw e;
     } finally {
       this.depth--;
     }
+    // Run outside the transaction, so a callback may start its own.
+    const due = this.pending;
+    this.pending = [];
+    let failed: { e: unknown } | null = null;
+    for (const f of due) {
+      try {
+        f();
+      } catch (e) {
+        failed ??= { e };
+      }
+    }
+    if (failed) throw failed.e;
+    return out;
   }
+
+  // Runs fn once the current transaction commits (dropped if it rolls back), or right away outside one.
+  // For effects that leave the process, like webhooks: nobody should hear about a change that was undone.
+  afterCommit(fn: () => void) {
+    if (this.depth > 0) this.pending.push(fn);
+    else fn();
+  }
+
+  // One process owns a SQLite file, so it is always the leader.
+  tryLock(_key: number) {
+    return true;
+  }
+
+  holdsLock(_key: number) {
+    return true;
+  }
+
+  txLock(_key: number) {}
 
   close() {
     this.raw.close();

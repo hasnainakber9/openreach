@@ -1,0 +1,160 @@
+{
+ "captured": "2026-11-06, live linkedin.com, scrubbed (names, slugs, ids, text replaced)",
+ "firstDegreeProfile": {
+  "titleName": true,
+  "nameH2Index": 0,
+  "firstMainH2Text": "NAME",
+  "degreeVisibility": [
+   {
+    "t": "· 1st",
+    "visible": true,
+    "ariaHidden": false
+   },
+   {
+    "t": "· 2nd",
+    "visible": false,
+    "ariaHidden": false
+   }
+  ],
+  "messageControls": [
+   {
+    "tag": "a",
+    "aria": "",
+    "text": "Message",
+    "href": "/messaging/compose/?profileUrn=urn%3Ali%3AX%3AID&reci",
+    "inTopCard": true
+   },
+   {
+    "tag": "a",
+    "aria": "",
+    "text": "Message",
+    "href": "/messaging/compose/?profileUrn=urn%3Ali%3AX%3AID&reci",
+    "inTopCard": true
+   }
+  ],
+  "moreMenuItems": [
+   "menuitem|Send profile in a message",
+   "menuitem|Save to PDF",
+   "menuitem|Request a recommendation",
+   "menuitem|Recommend",
+   "menuitem|Following",
+   "menuitem|Remove connection",
+   "menuitem|Report NAME",
+   "menuitem|Block NAME",
+   "menuitem|About this member"
+  ],
+  "afterMessageClick": {
+   "pagesBefore": 1,
+   "pagesAfter": 1,
+   "urlPath": "/in/SLUG/",
+   "frames": [
+    "https://www.linkedin.com/in/SLUG/",
+    "https://www.linkedin.com/tscp-serving/dtag?z=profile&c=1&li_theme=light&pk=d_fla",
+    "https://www.linkedin.com/tscp-serving/dtag?z=profile&c=1&li_theme=light&pk=d_fla",
+    "https://www.linkedin.com/preload/?_bprMode=vanilla",
+    "https://li.protechts.net/index.html?ts=1793998076999&r_id=ID",
+    "https://www.google.com/recaptcha/enterprise/anchor?ar=1&k=6LcIy_MqAAAAAMKiupFSbm",
+    "about:blank",
+    "https://merchantpool1.linkedin.com/?session_id=ID",
+    "about:blank",
+    "about:blank",
+    "https://cs.ns1p.net/u.html?a=1516sqc#check"
+   ],
+   "shadowHosts": [
+    "div#interop-outlet"
+   ],
+   "deepContentEditable": [
+    "div role=textbox aria-label=Write a message… inShadow=true"
+   ],
+   "deepTextarea": 0,
+   "deepSendButtons": [
+    "type=submit disabled=true inShadow=true"
+   ]
+  },
+  "closeButtons": [
+   "Close jump menu"
+  ]
+ },
+ "connectionProfileAsSecond": {
+  "titleName": true,
+  "topCardButtons": [
+   "a|Manage notifications about NAME",
+   "a|Contact info",
+   "a|500+ connections",
+   "a|NAMES and N other mutual connections",
+   "a|Open (mutual connections search)",
+   "a|Message",
+   "button|More",
+   "a|Message",
+   "button|More"
+  ],
+  "moreMenuItems": [
+   "li|menuitem|subtitles settings, opens subtitles settings dialo",
+   "li|menuitem|subtitles settings, opens subtitles settings dialo",
+   "a|menuitem|Send profile in a message",
+   "div|menuitem|Save to PDF",
+   "a|menuitem|Request a recommendation",
+   "a|menuitem|Recommend",
+   "div|menuitem|Following",
+   "div|menuitem|Remove connection",
+   "a|menuitem|Report NAME",
+   "a|menuitem|Block NAME",
+   "a|menuitem|About this member"
+  ]
+ },
+ "strangerProfile": {
+  "tried": 1,
+  "degree": "· 2nd",
+  "topCardControls": [
+   "a|Manage notifications about NAME",
+   "a|Contact info",
+   "a|Invite NAME to connect",
+   "a|Message",
+   "button|More",
+   "a|Invite NAME to connect",
+   "a|Message",
+   "button|More"
+  ],
+  "moreMenuItems": [
+   "a|Send profile in a message",
+   "div|Save to PDF",
+   "div|Follow",
+   "a|Report NAME",
+   "a|Block NAME",
+   "a|About this member"
+  ]
+ },
+ "messaging": {
+  "items": 20,
+  "openedIndex": 0,
+  "threadCounts": {
+   "listEvents": 1,
+   "anyLiInList": 7,
+   "urnAttrs": 1,
+   "groupNames": 6,
+   "bodies": 1,
+   "profileLinksInThread": 0,
+   "contentEditable": 0,
+   "sendButtons": []
+  }
+ },
+ "activity": {
+  "reactionButtons": [
+   "Reaction button state: no reaction|pressed=null",
+   "Open reactions menu|pressed=null",
+   "Reaction button state: no reaction|pressed=null",
+   "Open reactions menu|pressed=null",
+   "Reaction button state: Like|pressed=null",
+   "Open reactions menu|pressed=null"
+  ]
+ },
+ "skills": {
+  "endorseLabels": [
+   "Endorse SKILL",
+   "Endorse SKILL",
+   "Endorse SKILL",
+   "Endorse SKILL",
+   "Endorse SKILL"
+  ]
+ }
+}

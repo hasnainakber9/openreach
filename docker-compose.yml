@@ -9,8 +9,28 @@ services:
       APP_SECRET: change-me-to-a-long-random-string
       # Required to create the first (owner) account, so nobody else can claim your server.
       SETUP_TOKEN: change-me-too
+      # Optional: use Postgres instead of the SQLite file in /data. Start with `docker compose --profile postgres up -d`
+      # and use the same password as POSTGRES_PASSWORD below.
+      # DATABASE_URL: postgres://openreach:change-me-db-password@postgres:5432/openreach
+    # depends_on: [postgres]
     volumes:
       - openreach-data:/data
     restart: unless-stopped
+  # Only started with `--profile postgres`; without it OpenReach keeps using SQLite.
+  postgres:
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: openreach
+      POSTGRES_PASSWORD: change-me-db-password
+      POSTGRES_DB: openreach
+    volumes:
+      - openreach-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openreach"]
+      interval: 10s
+      retries: 5
+    restart: unless-stopped
 volumes:
   openreach-data:
+  openreach-pg:

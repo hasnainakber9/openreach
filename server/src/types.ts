@@ -8,6 +8,8 @@ export interface AccountRow {
   status: 'active' | 'paused' | 'needs_login' | 'error';
   status_message: string | null;
   session_enc: string | null;
+  // 'pasted' (li_at copied in), 'browser' (signed in in the account's own browser window), null without a session.
+  session_origin: 'pasted' | 'browser' | null;
   proxy_url: string | null;
   timezone: string;
   work_days: string;
@@ -23,6 +25,8 @@ export interface AccountRow {
   linkedin_url: string | null;
   next_action_at: number;
   last_sync_at: number;
+  // Wall-clock end of the engine run holding the account (see Engine.runAccount), else null.
+  busy_until: number | null;
   created_at: number;
 }
 
@@ -46,6 +50,75 @@ export interface LeadRow {
   connected_at: number | null;
   replied_at: number | null;
   created_at: number;
+  // 1 when the member accepts free InMail from anyone, 0 when not, null until a profile view tells.
+  open_profile: number | null;
+  // Category of the latest classified reply (ai/categories.ts), and when it was set.
+  reply_category: string | null;
+  reply_category_at: number | null;
+  // valid | risky | invalid | unknown; 'invalid' (a bounce) makes email steps skip the lead.
+  email_status: string | null;
+  email_status_reason: string | null;
+  email_status_at: number | null;
+  // Where the email came from: user | csv | linkedin | <finder provider id>; NULL (older rows) counts as user.
+  email_source: string | null;
+  email_found_at: number | null;
+  company_domain: string | null;
+  enrichment: string; // JSON
+  // queued | done | not_found | failed
+  enrichment_status: string | null;
+  enriched_at: number | null;
+  enrichment_options: string | null;
+  // Pipeline stage (NULL = the workspace's first stage); stage_manual = 1 when a person set it.
+  stage_id: number | null;
+  stage_changed_at: number | null;
+  stage_manual: number;
+  owner_id: number | null;
+}
+
+export type StageKind = 'open' | 'won' | 'lost';
+
+export interface StageRow {
+  id: number;
+  workspace_id: number;
+  slug: string;
+  name: string;
+  color: string;
+  position: number;
+  kind: StageKind;
+  created_at: number;
+}
+
+export interface TagRow {
+  id: number;
+  workspace_id: number;
+  name: string;
+  color: string;
+  created_at: number;
+}
+
+export interface NoteRow {
+  id: number;
+  workspace_id: number;
+  lead_id: number;
+  user_id: number | null;
+  body: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface EnrichmentRunRow {
+  id: number;
+  workspace_id: number;
+  created_by: number | null;
+  options: string;
+  total: number;
+  done: number;
+  found: number;
+  verified: number;
+  failed: number;
+  status: 'running' | 'done';
+  created_at: number;
+  finished_at: number | null;
 }
 
 export interface CampaignRow {
@@ -75,4 +148,118 @@ export interface CampaignLeadRow {
   last_error: string | null;
   added_at: number;
   finished_at: number | null;
+  // Sender this lead is pinned to (null until its first LinkedIn action is scheduled).
+  account_id: number | null;
+  contacted_at: number | null;
+  // What the lead is waiting on ('reply': its reply to be classified); next_run_at is the deadline.
+  hold_reason: string | null;
+  // Mailbox the lead's email steps go out from (campaigns with mailboxes; null until its first email is scheduled).
+  mailbox_id: number | null;
+}
+
+export type ConnectionStatus = LeadRow['connection_status'];
+
+export type ImportKind = 'search' | 'post' | 'event' | 'group';
+
+export interface ImportRow {
+  id: number;
+  workspace_id: number;
+  list_id: number;
+  account_id: number | null;
+  kind: ImportKind;
+  source: string; // the LinkedIn URL
+  options: string; // JSON { limit, likers?, commenters? }
+  status: 'running' | 'done' | 'failed';
+  found: number;
+  added: number;
+  duplicates: number;
+  blacklisted: number; // blacklisted or suppressed people that were left out
+  error: string | null;
+  note: string | null;
+  job_id: number | null;
+  day: string | null;
+  scraped: number; // profiles loaded on `day` across all attempts (what the scrape budget counts)
+  created_at: number;
+  finished_at: number | null;
+}
+
+export interface MailboxRow {
+  id: number;
+  workspace_id: number;
+  name: string;
+  provider: 'smtp' | 'simulated';
+  preset: 'gmail' | 'outlook' | 'custom';
+  from_name: string;
+  from_email: string;
+  reply_to: string | null;
+  signature: string;
+  smtp_enc: string | null; // sealed { host, port, secure, user, pass }
+  imap_enc: string | null;
+  status: 'active' | 'paused' | 'needs_attention';
+  status_message: string | null;
+  timezone: string;
+  work_days: string;
+  work_start: string;
+  work_end: string;
+  daily_limit: number;
+  warmup: number;
+  warmup_days: number;
+  warmup_start: number;
+  gap_min_sec: number;
+  gap_max_sec: number;
+  next_send_at: number;
+  imap_uid_validity: string | null;
+  imap_last_uid: number;
+  last_sync_at: number;
+  legacy_account_id: number | null;
+  created_at: number;
+}
+
+export type TaskStatus = 'open' | 'done' | 'skipped';
+
+export interface TaskRow {
+  id: number;
+  workspace_id: number;
+  campaign_id: number | null;
+  campaign_lead_id: number | null;
+  lead_id: number | null;
+  node_id: string | null;
+  kind: 'call' | 'manual_linkedin' | 'manual_email' | 'custom';
+  title: string;
+  instructions: string;
+  assignee_id: number | null;
+  status: TaskStatus;
+  due_at: number;
+  auto_skip_at: number | null;
+  outcome: string | null;
+  notes: string | null;
+  completed_by: number | null;
+  completed_at: number | null;
+  created_at: number;
+}
+
+export interface EmailMessageRow {
+  id: number;
+  workspace_id: number;
+  mailbox_id: number;
+  campaign_id: number | null;
+  lead_id: number | null;
+  conversation_id: number | null;
+  node_id: string | null;
+  variant: string | null;
+  direction: 'out' | 'in';
+  message_id: string;
+  in_reply_to: string | null;
+  refs: string | null; // space-separated
+  subject: string;
+  from_email: string;
+  to_email: string;
+  status: 'sending' | 'sent' | 'simulated' | 'failed' | 'bounced' | 'received';
+  error: string | null;
+  tracking_token: string | null;
+  open_count: number;
+  opened_at: number | null;
+  click_count: number;
+  clicked_at: number | null;
+  sent_at: number;
 }

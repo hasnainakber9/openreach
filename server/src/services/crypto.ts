@@ -43,6 +43,12 @@ export function verifyPassword(password: string, stored: string): boolean {
   return timingSafeEqual(expected, actual);
 }
 
+// What the UI may show of a saved secret: the last 4 characters of long values only.
+export function mask(secret: string | null | undefined): string {
+  if (!secret) return '';
+  return secret.length >= 12 ? '••••' + secret.slice(-4) : '••••';
+}
+
 export function token(bytes = 32): string {
   return randomBytes(bytes).toString('base64url');
 }

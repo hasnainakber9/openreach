@@ -1,12 +1,15 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { assertWithinPlan, billingEnabled, overPlanIds, overPlanMessage, withPlanLock } from '../billing/limits.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { DriverError } from '../drivers/types.js';
+import { browserLoginUnavailable, cancelBrowserLogin, discardAccountBrowser, publicSignIn, startBrowserLogin } from '../drivers/browser-login.js';
 import { accountLimits, schedule, usage } from '../engine/engine.js';
 import { isValidTimezone, isWorkingTime, nextWorkingTime } from '../engine/limits.js';
-import { syncAccount } from '../engine/sync.js';
-import { HttpError, idParam, notFound, parse, user } from '../http.js';
+import { HttpError, idParam, notFound, parse, requireAdmin, requireWriter, user } from '../http.js';
+import { ensureLegacyMailboxes } from '../mail/mailboxes.js';
+import { callLinkedIn } from '../services/linkedin-calls.js';
+import { releaseUnstartedLeads, retireAccount } from '../services/rotation.js';
 import type { AccountRow } from '../types.js';
 
 const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM');
@@ -19,6 +22,8 @@ const smtpSchema = z.object({
   pass: z.string().default(''),
   from: z.string().default(''),
 });
+
+const NOT_SIGNED_IN = 'Not signed in to LinkedIn yet. Use "Sign in in a browser window", or paste the li_at cookie.';
 
 const accountBody = z.object({
   name: z.string().min(1).max(100),
@@ -40,12 +45,15 @@ export function serializeAccount(ctx: Ctx, a: AccountRow) {
   const now = ctx.clock.now();
   const sched = schedule(a);
   const smtp = ctx.sealer.open(a.smtp_enc);
+  const overPlan = overPlanIds(ctx, 'linkedinAccounts', a.workspace_id).has(a.id);
   return {
     id: a.id,
     name: a.name,
     driver: a.driver,
     status: a.status,
-    statusMessage: a.status_message,
+    // Past the plan's limit (hosted installs after a downgrade) the account stands still; the status line says why.
+    overPlan,
+    statusMessage: overPlan ? overPlanMessage(ctx, 'linkedinAccounts', a.workspace_id) : a.status_message,
     hasSession: !!a.session_enc,
     proxyUrl: a.proxy_url ? a.proxy_url.replace(/\/\/([^:@/]+):[^@/]+@/, '//$1:***@') : null,
     timezone: a.timezone,
@@ -62,6 +70,10 @@ export function serializeAccount(ctx: Ctx, a: AccountRow) {
     cooldowns: json(a.cooldowns, {}),
     linkedinName: a.linkedin_name,
     linkedinUrl: a.linkedin_url,
+    // 'browser' when it was signed in with the sign-in window, 'pasted' for a copied li_at.
+    sessionOrigin: a.session_origin,
+    // The sign-in window's progress on this server (null when none was opened since it started).
+    browserLogin: publicSignIn(ctx.drivers.signIns.get(a.id)),
     working: isWorkingTime(now, sched),
     nextWorkingAt: nextWorkingTime(now, sched),
     nextActionAt: a.next_action_at,
@@ -78,10 +90,19 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
 
   const columns = (b: Partial<z.infer<typeof accountBody>>, existing?: AccountRow) => {
     const out: Record<string, any> = {};
+    // Hosted installs: email goes through mailboxes only, which the plan counts and whose hosts are checked.
+    // Account-level SMTP (from before mailboxes) would bypass both; clearing it is still allowed.
+    if (b.smtp && billingEnabled(ctx)) throw new HttpError(400, 'smtp: Add a mailbox under Mailboxes instead. SMTP settings on an account are not available on this server');
     if (b.name !== undefined) out.name = b.name;
     if (b.driver !== undefined) out.driver = b.driver;
     if (b.liAt) {
+      // A sign-in window would overwrite it moments later (and both use the account's browser profile).
+      if (existing && ctx.drivers.signIns.get(existing.id)?.state === 'waiting') throw new HttpError(409, 'A sign-in window is open for this account. Finish or cancel it first.');
+      // An earlier sign-in's outcome no longer describes the session.
+      if (existing) ctx.drivers.signIns.delete(existing.id);
       out.session_enc = ctx.sealer.seal(b.liAt.trim());
+      // Put into the browser profile on every start (see PlaywrightOptions.sessionOrigin).
+      out.session_origin = 'pasted';
       out.status = 'active';
       out.status_message = null;
     }
@@ -95,14 +116,32 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
     if (b.delayMaxSec !== undefined) out.delay_max_sec = b.delayMaxSec;
     if (b.warmup !== undefined) out.warmup = b.warmup ? 1 : 0;
     if (b.smtp !== undefined) {
-      // A blank password on edit keeps the saved one.
+      // A blank password on edit keeps the saved one, but only for the same server and user (as for mailboxes):
+      // otherwise it could be pointed at another host to collect it.
       const prev = existing ? JSON.parse(ctx.sealer.open(existing.smtp_enc) ?? 'null') : null;
-      out.smtp_enc = b.smtp ? ctx.sealer.seal(JSON.stringify({ ...b.smtp, pass: b.smtp.pass || prev?.pass || '' })) : null;
+      let pass = b.smtp?.pass ?? '';
+      if (b.smtp && !pass && prev?.pass) {
+        if (String(prev.host).trim().toLowerCase() !== b.smtp.host.trim().toLowerCase() || prev.port !== b.smtp.port || prev.user !== b.smtp.user) {
+          throw new HttpError(400, 'smtp: Enter the password again for the new server or user');
+        }
+        pass = prev.pass;
+      }
+      out.smtp_enc = b.smtp ? ctx.sealer.seal(JSON.stringify({ ...b.smtp, pass })) : null;
     }
     const min = out.delay_min_sec ?? existing?.delay_min_sec;
     const max = out.delay_max_sec ?? existing?.delay_max_sec;
     if (min != null && max != null && min > max) throw new HttpError(400, 'Minimum delay must not exceed the maximum');
     return out;
+  };
+
+  // Email goes through mailboxes now: SMTP set on an account (older API clients) becomes, or updates, the
+  // account's legacy mailbox right away instead of waiting for the next restart's migration.
+  const syncLegacyMailbox = (accountId: number) => {
+    const a = ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [accountId])!;
+    const smtp = a.smtp_enc ? JSON.parse(ctx.sealer.open(a.smtp_enc) ?? 'null') : null;
+    if (!smtp?.host) return;
+    const sealed = ctx.sealer.seal(JSON.stringify({ host: smtp.host, port: smtp.port, secure: smtp.secure, user: smtp.user, pass: smtp.pass }));
+    if (!ctx.db.run('UPDATE mailboxes SET smtp_enc = ? WHERE legacy_account_id = ?', [sealed, a.id]).changes) ensureLegacyMailboxes(ctx);
   };
 
   app.get('/api/accounts', async (req) => {
@@ -111,66 +150,102 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
 
   app.get('/api/accounts/:id', async (req) => serializeAccount(ctx, load(req)));
 
+  // SMTP settings hold a password, so only admins change them (like mailboxes).
+  const requireSmtpRole = (req: FastifyRequest, body: { smtp?: unknown }) => void (body.smtp !== undefined && requireAdmin(req));
+
   app.post('/api/accounts', async (req) => {
+    requireWriter(req);
     const body = parse(accountBody, req.body);
-    if (body.driver === 'playwright' && !body.liAt) throw new HttpError(400, 'A LinkedIn session cookie (li_at) is required');
-    const id = ctx.db.insert('accounts', { workspace_id: user(req).workspace_id, created_at: ctx.clock.now(), ...columns(body) });
+    requireSmtpRole(req, body);
+    // Without a cookie a real account starts as "needs login", to be signed in with the browser window. Where
+    // that window isn't available (it would open on the server), the cookie is the only way in.
+    const noSession = body.driver === 'playwright' && !body.liAt;
+    if (noSession && browserLoginUnavailable(ctx, body)) throw new HttpError(400, 'A LinkedIn session cookie (li_at) is required');
+    const ws = user(req).workspace_id;
+    const id = withPlanLock(ctx, ws, () => {
+      assertWithinPlan(ctx, ws, 'linkedinAccounts');
+      const signedOut: Record<string, string> = noSession ? { status: 'needs_login', status_message: NOT_SIGNED_IN } : {};
+      return ctx.db.insert('accounts', { workspace_id: ws, created_at: ctx.clock.now(), ...columns(body), ...signedOut });
+    });
+    if (body.smtp) syncLegacyMailbox(id);
     return serializeAccount(ctx, ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [id])!);
   });
 
   app.patch('/api/accounts/:id', async (req) => {
+    requireWriter(req);
     const a = load(req);
     const body = parse(accountBody.partial(), req.body);
+    requireSmtpRole(req, body);
     ctx.db.update('accounts', a.id, columns(body, a));
+    if (body.smtp) syncLegacyMailbox(a.id);
     return serializeAccount(ctx, ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [a.id])!);
   });
 
   app.delete('/api/accounts/:id', async (req) => {
+    requireWriter(req);
     const a = load(req);
-    await ctx.drivers.drop(a.id);
-    ctx.db.run("UPDATE campaigns SET status = 'paused' WHERE account_id = ? AND status = 'active'", [a.id]);
-    ctx.db.run('DELETE FROM accounts WHERE id = ?', [a.id]);
-    ctx.db.run('DELETE FROM sim_people WHERE account_id = ?', [a.id]);
+    // Closes its sign-in window and browser first, and removes its browser profile with it.
+    await discardAccountBrowser(ctx, a.id, () =>
+      // Only campaigns left without any sender pause; the others carry on from their remaining accounts.
+      ctx.db.tx(() => {
+        retireAccount(ctx, a.id);
+        ctx.db.run('DELETE FROM accounts WHERE id = ?', [a.id]);
+        ctx.db.run('DELETE FROM sim_people WHERE account_id = ?', [a.id]);
+      }),
+    );
     return { ok: true };
   });
 
   app.post('/api/accounts/:id/pause', async (req) => {
+    requireWriter(req);
     const a = load(req);
-    ctx.db.run("UPDATE accounts SET status = 'paused' WHERE id = ?", [a.id]);
+    ctx.db.tx(() => {
+      ctx.db.run("UPDATE accounts SET status = 'paused' WHERE id = ?", [a.id]);
+      // Leads it hasn't contacted yet can go out from the campaign's other senders meanwhile (not those connected to it).
+      releaseUnstartedLeads(ctx, a.id);
+    });
     return { ok: true };
   });
 
   app.post('/api/accounts/:id/resume', async (req) => {
+    requireWriter(req);
     const a = load(req);
-    if (a.driver === 'playwright' && !a.session_enc) throw new HttpError(400, 'Add a LinkedIn session cookie first');
+    if (a.driver === 'playwright' && !a.session_enc) throw new HttpError(400, 'Sign in to LinkedIn first: use "Sign in in a browser window", or paste the li_at cookie.');
     ctx.db.run("UPDATE accounts SET status = 'active', status_message = NULL, cooldowns = '{}' WHERE id = ?", [a.id]);
     return { ok: true };
   });
 
-  // Opens LinkedIn with the saved session and records whose account it is.
+  // Opens LinkedIn with the saved session and records whose account it is (on the instance that holds the
+  // LinkedIn sessions, see callLinkedIn).
   app.post('/api/accounts/:id/check', async (req) => {
     const a = load(req);
-    try {
-      const info = await ctx.drivers.use(a, (d) => d.checkSession());
-      ctx.db.run("UPDATE accounts SET linkedin_name = ?, linkedin_url = ?, status = CASE WHEN status = 'paused' THEN 'paused' ELSE 'active' END, status_message = NULL WHERE id = ?", [info.name, info.profileUrl, a.id]);
-      return { ok: true, ...info };
-    } catch (e) {
-      const msg = (e as Error).message;
-      if (e instanceof DriverError && (e.code === 'SESSION_EXPIRED' || e.code === 'CHECKPOINT')) {
-        ctx.db.run("UPDATE accounts SET status = 'needs_login', status_message = ? WHERE id = ?", [msg, a.id]);
-      }
-      throw new HttpError(422, msg);
-    }
+    return callLinkedIn(ctx, a.workspace_id, { op: 'check', accountId: a.id });
   });
 
   app.post('/api/accounts/:id/sync', async (req) => {
     const a = load(req);
-    try {
-      const r = await syncAccount(ctx, a);
-      ctx.db.run('UPDATE accounts SET last_sync_at = ? WHERE id = ?', [ctx.clock.now(), a.id]);
-      return r;
-    } catch (e) {
-      throw new HttpError(422, (e as Error).message);
-    }
+    return callLinkedIn(ctx, a.workspace_id, { op: 'sync', accountId: a.id });
   });
+
+  // Opens LinkedIn's sign-in page in a window on this computer, on the account's own browser profile, and
+  // returns at once; the account's `browserLogin` shows the progress (drivers/browser-login.ts).
+  app.post('/api/accounts/:id/browser-login', async (req) => {
+    requireWriter(req);
+    const a = load(req);
+    startBrowserLogin(ctx, a);
+    return serializeAccount(ctx, a);
+  });
+
+  const cancelLogin = async (req: FastifyRequest) => {
+    requireWriter(req);
+    const a = load(req);
+    if (!cancelBrowserLogin(ctx, a.id)) {
+      // Signed in already: the window is closed and the session is being checked.
+      if (ctx.drivers.signIns.get(a.id)?.state === 'waiting') throw new HttpError(409, 'Already signed in. OpenReach is checking the session, which takes a few seconds.');
+      throw new HttpError(409, 'No sign-in window is waiting for this account.');
+    }
+    return serializeAccount(ctx, a);
+  };
+  app.delete('/api/accounts/:id/browser-login', cancelLogin);
+  app.post('/api/accounts/:id/browser-login/cancel', cancelLogin);
 }

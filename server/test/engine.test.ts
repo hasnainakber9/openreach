@@ -3,6 +3,8 @@ import { DAY, HOUR } from '../src/clock.js';
 import { DriverError, type LinkedInDriver } from '../src/drivers/types.js';
 import { localParts } from '../src/engine/limits.js';
 import { defaultSequence, type Sequence } from '../src/engine/sequence.js';
+import { handleInboundReply } from '../src/services/replies.js';
+import type { CampaignLeadRow, LeadRow } from '../src/types.js';
 import { addLeads, counts, makeCampaign, makeWorld, runFor, states } from './helpers.js';
 
 const inviteThenMessage: Sequence = {
@@ -96,7 +98,8 @@ describe('campaign engine', () => {
   });
 
   it('keeps going after a reply when stop-on-reply is off', async () => {
-    const w = makeWorld({ acceptRate: 1, replyRate: 1, acceptHours: [1, 2], replyHours: [1, 2] });
+    // A "not interested" reply suppresses the lead everywhere (g2-ai-replies), so these people ask a question instead.
+    const w = makeWorld({ acceptRate: 1, replyRate: 1, acceptHours: [1, 2], replyHours: [1, 2], replies: ['Interesting, can you send over a few more details?'] });
     const { id } = makeCampaign(w, inviteThenMessage, { stopOnReply: false }, addLeads(w, 2));
     await runFor(w, 8 * DAY, 5 * 60_000);
     expect(states(w, id)).toEqual({ done: 2 });
@@ -191,5 +194,43 @@ describe('campaign engine', () => {
     expect(c['email:ok']).toBe(1);
     expect(c['follow:ok']).toBe(1);
     expect(w.ctx.db.get<{ detail: string }>("SELECT detail FROM activity WHERE type = 'email'")!.detail).toMatch(/not delivered/);
+  });
+});
+
+describe('a lead that stops while its action is being sent', () => {
+  // The view takes a moment (simulated latency); an email reply stops the lead meanwhile.
+  async function replyDuringView(seq: Sequence) {
+    const w = makeWorld({ latencyMs: 60 });
+    const events: string[] = [];
+    w.ctx.webhooks.subscribe((_ws, e) => events.push(e));
+    const [leadId] = addLeads(w, 1);
+    const { id } = makeCampaign(w, seq, {}, [leadId]);
+    w.ctx.clock.advance(1.5 * HOUR);
+    w.ctx.db.run('UPDATE accounts SET last_sync_at = ?', [w.ctx.clock.now()]);
+    const tick = w.engine.tick();
+    await new Promise((r) => setTimeout(r, 15));
+    const lead = w.ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [leadId])!;
+    handleInboundReply(w.ctx, { lead, channel: 'email', conversationId: 0, messageId: null, body: 'Not now, thanks' });
+    await tick;
+    expect(counts(w, id)['view_profile:ok']).toBe(1);
+    return { w, id, events, cl: w.ctx.db.get<CampaignLeadRow>('SELECT * FROM campaign_leads WHERE campaign_id = ?', [id])! };
+  }
+
+  it('stays replied when the action was its last step', async () => {
+    const { cl, events } = await replyDuringView({ start: 'v', nodes: { v: { id: 'v', type: 'view_profile', next: null } } });
+    expect(cl.state).toBe('replied');
+    expect(events).not.toContain('lead.finished');
+  });
+
+  it('goes no further, so no task is created for it', async () => {
+    const { w, cl } = await replyDuringView({
+      start: 'v',
+      nodes: {
+        v: { id: 'v', type: 'view_profile', next: 't' },
+        t: { id: 't', type: 'task', kind: 'call', title: 'Call', instructions: '', dueAfterHours: 0, assigneeId: null, autoSkipAfterDays: null, next: null },
+      },
+    });
+    expect(cl).toMatchObject({ state: 'replied', node_id: 'v' });
+    expect(w.ctx.db.all('SELECT id FROM tasks')).toEqual([]);
   });
 });

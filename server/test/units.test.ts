@@ -6,6 +6,10 @@ import { clampNote, render, unknownVariables } from '../src/engine/template.js';
 import { publicIdFromUrl } from '../src/drivers/types.js';
 import { Sealer, hashPassword, verifyPassword } from '../src/services/crypto.js';
 import { MONDAY_8AM, seededRandom } from './helpers.js';
+import { loadConfig } from '../src/config.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 describe('templates', () => {
   const vars = { firstName: 'Ava', company: '', title: 'CTO {at} | Acme' };
@@ -79,6 +83,12 @@ describe('schedule and limits', () => {
 });
 
 describe('misc', () => {
+  // URL.pathname gave a mangled C:\C:\... path on Windows, so the built web app was never served there.
+  it('finds the built web app next to the server on every OS', () => {
+    const cfg = loadConfig({ DATA_DIR: join(tmpdir(), 'openreach-test-config'), APP_SECRET: 'x' });
+    expect(cfg.webDist).toBe(fileURLToPath(new URL('../../web/dist', import.meta.url)));
+  });
+
   it('parses profile URLs', () => {
     expect(publicIdFromUrl('https://www.linkedin.com/in/Jane-Doe-123/?trk=x')).toBe('jane-doe-123');
     expect(publicIdFromUrl('https://www.linkedin.com/sales/lead/ACwAAAbcdefghijklmnopqrstuv,NAME_SEARCH,xyz')).toBe('ACwAAAbcdefghijklmnopqrstuv');

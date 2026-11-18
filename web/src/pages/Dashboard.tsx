@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useApi, type Account, type Campaign } from '../api';
+import { useApi, type Account, type Campaign, type TaskCounts } from '../api';
 import { Funnel, LineChart } from '../components/LineChart';
 import { Empty, Meter, Pill, Stat } from '../components/ui';
 import { ACTION_LABELS, pct, timeAgo } from '../format';
+import { taskCountsPath } from './Tasks';
+import { canWrite, type Me } from '../session';
 
 interface Analytics {
   totals: Record<string, number>;
@@ -20,12 +22,15 @@ const SERIES = [
   { key: 'replied', label: 'Replies', color: 'var(--series-4)' },
 ];
 
-export default function Dashboard() {
+export default function Dashboard({ me }: { me: Me }) {
   const [days, setDays] = useState(30);
+  // Clients (read-only portal) don't see accounts or tasks; their requests would be refused.
+  const writer = canWrite(me);
   const analytics = useApi<Analytics>(`/api/analytics?days=${days}`, 20_000);
-  const accounts = useApi<Account[]>('/api/accounts', 20_000);
+  const accounts = useApi<Account[]>(writer ? '/api/accounts' : null, 20_000);
   const campaigns = useApi<Campaign[]>('/api/campaigns', 20_000);
   const feed = useApi<any[]>('/api/activity?limit=12', 10_000);
+  const tasks = useApi<TaskCounts>(writer ? taskCountsPath : null, 30_000);
   const a = analytics.data;
 
   if (accounts.data && !accounts.data.length) {
@@ -33,7 +38,8 @@ export default function Dashboard() {
       <>
         <div className="page-head">
           <div>
-            <h1>Welcome to OpenReach</h1>
+            {/* The tab title holds the (white-label) product name by now. */}
+            <h1>Welcome to {document.title || 'OpenReach'}</h1>
             <p>Three steps to your first campaign.</p>
           </div>
         </div>
@@ -69,7 +75,7 @@ export default function Dashboard() {
       <div className="page-head">
         <div>
           <h1>Dashboard</h1>
-          <p>Outreach across all campaigns and LinkedIn accounts.</p>
+          <p>{writer ? 'Outreach across all campaigns and LinkedIn accounts.' : `Outreach results for ${me.workspace_name}.`}</p>
         </div>
         <select value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ width: 'auto' }} aria-label="Time range">
           <option value={7}>Last 7 days</option>
@@ -111,27 +117,46 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-3" style={{ alignItems: 'start' }}>
-        <div className="card">
-          <div className="card-head">
-            <h2>LinkedIn accounts</h2>
-            <Link to="/accounts">Manage</Link>
-          </div>
+        {writer && (
           <div className="stack">
-            {accounts.data?.map((acc) => (
-              <div key={acc.id} className="stack" style={{ gap: 8 }}>
-                <div className="spread">
-                  <strong>{acc.name}</strong>
-                  <Pill status={acc.status} />
-                </div>
-                <Meter label="Invites" used={acc.usedToday.connect ?? 0} limit={acc.effectiveLimits.connect} />
-                <Meter label="Messages" used={acc.usedToday.message ?? 0} limit={acc.effectiveLimits.message} />
-                <div className="muted" style={{ fontSize: 12.5 }}>
-                  {acc.working ? 'In working hours' : `Resumes ${timeAgo(acc.nextWorkingAt)}`}
+            <div className="card">
+              <div className="card-head">
+                <h2>Tasks due today</h2>
+                <Link to="/tasks">Open tasks</Link>
+              </div>
+              <div className="spread">
+                <span className="stat-value" aria-label={`${tasks.data?.dueToday ?? 0} tasks due today`}>
+                  {tasks.data?.dueToday ?? 0}
+                </span>
+                <div className="muted" style={{ fontSize: 13, textAlign: 'right' }}>
+                  <div>{tasks.data?.overdue ? <Pill status="overdue">{tasks.data.overdue} overdue</Pill> : 'Nothing overdue'}</div>
+                  <div>{tasks.data?.mine ?? 0} assigned to you</div>
                 </div>
               </div>
-            ))}
+            </div>
+            <div className="card">
+              <div className="card-head">
+                <h2>LinkedIn accounts</h2>
+                <Link to="/accounts">Manage</Link>
+              </div>
+              <div className="stack">
+                {accounts.data?.map((acc) => (
+                  <div key={acc.id} className="stack" style={{ gap: 8 }}>
+                    <div className="spread">
+                      <strong>{acc.name}</strong>
+                      <Pill status={acc.status} />
+                    </div>
+                    <Meter label="Invites" used={acc.usedToday.connect ?? 0} limit={acc.effectiveLimits.connect} />
+                    <Meter label="Messages" used={acc.usedToday.message ?? 0} limit={acc.effectiveLimits.message} />
+                    <div className="muted" style={{ fontSize: 12.5 }}>
+                      {acc.working ? 'In working hours' : `Resumes ${timeAgo(acc.nextWorkingAt)}`}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
         <div className="card">
           <div className="card-head">
             <h2>Campaigns</h2>

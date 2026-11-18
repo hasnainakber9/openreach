@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { isPlanLimit } from '../api';
 
 export function Button({
   variant = 'default',
@@ -25,21 +27,65 @@ const STATUS_TONE: Record<string, string> = {
   pending: 'warning',
   none: 'neutral',
   needs_login: 'critical',
+  needs_attention: 'critical',
+  removed: 'neutral',
   failed: 'critical',
   error: 'critical',
   skipped: 'neutral',
   running: 'info',
   completed: 'neutral',
+  ok: 'good',
+  untested: 'neutral',
+  winner: 'good',
+  leading: 'info',
+  open_profile: 'info',
+  // Tasks
+  open: 'info',
+  overdue: 'critical',
+  // Email status and enrichment
+  valid: 'good',
+  risky: 'warning',
+  invalid: 'critical',
+  unknown: 'neutral',
+  queued: 'info',
+  not_found: 'neutral',
+  // Reply categories
+  interested: 'good',
+  meeting_booked: 'good',
+  question: 'info',
+  not_now: 'warning',
+  not_interested: 'critical',
+  out_of_office: 'neutral',
+  wrong_person: 'warning',
+  unsubscribe: 'critical',
+  other: 'neutral',
 };
 
-const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', none: 'Not connected' };
+const STATUS_TEXT: Record<string, string> = { needs_login: 'Needs login', needs_attention: 'Needs attention', none: 'Not connected', ok: 'Working', untested: 'Not tested' };
 
-export function Pill({ status, children }: { status: string; children?: ReactNode }) {
+// prefix names what the status is about ("Reply:"), in visible text so it reads the same on touch and to screen readers.
+export function Pill({ status, children, prefix }: { status: string; children?: ReactNode; prefix?: string }) {
   const tone = STATUS_TONE[status] ?? 'neutral';
   return (
     <span className={`pill pill-${tone}`}>
       <span className="pill-dot" aria-hidden />
+      {prefix && <span className="pill-prefix">{prefix}</span>}
       {children ?? STATUS_TEXT[status] ?? status.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())}
+    </span>
+  );
+}
+
+// A tag or pipeline stage in its own color. The color is a dot, so the text stays readable in both themes.
+export function ColorTag({ color, children, onRemove, removeLabel }: { color: string; children: ReactNode; onRemove?: () => void; removeLabel?: string }) {
+  return (
+    <span className="color-tag">
+      <span className="color-tag-dot" style={{ background: color }} aria-hidden />
+      {children}
+      {onRemove && (
+        <button type="button" className="color-tag-x" onClick={onRemove} aria-label={removeLabel ?? 'Remove'}>
+          ×
+        </button>
+      )}
     </span>
   );
 }
@@ -92,6 +138,145 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
   );
 }
 
+export interface CheckOption<T extends string | number> {
+  value: T;
+  label: ReactNode;
+  status?: string;
+  sub?: ReactNode;
+}
+
+// Accessible multi-select: a labelled group of checkboxes, each with an optional status pill.
+// The selection comes back in option order.
+export function CheckList<T extends string | number>({
+  label,
+  options,
+  value,
+  onChange,
+  hint,
+  empty,
+}: {
+  label: string;
+  options: CheckOption<T>[];
+  value: T[];
+  onChange: (v: T[]) => void;
+  hint?: ReactNode;
+  empty?: ReactNode;
+}) {
+  const toggle = (v: T, on: boolean) => {
+    const next = new Set(value);
+    on ? next.add(v) : next.delete(v);
+    onChange(options.filter((o) => next.has(o.value)).map((o) => o.value));
+  };
+  return (
+    <fieldset className="field checklist">
+      <legend className="field-label">{label}</legend>
+      {!options.length && empty && <span className="field-hint">{empty}</span>}
+      {options.map((o) => (
+        <label key={o.value} className="checklist-item">
+          <input type="checkbox" checked={value.includes(o.value)} onChange={(e) => toggle(o.value, e.target.checked)} />
+          <span className="checklist-text">
+            <span>{o.label}</span>
+            {o.sub && <span className="field-hint">{o.sub}</span>}
+          </span>
+          {o.status && <Pill status={o.status} />}
+        </label>
+      ))}
+      {hint && <span className="field-hint">{hint}</span>}
+    </fieldset>
+  );
+}
+
+// Secrets are never sent back to the browser, only a mask. Blank keeps the saved value.
+export function SecretField({
+  label,
+  saved,
+  value,
+  onChange,
+  required,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  saved?: string | null;
+  value: string;
+  onChange: (v: string) => void;
+  required?: boolean;
+  placeholder?: string;
+  hint?: ReactNode;
+}) {
+  return (
+    <Field
+      label={label}
+      hint={
+        <>
+          {saved ? `Saved ${saved}. Leave blank to keep it.` : null}
+          {saved && hint ? ' ' : null}
+          {hint}
+        </>
+      }
+    >
+      <input type="password" value={value} onChange={(e) => onChange(e.target.value)} required={required && !saved} placeholder={saved ? 'Leave blank to keep' : placeholder} autoComplete="off" spellCheck={false} />
+    </Field>
+  );
+}
+
+export function ProviderBadge({ simulated }: { simulated: boolean }) {
+  if (!simulated) return null;
+  return (
+    <span className="badge badge-sim" title="Built-in simulator: works offline with made-up data and never contacts anyone">
+      Simulated
+    </span>
+  );
+}
+
+// A destructive button that asks for a second click instead of a browser dialog.
+export function ConfirmButton({
+  onConfirm,
+  confirmLabel = 'Click again to confirm',
+  children,
+  ...rest
+}: Omit<Parameters<typeof Button>[0], 'onClick'> & { onConfirm: () => void; confirmLabel?: string }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  return (
+    <Button
+      {...rest}
+      variant={armed ? 'danger' : (rest.variant ?? 'default')}
+      onBlur={() => setArmed(false)}
+      onClick={() => {
+        if (!armed) return setArmed(true);
+        setArmed(false);
+        onConfirm();
+      }}
+    >
+      <span aria-live="polite">{armed ? confirmLabel : children}</span>
+    </Button>
+  );
+}
+
+// The product's logo and name: the white-label logo when one is set, else the built-in mark.
+export function BrandMark({ name, logoUrl }: { name: string; logoUrl?: string | null }) {
+  return (
+    <div className="brand">
+      {logoUrl ? (
+        <img className="brand-logo" src={logoUrl} alt="" referrerPolicy="no-referrer" />
+      ) : (
+        <span className="brand-mark" aria-hidden>
+          <svg width="16" height="16" viewBox="0 0 32 32">
+            <path d="M5 24c4-11 15-11 20-14" stroke="white" strokeWidth="4" fill="none" strokeLinecap="round" />
+            <circle cx="25" cy="10" r="4" fill="white" />
+          </svg>
+        </span>
+      )}
+      <span className="brand-name">{name}</span>
+    </div>
+  );
+}
+
 export function Empty({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="empty">
@@ -102,19 +287,38 @@ export function Empty({ title, children, action }: { title: string; children?: R
   );
 }
 
-export function Meter({ used, limit, label }: { used: number; limit: number; label: string }) {
+// `limit` null = unlimited (no bar fill). `period` ends the tooltip ("today", "this month").
+export function Meter({ used, limit, label, period = 'today' }: { used: number; limit: number | null; label: string; period?: string }) {
   const ratio = limit ? Math.min(1, used / limit) : 0;
   return (
-    <div className="meter" title={`${label}: ${used} of ${limit} today`}>
+    <div className="meter" title={limit === null ? `${label}: ${used}, unlimited` : `${label}: ${used} of ${limit}${period ? ` ${period}` : ''}`}>
       <div className="meter-head">
         <span>{label}</span>
         <span className="num">
-          {used}/{limit}
+          {used}/{limit ?? '∞'}
         </span>
       </div>
       <div className="meter-track">
         <div className={`meter-fill ${ratio >= 1 ? 'full' : ''}`} style={{ width: `${ratio * 100}%` }} />
       </div>
+    </div>
+  );
+}
+
+// A labelled bar for background work (imports). Without a known total it stays empty.
+export function ProgressBar({ done, total, label }: { done: number; total: number | null; label: string }) {
+  const ratio = total ? Math.min(1, done / total) : 0;
+  return (
+    <div
+      className="progress progress-bar"
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={total ?? undefined}
+      aria-valuenow={done}
+      title={total ? `${done} of ${total}` : `${done}`}
+    >
+      <span style={{ width: `${ratio * 100}%` }} />
     </div>
   );
 }
@@ -128,6 +332,24 @@ export function Tabs<T extends string>({ value, onChange, tabs }: { value: T; on
         </button>
       ))}
     </div>
+  );
+}
+
+// A table's row (or "select all") checkbox. The whole cell is the tap target, and clicks stop here
+// so a clickable row does not open. `header` renders the <th>, which on phones reads "Select all".
+export function CheckCell({ label, checked, onChange, header }: { label: string; checked: boolean; onChange: (v: boolean) => void; header?: boolean }) {
+  const Cell = header ? 'th' : 'td';
+  return (
+    <Cell className="cell-check" onClick={(e) => e.stopPropagation()}>
+      <label className="check-hit">
+        <input type="checkbox" aria-label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        {header && (
+          <span className="check-hit-text" aria-hidden>
+            Select all
+          </span>
+        )}
+      </label>
+    </Cell>
   );
 }
 
@@ -170,16 +392,18 @@ export function Pager({ page, pageSize, total, onPage }: { page: number; pageSiz
 
 // ---- Toasts -----------------------------------------------------------------
 
-type Toast = { id: number; text: string; tone: 'ok' | 'error' };
-const ToastCtx = createContext<(text: string, tone?: Toast['tone']) => void>(() => {});
+// `link`: an in-app follow-up, e.g. "Upgrade" on a plan limit.
+type ToastLink = { to: string; label: string };
+type Toast = { id: number; text: string; tone: 'ok' | 'error'; link?: ToastLink };
+const ToastCtx = createContext<(text: string, tone?: Toast['tone'], link?: ToastLink) => void>(() => {});
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const seq = useRef(0);
-  const push = useCallback((text: string, tone: Toast['tone'] = 'ok') => {
+  const push = useCallback((text: string, tone: Toast['tone'] = 'ok', link?: ToastLink) => {
     const id = ++seq.current;
-    setToasts((t) => [...t, { id, text, tone }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === 'error' ? 6000 : 3500);
+    setToasts((t) => [...t, { id, text, tone, link }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), link ? 10000 : tone === 'error' ? 6000 : 3500);
   }, []);
   return (
     <ToastCtx.Provider value={push}>
@@ -188,6 +412,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((t) => (
           <div key={t.id} className={`toast toast-${t.tone}`}>
             {t.text}
+            {t.link && (
+              <Link className="toast-link" to={t.link.to} onClick={() => setToasts((all) => all.filter((x) => x.id !== t.id))}>
+                {t.link.label}
+              </Link>
+            )}
           </div>
         ))}
       </div>
@@ -209,7 +438,8 @@ export function useAction() {
         if (success) toast(success);
         return r;
       } catch (e) {
-        toast((e as Error).message, 'error');
+        // Plan limits get their own toast with an upgrade link (PlanLimitPrompt in the app shell).
+        if (!isPlanLimit(e)) toast((e as Error).message, 'error');
         return undefined;
       } finally {
         setBusy(null);
