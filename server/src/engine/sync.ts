@@ -63,15 +63,21 @@ export function markConnected(ctx: Ctx, a: AccountRow, lead: LeadRow) {
 function participantByName(ctx: Ctx, a: AccountRow, t: InboxThread, knownLeadId: number | null): LeadRow | undefined {
   if (knownLeadId) return ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [knownLeadId]);
   const name = t.participant.name.replace(/\s+/g, ' ').trim().toLowerCase();
-  const ours = [...new Set(t.messages.filter((m) => m.direction === 'out').map((m) => m.body))];
-  if (!name || !ours.length) return undefined;
-  const rows = ctx.db.all<{ lead_id: number }>(
-    `SELECT DISTINCT c.lead_id FROM conversations c JOIN messages m ON m.conversation_id = c.id
-     WHERE c.account_id = ? AND c.lead_id IS NOT NULL AND c.thread_id LIKE 'local-%' AND LOWER(TRIM(c.participant_name)) = ?
-       AND m.direction = 'out' AND m.body IN (${ours.map(() => '?').join(', ')})`,
-    [a.id, name, ...ours],
+  const ours = new Set(t.messages.filter((m) => m.direction === 'out').map((m) => sameText(m.body)));
+  if (!name || !ours.size) return undefined;
+  const rows = ctx.db.all<{ lead_id: number; body: string }>(
+    `SELECT DISTINCT c.lead_id, m.body FROM conversations c JOIN messages m ON m.conversation_id = c.id
+     WHERE c.account_id = ? AND c.lead_id IS NOT NULL AND c.thread_id LIKE 'local-%' AND LOWER(TRIM(c.participant_name)) = ? AND m.direction = 'out'`,
+    [a.id, name],
   );
-  return rows.length === 1 ? ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [rows[0].lead_id]) : undefined;
+  const leads = new Set(rows.filter((r) => ours.has(sameText(r.body))).map((r) => r.lead_id));
+  return leads.size === 1 ? ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [[...leads][0]]) : undefined;
+}
+
+// A message body as compared with the one we sent: LinkedIn shows each line as its own paragraph, so the
+// text read back has other line breaks and spacing than the text typed.
+function sameText(body: string): string {
+  return body.replace(/\s+/g, ' ').trim();
 }
 
 // Returns the number of new inbound messages.
@@ -112,7 +118,9 @@ export function storeThread(ctx: Ctx, a: AccountRow, t: InboxThread): number {
     if (ctx.db.get('SELECT 1 FROM messages WHERE conversation_id = ? AND external_id = ?', [conv.id, m.externalId])) continue;
     if (m.direction === 'out') {
       // Adopt the local copy written when the campaign sent it, if there is one.
-      const local = ctx.db.get<{ id: number }>("SELECT id FROM messages WHERE conversation_id = ? AND direction = 'out' AND external_id LIKE 'local:%' AND body = ?", [conv.id, m.body]);
+      const local = ctx.db
+        .all<{ id: number; body: string }>("SELECT id, body FROM messages WHERE conversation_id = ? AND direction = 'out' AND external_id LIKE 'local:%' ORDER BY id", [conv.id])
+        .find((l) => sameText(l.body) === sameText(m.body));
       if (local) {
         ctx.db.run('UPDATE messages SET external_id = ? WHERE id = ?', [m.externalId, local.id]);
         continue;
