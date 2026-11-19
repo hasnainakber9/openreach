@@ -195,6 +195,22 @@ describe('Sign in in a browser window', () => {
     await t.api.call('POST', `/api/accounts/${t.id}/browser-login/cancel`);
   });
 
+  it('is only opened by admins, since it opens on the screen of the computer running OpenReach', async () => {
+    const t = await setup();
+    const member = await t.api.addUser('member');
+    const client = await t.api.addUser('client');
+    const admin = await t.api.addUser('admin');
+    const member403 = await t.api.call('POST', `/api/accounts/${t.id}/browser-login`, undefined, member);
+    expect(member403.status).toBe(403);
+    expect(member403.body.error).toMatch(/admins/);
+    expect((await t.api.call('POST', `/api/accounts/${t.id}/browser-login`, undefined, client)).status).toBe(403);
+    expect(t.launches).toHaveLength(0);
+    expect(t.w.ctx.drivers.signIns.has(t.id)).toBe(false);
+    expect((await t.api.call('POST', `/api/accounts/${t.id}/browser-login`, undefined, admin)).status).toBe(200);
+    await until(() => t.launches.length === 1);
+    await t.api.call('POST', `/api/accounts/${t.id}/browser-login/cancel`, undefined, admin);
+  });
+
   it('creates a real account without a cookie as signed out, except where the window is not offered', async () => {
     const t = await setup();
     const r = await t.api.call('POST', '/api/accounts', { name: 'New seat', driver: 'playwright' });

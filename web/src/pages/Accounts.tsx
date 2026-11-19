@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, serverNow, useApi, type Account } from '../api';
 import { Button, Empty, ErrorNote, Field, Meter, Modal, Pill, Toggle, useAction, useToast } from '../components/ui';
 import { ACTION_LABELS, timeAgo, WEEKDAYS } from '../format';
-import { useMe } from '../session';
+import { isAdminRole, useMe } from '../session';
 
 const LIMIT_KEYS = ['connect', 'connect_weekly', 'message', 'view_profile', 'follow', 'like_post', 'endorse', 'withdraw_invite', 'email', 'inmail', 'scrape'] as const;
 const LIMIT_LABEL: Record<string, string> = { ...ACTION_LABELS, connect: 'Invites / day', connect_weekly: 'Invites / week', message: 'Messages / day', inmail: 'InMails / day', scrape: 'Profiles imported / day' };
@@ -16,7 +16,10 @@ export default function Accounts() {
   const [editing, setEditing] = useState<Account | 'new' | null>(null);
   const { busy, run } = useAction();
   const toast = useToast();
-  const browserSignIn = !!useMe().features?.browserSignIn;
+  const me = useMe();
+  // The window opens on the screen of the computer running OpenReach, so only admins open it.
+  const windowOffered = !!me.features?.browserSignIn;
+  const browserSignIn = windowOffered && isAdminRole(me);
 
   // Says how a sign-in ended once the window it was waiting on is done.
   const waiting = useRef(new Set<number>());
@@ -126,6 +129,7 @@ export default function Accounts() {
           // The live copy, so the sign-in progress shows while the form is open (the form keeps its own edits).
           account={editing === 'new' ? null : (accounts.data?.find((x) => x.id === editing.id) ?? editing)}
           browserSignIn={browserSignIn}
+          windowOffered={windowOffered}
           onClose={() => setEditing(null)}
           onSaved={() => (setEditing(null), accounts.reload())}
           onChanged={accounts.reload}
@@ -186,12 +190,14 @@ function SignInStatus({ account, onChanged }: { account: Account; onChanged: () 
 function AccountModal({
   account,
   browserSignIn,
+  windowOffered,
   onClose,
   onSaved,
   onChanged,
 }: {
   account: Account | null;
   browserSignIn: boolean;
+  windowOffered: boolean;
   onClose: () => void;
   onSaved: () => void;
   onChanged: () => void;
@@ -311,6 +317,7 @@ function AccountModal({
               <>
                 Log in to linkedin.com in your browser, open Developer Tools → Application → Cookies → www.linkedin.com, and copy the value of <code>li_at</code>. It is encrypted before it is stored.
                 {account?.hasSession && ' Leave blank to keep the current one.'}
+                {windowOffered && !browserSignIn && ' An admin can also sign it in with a LinkedIn window on the computer running OpenReach.'}
               </>
             }
           >
