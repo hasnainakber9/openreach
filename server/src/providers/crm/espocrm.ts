@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import { billingEnabled } from '../../billing/limits.js';
 import { checkHost, HostCheckError } from '../../services/hosts.js';
 import { httpJson, ProviderError, RateLimiter, type HttpJsonOptions } from '../http.js';
 import type { ProviderDef } from '../registry.js';
@@ -22,8 +23,10 @@ import { crmFieldValue, crmSettingsSchema, ESPOCRM_MAPPING, mappedProperties, ty
 
 // A self-hosted PHP app on someone's laptop: a few requests a second at most, per integration. Exposed for tests.
 export const limits = { espocrm: new RateLimiter(4) };
-// The first request after PHP has been idle can be slow on a laptop.
+// The first request after PHP has been idle can be slow on a laptop. A hosted server (billing on) waits less:
+// the address is a tenant's choice and a sync holds a shared job slot meanwhile.
 const TIMEOUT_MS = 30_000;
+const HOSTED_TIMEOUT_MS = 15_000;
 export const DEFAULT_CLOSE_DAYS = 30;
 
 // The address people open EspoCRM at. A pasted page (…/#Contact/view/…) or API URL (…/api/v1) is trimmed to it.
@@ -139,6 +142,7 @@ export const espocrmCrm: ProviderDef<'crm'> = {
     const s = cfg.settings as Partial<Settings>;
     const key: string = cfg.credentials.apiKey ?? '';
     const base = s.baseUrl ?? '';
+    const timeoutMs = billingEnabled(ctx) ? HOSTED_TIMEOUT_MS : TIMEOUT_MS;
     const host = (() => {
       try {
         return new URL(base).host;
@@ -177,7 +181,7 @@ export const espocrmCrm: ProviderDef<'crm'> = {
           integrationId: cfg.integrationId,
           limiter: limits.espocrm,
           limitKey: cfg.integrationId ?? `espocrm:${base}`,
-          timeoutMs: TIMEOUT_MS,
+          timeoutMs,
           ...(pinned ? { pinnedAddresses: pinned } : {}),
         });
       } catch (e) {
@@ -187,7 +191,7 @@ export const espocrmCrm: ProviderDef<'crm'> = {
         if (e.status === 401) throw fail('AUTH', `EspoCRM at ${host} rejected the API key (401). Check the key under Administration → API Users and that the user is active.`, 401);
         if (e.status === 403)
           throw fail('AUTH', `The EspoCRM API user may not do this (403${reason}). Give its role create, read and edit access to Contacts and Opportunities, and stream access to Contacts.`, 403);
-        if (e.code === 'TIMEOUT') throw fail('TIMEOUT', `EspoCRM at ${host} did not answer within ${TIMEOUT_MS / 1000} s.`);
+        if (e.code === 'TIMEOUT') throw fail('TIMEOUT', `EspoCRM at ${host} did not answer within ${timeoutMs / 1000} s.`);
         if (e.code === 'UNAVAILABLE' && e.status == null) throw fail('UNAVAILABLE', `Could not reach EspoCRM at ${host}. Is it running?`);
         if (e.code === 'BAD_REQUEST' && e.status) throw fail('BAD_REQUEST', `EspoCRM at ${host} refused the request (${e.status}${reason}).`, e.status);
         throw e;

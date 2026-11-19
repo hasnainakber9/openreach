@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { JobRow } from '../src/jobs/queue.js';
 import { DEFAULT_CLOSE_DAYS, espoErrorDetail, limits, mergeEspoList } from '../src/providers/crm/espocrm.js';
 import { ESPOCRM_MAPPING } from '../src/providers/crm/types.js';
@@ -141,6 +141,7 @@ const contact = { email: 'jane@acme.dev', firstName: 'Jane', lastName: 'Doe', co
 beforeEach(() => {
   limits.espocrm = new RateLimiter(10_000, 10_000);
 });
+afterEach(() => vi.restoreAllMocks());
 
 describe('EspoCRM sync', () => {
   it('creates a contact, posts the reply to its stream and opens an opportunity with the required fields', async () => {
@@ -397,6 +398,23 @@ describe('EspoCRM errors', () => {
     }) as typeof fetch;
     e = await failure(p.test());
     expect([e.code, e.message]).toEqual(['TIMEOUT', `EspoCRM at ${HOST} did not answer within 30 s.`]);
+
+    // A hosted server waits at most 15 s for a tenant's EspoCRM, so a host that never answers can't hold a sync slot.
+    const hosted = makeWorld();
+    const timeouts: number[] = [];
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      timeouts.push(ms);
+      return AbortSignal.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+    });
+    hosted.ctx.fetch = (async (_u: unknown, init: RequestInit) => {
+      throw init.signal!.reason;
+    }) as typeof fetch;
+    const crm = addEspo(hosted, { baseUrl: 'https://crm.example.com' });
+    hosted.ctx.stripe = {} as any;
+    hosted.ctx.dns = { ...hosted.ctx.dns, lookup: async () => [{ address: PUBLIC_IP, family: 4 }] } as any;
+    e = await failure(instance(hosted, crm).test());
+    expect(timeouts).toEqual([15_000]);
+    expect([e.code, e.message]).toEqual(['TIMEOUT', 'EspoCRM at crm.example.com did not answer within 15 s.']);
 
     w.ctx.fetch = fakeFetch([{ url: /./, reply: () => ({ json: { ok: true } }) }]);
     e = await failure(p.addNote('6720a1b2c3d4e5f00', { body: 'x', timestamp: 0 }));

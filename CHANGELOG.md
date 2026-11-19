@@ -66,6 +66,7 @@ Every external service below is optional. Without keys, a built-in simulator sta
 - **Postgres** as an optional database (`DATABASE_URL`), with leader election so several instances can share it while one runs the engine.
 - A database-backed job queue for background work (`JOB_CONCURRENCY`).
 - Email and company lookups share their two background slots fairly between workspaces: a workspace's big run (or slow self-hosted verifier) no longer keeps another workspace's lookups waiting behind it.
+- Hosted installs (billing on) wait less for hosts a workspace chooses: 30 s per self-hosted verifier check (was 60), 15 s per EspoCRM request (was 30) and 1 minute of Pattern finder checks per lead (was 3).
 - Replies from integrations (AI, verifiers, CRMs, Wikidata) are read up to 5 MB once decompressed; a bigger reply fails with *sent a reply larger than 5 MB*, so a host (or a small gzip bomb) can't fill the server's memory.
 - Changing your password signs you out everywhere else; a tab left on another workspace after a switch catches up instead of acting there.
 

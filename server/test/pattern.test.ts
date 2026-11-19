@@ -397,6 +397,22 @@ describe('Pattern finder: checking guesses', () => {
     expect(await finder(w).find(input())).toBeNull();
     expect(checked.testverifier).toHaveLength(3);
   });
+
+  it('gives a lead at most a minute of checks on a hosted server', async () => {
+    const w = makeWorld();
+    w.ctx.stripe = {} as any;
+    mx(w, { 'acme.dev': MX });
+    addVerifier(w, 'testverifier');
+    let t = 0;
+    limits.now = () => t;
+    verdicts.testverifier = () => {
+      t += 45_000;
+      return invalid();
+    };
+    expect(await finder(w).find(input())).toBeNull();
+    // The catch-all test and one guess; self-hosted, the 3-minute budget allows four.
+    expect(checked.testverifier).toHaveLength(2);
+  });
 });
 
 describe('Pattern finder: the verifier chain and errors', () => {

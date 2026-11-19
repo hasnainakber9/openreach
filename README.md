@@ -193,7 +193,7 @@ Real limits:
 
 - **Port 25:** mailbox checks need outbound TCP port 25, which most home ISPs block. Check first with `Test-NetConnection gmail-smtp-in.l.google.com -Port 25`. If it's blocked, start the verifier with `VERIFIER_SMTP=off`: it still catches bad syntax, dead domains and disposable addresses, but mailboxes stay *unknown*. A VPS that allows port 25, or a SOCKS5 proxy (`VERIFIER_PROXY`), gets around it.
 - **Blocklists:** every check is an SMTP conversation from your IP. Probing many addresses can get that IP blocklisted (and many servers already refuse home IP ranges), which can hurt your own mail from that connection. OpenReach sends at most one check a second per verifier and the verifier runs at most two at once; keep volumes low.
-- **Accuracy:** catch-all domains (common in B2B) can only be *risky*; Microsoft 365, Outlook.com and Yahoo often accept or refuse every probe, and greylisting servers answer *unknown*. Paid verifiers are more accurate. Each check takes up to about 30 seconds; OpenReach waits 60.
+- **Accuracy:** catch-all domains (common in B2B) can only be *risky*; Microsoft 365, Outlook.com and Yahoo often accept or refuse every probe, and greylisting servers answer *unknown*. Paid verifiers are more accurate. Each check takes up to about 30 seconds; OpenReach waits 60 (30 on a hosted server, billing on).
 - **Hosts:** on a hosted installation (billing on) the URL must be a public host; `localhost` and private addresses are refused when saved and before every request. Self-hosted installs allow them.
 - The provider follows AfterShip's v1.5.0 source and is tested against fakes, not a running verifier.
 
@@ -210,7 +210,7 @@ Real limits:
 It never calls an address *valid* unless a verifier said so. With no verifier connected (or none that can judge the domain), or with verification of found addresses turned off (the run's *Verify* option or **Verify found addresses** in the workspace's enrichment settings), it spends no checks and returns the most common guess as *unknown* ("Unverified"), which campaigns treat as not verified even when risky addresses are accepted.
 
 - **Connect it:** **Settings → Integrations → Add provider → Email finder → Pattern finder (free)**, then add a verifier: the free self-hosted verifier above, or Hunter, ZeroBounce or NeverBounce. **Test connection** says which verifiers will check its guesses. Drag it above paid finders to try it first: when it can't confirm an address, the next finder still gets its turn and a verified address from it wins.
-- **Checks per lead** (default 6, 2 to 20) caps the verifier checks per lead, the made-up address included. With a paid verifier each check costs one of its credits (and one plan credit on hosted installs), so a lead can cost up to that many; on the self-hosted verifier they're free. No new check starts after 3 minutes per lead.
+- **Checks per lead** (default 6, 2 to 20) caps the verifier checks per lead, the made-up address included. With a paid verifier each check costs one of its credits (and one plan credit on hosted installs), so a lead can cost up to that many; on the self-hosted verifier they're free. No new check starts after 3 minutes per lead (1 minute on a hosted server, billing on).
 
 Real limits:
 
@@ -276,7 +276,7 @@ Real limits:
 - **Hosts:** on a hosted installation (billing on) the address must be a public host; `localhost`, `*.test` names that resolve locally and private addresses are refused when saved and before every request. Self-hosted OpenReach installs can use EspoCRM on the same computer or the LAN.
 - **No accounts:** contacts are created without an EspoCRM Account. EspoCRM keeps a contact's *Title* as their role at their account, not on the contact, so it is not mapped by default: to sync job titles, add a custom field such as *Job Title* (`cJobTitle`) and map Title to it.
 - **Note times:** EspoCRM stamps each stream post with the time it was synced, not the time the reply arrived.
-- **Speed:** OpenReach sends at most 4 requests a second to it and waits 30 s per request; a cold PHP start on a laptop can take a few seconds.
+- **Speed:** OpenReach sends at most 4 requests a second to it and waits 30 s per request (15 s on a hosted server, billing on); a cold PHP start on a laptop can take a few seconds.
 - The provider was written against EspoCRM 10.0.11 (request shapes checked on a running instance) and is tested against fakes.
 
 ### Agency mode and white-label
