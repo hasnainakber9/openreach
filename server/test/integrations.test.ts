@@ -307,6 +307,20 @@ describe('foundation plumbing', () => {
     expect(scrub('key abc12345 and abc12345', ['abc12345', '', null])).toBe('key •••• and ••••');
   });
 
+  it('httpJson stops reading a reply past its size cap', async () => {
+    const w = makeWorld();
+    const big = JSON.stringify({ pad: 'x'.repeat(6_000_000) });
+    w.ctx.fetch = fakeFetch([
+      { url: /\/big$/, reply: () => ({ text: big }) },
+      { url: /\/small$/, reply: () => ({ json: { pad: 'x'.repeat(2000) } }) },
+    ]);
+    const e = await httpJson(w.ctx, 'https://v.example/big', { integrationId: 4 }).then(() => 'read it all', (x) => x as ProviderError);
+    expect(e).toBeInstanceOf(ProviderError);
+    expect(e).toMatchObject({ code: 'BAD_REQUEST', integrationId: 4, message: 'v.example sent a reply larger than 5 MB' });
+    expect(await httpJson(w.ctx, 'https://v.example/small')).toEqual({ pad: 'x'.repeat(2000) });
+    await expect(httpJson(w.ctx, 'https://v.example/small', { maxBytes: 1000 })).rejects.toMatchObject({ code: 'BAD_REQUEST', message: 'v.example sent a reply larger than 1 KB' });
+  });
+
   it('rate limiter spaces calls per key', () => {
     let t = 0;
     const limiter = new RateLimiter(2, 2, () => t);
@@ -314,6 +328,26 @@ describe('foundation plumbing', () => {
     expect(limiter.reserve(1)).toBe(500);
     t = 500;
     expect(limiter.reserve(1)).toBe(0);
+  });
+
+  it('rate limiter forgets keys whose bucket has refilled, so many one-off keys (host names) do not pile up', () => {
+    let t = 0;
+    const limiter = new RateLimiter(1, 2, () => t);
+    const size = () => (limiter as unknown as { buckets: Map<unknown, unknown> }).buckets.size;
+    for (let i = 0; i < 5000; i++) limiter.reserve(`host${i}.example`);
+    t = 1500;
+    expect([limiter.reserve('busy.example'), limiter.reserve('busy.example'), limiter.reserve('busy.example')]).toEqual([0, 0, 1000]);
+    t = 2000; // the host buckets have refilled; busy.example's has half a token
+    for (let i = 0; i < 5000; i++) limiter.reserve(`other${i}.example`);
+    expect(size()).toBeLessThan(6000);
+    // A key still short of tokens keeps its state.
+    expect(limiter.reserve('busy.example')).toBe(500);
+    // A steady stream of new keys stays around the number seen in the last refill time.
+    for (let i = 0; i < 100_000; i++) {
+      t += 10;
+      limiter.reserve(`k${i}.example`);
+    }
+    expect(size()).toBeLessThan(5000);
   });
 
   it('takes form bodies only outside /api and on provider callbacks, so cross-site forms cannot drive the API', async () => {

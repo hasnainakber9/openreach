@@ -1,6 +1,6 @@
 import MailChecker from 'mailchecker';
 import { z } from 'zod';
-import { assertCredits } from '../../billing/limits.js';
+import { assertCredits, billingEnabled } from '../../billing/limits.js';
 import type { Ctx } from '../../context.js';
 import { isReservedAddress } from '../../mail/mailboxes.js';
 import { recordUsage } from '../../services/usage.js';
@@ -40,8 +40,10 @@ const CATCH_ALL_MAYBE_TTL = 30 * 60_000;
 const PATTERN_TTL = 30 * DAY;
 
 // A self-hosted verifier can take up to a minute per check (port 25 timeouts), and enrich jobs time out after five:
-// no new check starts after `budgetMs`. Wall-clock time (not ctx.clock, which the demo runs faster). Replaceable in tests.
-export const limits = { budgetMs: 3 * 60_000, now: () => Date.now() };
+// no new check starts after `budgetMs`, or `hostedBudgetMs` on a hosted server (billing on), where a lead holds one
+// of the enrichment job slots every workspace shares. Wall-clock time (not ctx.clock, which the demo runs faster).
+// Replaceable in tests.
+export const limits = { budgetMs: 3 * 60_000, hostedBudgetMs: 60_000, now: () => Date.now() };
 
 // Per workspace and domain: whether its mail server accepts any address, and the pattern a verifier confirmed there.
 const catchAllCache = new TtlCache<boolean>(5000);
@@ -223,7 +225,7 @@ class Prober {
     private chain: EmailVerifier[],
     private maxCalls: number,
   ) {
-    this.deadline = limits.now() + limits.budgetMs;
+    this.deadline = limits.now() + (billingEnabled(ctx) ? Math.min(limits.budgetMs, limits.hostedBudgetMs) : limits.budgetMs);
   }
 
   get usable() {

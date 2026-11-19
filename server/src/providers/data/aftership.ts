@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import { billingEnabled } from '../../billing/limits.js';
 import { checkHost, HostCheckError } from '../../services/hosts.js';
 import { httpJson, ProviderError, RateLimiter, scrub } from '../http.js';
 import type { ProviderDef } from '../registry.js';
@@ -27,6 +28,9 @@ const NO_SUCH_HOST = /^\s*Mail server does not exist :/;
 // One SMTP conversation can take connect + catch-all probe + RCPT, 10 s each by default, plus the MX lookup.
 // OpenReach's main.go stops writing at 55 s.
 export const VERIFY_TIMEOUT_MS = 60_000;
+// A hosted server (billing on) waits less: meanwhile the check holds one of the enrichment job slots every
+// workspace shares, and the URL is a tenant's choice.
+export const HOSTED_VERIFY_TIMEOUT_MS = 30_000;
 const TEST_TIMEOUT_MS = 10_000;
 // Every check opens an SMTP conversation from the verifier's own IP: gently, so that IP stays off blocklists.
 // Keyed by the verifier's URL, so several workspaces using one verifier share the budget. Exposed for tests.
@@ -170,6 +174,7 @@ export const afterShipVerifier: ProviderDef<'email_verifier'> = {
   create(ctx, cfg): EmailVerifier {
     const base: string = cfg.settings.baseUrl ?? DEFAULT_BASE_URL;
     const host = new URL(base).host;
+    const verifyTimeoutMs = billingEnabled(ctx) ? HOSTED_VERIFY_TIMEOUT_MS : VERIFY_TIMEOUT_MS;
     const secret: string | undefined = cfg.credentials.secret || undefined;
     const fail = (code: ProviderError['code'], message: string, status?: number) => new ProviderError(code, message, { integrationId: cfg.integrationId, status });
     const common = { headers: secret ? { [SECRET_HEADER]: secret } : undefined, secrets: [secret], integrationId: cfg.integrationId, limiter: limits.verifier, limitKey: `aftership:${base}` };
@@ -232,7 +237,7 @@ export const afterShipVerifier: ProviderDef<'email_verifier'> = {
         const address = email.trim();
         const local = localVerdict(address);
         if (local) return { ...local, credits: 0 };
-        const r = await get(`/v1/${encodeURIComponent(address)}/verification`, VERIFY_TIMEOUT_MS);
+        const r = await get(`/v1/${encodeURIComponent(address)}/verification`, verifyTimeoutMs);
         // A page that isn't the verifier's (a wrong port, another app) is a settings problem, not an answer.
         if (!isResult(r) && !(typeof r === 'string' && r.trim().toLowerCase() === SYNTAX_INVALID_TEXT))
           throw fail('BAD_REQUEST', `The server at ${host} did not answer like AfterShip email-verifier: check the URL.`);

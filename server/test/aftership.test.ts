@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parsePlans } from '../src/billing/plans.js';
-import { afterShipVerdict, DEFAULT_BASE_URL, limits, SYNTAX_INVALID_TEXT, VERIFY_TIMEOUT_MS } from '../src/providers/data/aftership.js';
+import { afterShipVerdict, DEFAULT_BASE_URL, HOSTED_VERIFY_TIMEOUT_MS, limits, SYNTAX_INVALID_TEXT, VERIFY_TIMEOUT_MS } from '../src/providers/data/aftership.js';
 import { ProviderError, RateLimiter } from '../src/providers/http.js';
 import { createIntegration } from '../src/providers/store.js';
 import { startEnrichmentRun } from '../src/services/enrichment.js';
@@ -235,6 +235,17 @@ describe('AfterShip verifier: errors', () => {
     // The connection test gives up sooner.
     expect((await failure(v().test())).code).toBe('TIMEOUT');
     expect(seen[1]).toBe(10_000);
+
+    // A hosted server waits at most 30 s: a tenant's verifier that never answers can't hold its job slot longer.
+    const hosted = makeWorld();
+    hosted.ctx.stripe = {} as any;
+    hosted.ctx.dns = { ...hosted.ctx.dns, lookup: async () => [{ address: PUBLIC_IP, family: 4 }] } as any;
+    hosted.ctx.fetch = w.ctx.fetch;
+    seen.length = 0;
+    const h = await failure(verifier(hosted, { baseUrl: 'https://verify.example.com' })().verify('ann@acme.dev'));
+    expect(seen).toEqual([HOSTED_VERIFY_TIMEOUT_MS]);
+    expect(HOSTED_VERIFY_TIMEOUT_MS).toBe(30_000);
+    expect(h.message).toBe('The verifier at verify.example.com did not answer within 30 s. If outbound port 25 is blocked, its SMTP checks hang until they time out.');
   });
 });
 
