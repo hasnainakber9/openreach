@@ -9,7 +9,7 @@ import { handleInboundReply } from '../services/replies.js';
 import { alreadySuppressed, suppressLead } from '../services/suppression.js';
 import type { EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
 import { imapFor, normalizeMessageId, type InboundEmail } from './imap.js';
-import { mailboxNeedsAttention, WENT_OUT } from './mailboxes.js';
+import { mailboxNeedsAttention, syncFailed, syncSucceeded, WENT_OUT } from './mailboxes.js';
 import { ownText, ruleOptOut, stripQuoted } from './replyText.js';
 
 // Replies and bounces read from a mailbox's INBOX (email.sync job). Mail is matched to our own outbound
@@ -219,6 +219,7 @@ export async function emailSyncJob(job: JobInfo<{ mailboxId: number }>, h: JobHe
   try {
     result = await client.fetchSince(mb.imap_last_uid, mb.imap_uid_validity, { since: Math.max(mb.created_at, now - 14 * DAY), signal: h.signal });
   } catch (e) {
+    syncFailed(ctx, mb, (e as Error).message);
     if (e instanceof MailError && e.code === 'AUTH') {
       mailboxNeedsAttention(ctx, mb, e.message);
       throw new PermanentError(e.message);
@@ -228,5 +229,6 @@ export async function emailSyncJob(job: JobInfo<{ mailboxId: number }>, h: JobHe
   h.progress(result.messages.length);
   const stats = processInbound(ctx, mb, result.messages);
   ctx.db.run('UPDATE mailboxes SET imap_uid_validity = ?, imap_last_uid = ?, last_sync_at = ? WHERE id = ?', [result.uidValidity, result.lastUid, ctx.clock.now(), mb.id]);
+  syncSucceeded(ctx, mb);
   return stats;
 }

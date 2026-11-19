@@ -6,7 +6,7 @@ import { composeEmail, newMessageId } from '../src/mail/compose.js';
 import { checkDomain, dnsServersFrom, withFallback, type DnsResolver } from '../src/mail/deliverability.js';
 import { findParts, imapError, isAutoReply, parseDeliveryStatus, type InboundEmail } from '../src/mail/imap.js';
 import { optOutReason, processInbound, syncJobKey } from '../src/mail/inbound.js';
-import { clearOldPublicUrlHolds, effectiveDailyLimit, ensureLegacyMailboxes, isReservedAddress, retireMailbox, setCampaignMailboxes } from '../src/mail/mailboxes.js';
+import { clearOldPublicUrlHolds, effectiveDailyLimit, ensureLegacyMailboxes, isReservedAddress, optOutProblem, retireMailbox, serializeMailbox, setCampaignMailboxes } from '../src/mail/mailboxes.js';
 import { htmlToText } from '../src/mail/replyText.js';
 import { isPublicUrl, signToken } from '../src/mail/tracking.js';
 import { createIntegration } from '../src/providers/store.js';
@@ -14,7 +14,7 @@ import { EnrichmentSettingsSchema } from '../src/services/enrichment.js';
 import { setSetting } from '../src/services/settings.js';
 import { MailError } from '../src/services/email.js';
 import type { CampaignLeadRow, EmailMessageRow, LeadRow, MailboxRow } from '../src/types.js';
-import { addLeads, fakeFetch, fakeImap, mailerOf, makeApi, makeCampaign, makeWorld as baseWorld, runFor, type World } from './helpers.js';
+import { addLeads, drainJobs, fakeFetch, fakeImap, mailerOf, makeApi, makeCampaign, makeWorld as baseWorld, runFor, type World } from './helpers.js';
 
 // Sign-up closed, like a typical self-hosted server (the test default is open): real mailboxes send in
 // reply mode there when PUBLIC_URL is not public.
@@ -1276,6 +1276,67 @@ describe('opt-out replies', () => {
       expect(suppressed(w, l)).toEqual([]);
       expect(cl(w, otherId, l).state).toBe('active');
     }
+  });
+});
+
+describe('IMAP sync health', () => {
+  // The engine and the background jobs (the IMAP syncs) together, as on the server.
+  async function run(w: World, ms: number) {
+    const end = w.ctx.clock.now() + ms;
+    while (w.ctx.clock.now() < end) {
+      await runFor(w, 10 * MINUTE);
+      await drainJobs(w);
+    }
+  }
+  const refused = () =>
+    fakeImap(() => {
+      throw new MailError('TRANSIENT', 'connect ECONNREFUSED 10.0.0.5:993');
+    });
+
+  it('stops reply-mode campaign email while IMAP syncs keep failing, says why, and sends again once one works', async () => {
+    const w = makeWorld();
+    w.ctx.config.publicUrl = undefined;
+    let broken = true;
+    w.ctx.imap = () => (broken ? refused() : fakeImap(() => []));
+    const mb = addMailbox(w, { provider: 'smtp' });
+    const c = emailCampaign(w, twoEmails, emailLeads(w, 3), [mb]);
+    const events: string[] = [];
+    w.ctx.webhooks.subscribe((_ws, e) => events.push(e));
+    await run(w, 2 * HOUR);
+    // A short outage changes nothing.
+    expect(sentRows(w, c.id)).toHaveLength(3);
+    expect(mailbox(w, mb)).toMatchObject({ status: 'active', last_sync_ok_at: 0, sync_error: 'connect ECONNREFUSED 10.0.0.5:993' });
+    // The follow-ups are due a day later, but no sync has read the inbox for hours: "unsubscribe" replies sit unread.
+    await run(w, DAY);
+    expect(sentRows(w, c.id)).toHaveLength(3);
+    const held = mailbox(w, mb);
+    expect(held).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(/^Replies can't be read: IMAP sync has failed for over 6 hours \(connect ECONNREFUSED 10\.0\.0\.5:993\)/) });
+    expect(events.filter((e) => e === 'mailbox.needs_attention')).toHaveLength(1);
+    // Resume refuses for the same reason, and the mailbox page no longer says replies were just checked.
+    expect(optOutProblem(w.ctx, held)).toBe(held.status_message);
+    expect(serializeMailbox(w.ctx, held)).toMatchObject({ lastSyncOkAt: 0, syncError: 'connect ECONNREFUSED 10.0.0.5:993' });
+
+    // IMAP works again: the next sync reads the inbox and the mailbox goes back to work by itself.
+    broken = false;
+    await run(w, 2 * HOUR);
+    expect(mailbox(w, mb)).toMatchObject({ status: 'active', status_message: null, sync_failing_since: null, sync_error: null });
+    expect(mailbox(w, mb).last_sync_ok_at).toBeGreaterThan(held.last_sync_at);
+    expect(sentRows(w, c.id)).toHaveLength(6);
+  });
+
+  it('keeps sending with the link alone while syncs fail, when emails carry an unsubscribe link', async () => {
+    const w = makeWorld();
+    w.ctx.config.publicUrl = PUBLIC;
+    w.ctx.imap = refused;
+    const mb = addMailbox(w, { provider: 'smtp' });
+    const c = emailCampaign(w, twoEmails, emailLeads(w, 1), [mb]);
+    await run(w, 2 * HOUR + DAY);
+    expect(mailbox(w, mb).status).toBe('active');
+    const [first, follow] = mailerOf(w).sent;
+    expect(first.msg.text).toMatch(/or just reply "unsubscribe"\.$/);
+    expect(follow.msg.text).toMatch(/Unsubscribe: https:\/\/reach\.example\.net\/u\/[\w.-]+$/);
+    expect(follow.msg.headers!['List-Unsubscribe']).not.toMatch(/mailto/);
+    expect(sentRows(w, c.id)).toHaveLength(2);
   });
 });
 

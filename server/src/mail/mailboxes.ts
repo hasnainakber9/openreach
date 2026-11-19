@@ -1,5 +1,5 @@
 import { billingEnabled, overPlanIds, overPlanMessage, withinPlan, withPlanLock } from '../billing/limits.js';
-import { DAY } from '../clock.js';
+import { DAY, HOUR } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { DEFAULT_LIMITS, isWorkingTime, localParts, nextWorkingTime, type Schedule } from '../engine/limits.js';
@@ -65,25 +65,52 @@ export const presetById = (id: string) => MAILBOX_PRESETS.find((p) => p.id === i
 
 export const isSimulated = (mb: Pick<MailboxRow, 'provider'>) => mb.provider === 'simulated';
 
+// IMAP syncs that have failed this long (a wrong host or port, a firewall, an outage) count as not reading the
+// inbox at all. Shorter outages are caught up: the next sync reads what arrived meanwhile.
+const SYNC_FAILING_MAX = 6 * HOUR;
+// How a mailbox stopped for that starts its status message: it keeps syncing, and goes back to work by itself
+// when a sync reads the inbox again (see syncSucceeded).
+const SYNC_HOLD = "Replies can't be read";
+
+type SyncState = Pick<MailboxRow, 'provider' | 'imap_enc' | 'sync_failing_since' | 'sync_error'>;
+const syncFailing = (ctx: Ctx, mb: SyncState) => mb.sync_failing_since != null && ctx.clock.now() - mb.sync_failing_since >= SYNC_FAILING_MAX;
+
 // Whether OpenReach reads this mailbox's inbox, so a reply "unsubscribe" is honoured. Only then do campaign
 // emails offer that reply (see composeEmail).
-export function readsReplies(mb: Pick<MailboxRow, 'provider' | 'imap_enc'>): boolean {
-  return isSimulated(mb) || !!mb.imap_enc;
+export function readsReplies(ctx: Ctx, mb: SyncState): boolean {
+  return isSimulated(mb) || (!!mb.imap_enc && !syncFailing(ctx, mb));
 }
+
+// Bookkeeping of the email.sync job.
+export function syncSucceeded(ctx: Ctx, mb: MailboxRow) {
+  ctx.db.run('UPDATE mailboxes SET last_sync_ok_at = ?, sync_failing_since = NULL, sync_error = NULL WHERE id = ?', [ctx.clock.now(), mb.id]);
+  ctx.db.run("UPDATE mailboxes SET status = 'active', status_message = NULL WHERE id = ? AND status = 'needs_attention' AND status_message LIKE ?", [mb.id, `${SYNC_HOLD}:%`]);
+}
+
+export function syncFailed(ctx: Ctx, mb: MailboxRow, error: string) {
+  ctx.db.run('UPDATE mailboxes SET sync_failing_since = COALESCE(sync_failing_since, ?), sync_error = ? WHERE id = ?', [ctx.clock.now(), error.slice(0, 300), mb.id]);
+}
+
+// Mailboxes the runner syncs: those that may send, and those waiting for a sync that works.
+export const syncedMailboxes = (ctx: Ctx) =>
+  ctx.db.all<MailboxRow>("SELECT * FROM mailboxes WHERE status IN ('active', 'paused') OR (status = 'needs_attention' AND status_message LIKE ?)", [`${SYNC_HOLD}:%`]);
 
 // Why a mailbox can't send campaign email for lack of an unsubscribe link, or null. Every campaign email
 // offers an opt-out: an unsubscribe link when PUBLIC_URL is a public https address, otherwise (reply mode)
 // a footer asking people to reply "unsubscribe", which inbound mail detection honours, so the mailbox must
-// have IMAP for those replies to be read. A self-hosted install, often a laptop nobody can reach, sends in
-// reply mode. A server that sends other people's campaigns (billing on, or open sign-up) does so at volume,
+// have IMAP for those replies to be read, and syncs that work. A self-hosted install, often a laptop nobody
+// can reach, sends in reply mode. A server that sends other people's campaigns (billing on, or open sign-up) does so at volume,
 // where mailbox providers expect a one-click link, so its real mailboxes need it. A mailbox migrated from an
 // account's SMTP settings is no exception: its emails would promise a reply opt-out nothing reads.
-export function optOutProblem(ctx: Ctx, mb: Pick<MailboxRow, 'provider' | 'imap_enc'>): string | null {
+export function optOutProblem(ctx: Ctx, mb: SyncState): string | null {
   if (isSimulated(mb)) return null;
   const problem = publicLinkProblem(ctx);
   if (!problem) return null;
   if (sendsForOthers(ctx)) return `${problem}: on this hosted server, campaign emails must carry a working unsubscribe link. Set PUBLIC_URL to the server's public https:// address.`;
   if (!mb.imap_enc) return 'Add IMAP settings: with no unsubscribe link (PUBLIC_URL is not a public https:// address), campaign emails ask people to reply "unsubscribe", and only IMAP lets OpenReach read those replies.';
+  if (syncFailing(ctx, mb)) {
+    return `${SYNC_HOLD}: IMAP sync has failed for over ${SYNC_FAILING_MAX / HOUR} hours (${mb.sync_error ?? 'unknown error'}). With no unsubscribe link (PUBLIC_URL is not a public https:// address), campaign emails ask people to reply "unsubscribe", so this mailbox sends again once a sync reads its inbox. Check the IMAP settings with Test connection.`;
+  }
   return null;
 }
 
@@ -358,6 +385,10 @@ export function serializeMailbox(ctx: Ctx, mb: MailboxRow) {
     nextWorkingAt: nextWorkingTime(now, sched),
     nextSendAt: mb.next_send_at,
     lastSyncAt: mb.last_sync_at,
+    // When a sync last read the inbox, and why syncs fail meanwhile (null while they work).
+    lastSyncOkAt: mb.last_sync_ok_at,
+    syncError: mb.sync_error,
+    syncFailingSince: mb.sync_failing_since,
     campaigns: ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM campaign_mailboxes WHERE mailbox_id = ?', [mb.id])!.n,
     legacyAccountId: mb.legacy_account_id,
     createdAt: mb.created_at,

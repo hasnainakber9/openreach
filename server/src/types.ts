@@ -210,7 +210,12 @@ export interface MailboxRow {
   next_send_at: number;
   imap_uid_validity: string | null;
   imap_last_uid: number;
+  // When the last sync was queued; last_sync_ok_at is when one last read the inbox.
   last_sync_at: number;
+  last_sync_ok_at: number;
+  // First failed sync since the last one that worked, and its latest error (null while syncs work).
+  sync_failing_since: number | null;
+  sync_error: string | null;
   legacy_account_id: number | null;
   created_at: number;
 }

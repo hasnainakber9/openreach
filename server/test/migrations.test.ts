@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DB } from '../src/db/db.js';
+import { MIGRATIONS } from '../src/db/schema.js';
 
 describe('migrations', () => {
   const db0 = new DB(':memory:', { migrateTo: 1 });
@@ -38,5 +39,19 @@ describe('migrations', () => {
     expect(db.all('SELECT * FROM messages')).toEqual([]);
     db.run('DELETE FROM accounts WHERE id = ?', [acc]);
     expect(db.get<{ n: number }>('SELECT COUNT(*) AS n FROM conversations')!.n).toBe(1);
+  });
+
+  it.skipIf(db0.dialect !== 'sqlite')('adds IMAP sync health to existing mailboxes, which keep sending', () => {
+    const db = new DB(':memory:', { migrateTo: MIGRATIONS.length - 1 });
+    const ws = db.insert('workspaces', { name: 'W', created_at: 1 });
+    const mb = db.insert('mailboxes', { workspace_id: ws, name: 'Box', from_email: 'a@b.dev', last_sync_at: 5, created_at: 1 });
+    db.migrate();
+    expect(db.get('SELECT status, last_sync_at, last_sync_ok_at, sync_failing_since, sync_error FROM mailboxes WHERE id = ?', [mb])).toEqual({
+      status: 'active',
+      last_sync_at: 5,
+      last_sync_ok_at: 0,
+      sync_failing_since: null,
+      sync_error: null,
+    });
   });
 });

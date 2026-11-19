@@ -669,6 +669,10 @@ export interface Mailbox {
   nextWorkingAt: number;
   nextSendAt: number;
   lastSyncAt: number;
+  // When a sync last read the inbox, and why syncs fail meanwhile (null while they work).
+  lastSyncOkAt: number;
+  syncError: string | null;
+  syncFailingSince: number | null;
   campaigns: number;
   legacyAccountId: number | null;
   createdAt: number;

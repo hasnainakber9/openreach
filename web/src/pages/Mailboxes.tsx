@@ -84,6 +84,12 @@ export default function Mailboxes({ me }: { me: Me }) {
                   messages put them on the do-not-contact list automatically.
                 </div>
               )}
+              {m.syncError && m.status !== 'needs_attention' && (
+                <div className="note note-warning">
+                  Checking replies fails (first failure {timeAgo(m.syncFailingSince)}): {m.syncError}
+                  {m.unsubscribe === 'reply' && '. If it keeps failing for 6 hours, campaign email stops until replies can be read again.'}
+                </div>
+              )}
               <Meter label="Sent today" used={m.sentToday} limit={m.effectiveLimit} />
               {m.warmup && m.effectiveLimit < m.dailyLimit && (
                 <div className="note">
@@ -91,7 +97,7 @@ export default function Mailboxes({ me }: { me: Me }) {
                 </div>
               )}
               <div className="muted" style={{ fontSize: 13 }}>
-                {m.workDays.map((d) => WEEKDAYS[d]).join(', ')} · {m.workStart}–{m.workEnd} ({m.timezone}) · {m.working ? 'sending window open' : `next window ${timeAgo(m.nextWorkingAt)}`} · {m.gapMinSec}–{m.gapMaxSec}s between emails · replies checked {timeAgo(m.lastSyncAt || null)}
+                {m.workDays.map((d) => WEEKDAYS[d]).join(', ')} · {m.workStart}–{m.workEnd} ({m.timezone}) · {m.working ? 'sending window open' : `next window ${timeAgo(m.nextWorkingAt)}`} · {m.gapMinSec}–{m.gapMaxSec}s between emails · replies read {timeAgo(m.lastSyncOkAt || null)}
                 {m.campaigns ? ` · used by ${m.campaigns} campaign${m.campaigns === 1 ? '' : 's'}` : ''}
               </div>
               {t && (
