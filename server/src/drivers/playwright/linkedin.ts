@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import type { BrowserContext, Locator, Page } from 'playwright';
+import type { BrowserContext, Frame, Locator, Page } from 'playwright';
 import {
   DriverError,
+  Offline,
   profileUrl,
   publicIdFromUrl,
   type ConnectResult,
@@ -26,6 +27,10 @@ import {
   type TopCardSnapshot,
 } from './parse.js';
 import { BLOCKED_PATHS, LABELS, SEL, URLS } from './selectors.js';
+
+// Chromium's errors for a computer that can't reach the internet: no Wi-Fi, DNS not answering, a network that
+// is changing or drops every packet. A page that is merely slow ends in Playwright's own timeout instead.
+const OFFLINE = /net::ERR_(?:INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|NETWORK_CHANGED|NETWORK_IO_SUSPENDED|ADDRESS_UNREACHABLE|CONNECTION_TIMED_OUT|TIMED_OUT|CONNECTION_FAILED|PROXY_CONNECTION_FAILED)\b/;
 
 // Drives a real Chromium session logged in with the member's `li_at` cookie. Each account gets
 // its own persistent profile directory and (optionally) its own proxy, and every step is paced
@@ -149,12 +154,28 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
 
   private async go(url: string): Promise<Page> {
     const page = await this.open();
+    // Chromium follows a load that found no connection with its own error page, a moment after the load
+    // failed. The failure is reported once that page is up: otherwise it cuts short the next page opened.
+    let errorPageUp = () => {};
+    const errorPage = new Promise<void>((r) => (errorPageUp = r));
+    const onNavigated = (f: Frame) => {
+      if (f === page.mainFrame() && f.url().startsWith('chrome-error:')) errorPageUp();
+    };
+    page.on('framenavigated', onNavigated);
     // LinkedIn's pages are heavy; on a busy laptop the first load can take well over 20 s.
-    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((e: Error) => {
-      // An invalid li_at typically sends LinkedIn into a login redirect loop.
-      if (/ERR_TOO_MANY_REDIRECTS/.test(e.message)) throw new DriverError('SESSION_EXPIRED', `LinkedIn keeps redirecting, so it does not accept this session in OpenReach's browser. ${RELOGIN_HINT}`);
-      throw new DriverError('TRANSIENT', `Navigation failed: ${e.message.split('\n')[0]}`);
-    });
+    const res = await page
+      .goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+      .catch(async (e: Error) => {
+        // An invalid li_at typically sends LinkedIn into a login redirect loop.
+        if (/ERR_TOO_MANY_REDIRECTS/.test(e.message)) throw new DriverError('SESSION_EXPIRED', `LinkedIn keeps redirecting, so it does not accept this session in OpenReach's browser. ${RELOGIN_HINT}`);
+        const offline = OFFLINE.exec(e.message);
+        if (offline) {
+          await Promise.race([errorPage, new Promise((r) => setTimeout(r, 5_000))]);
+          throw new Offline(offline[0]);
+        }
+        throw new DriverError('TRANSIENT', `Navigation failed: ${e.message.split('\n')[0]}`);
+      })
+      .finally(() => page.off('framenavigated', onNavigated));
     this.guard(page);
     if (res && res.status() === 999) throw new DriverError('LIMIT_REACHED', 'LinkedIn is throttling this account (HTTP 999)');
     if (res && res.status() === 404) throw new DriverError('NOT_FOUND', `Page not found: ${url}`);

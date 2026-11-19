@@ -286,6 +286,8 @@ describe('Browser-owned sessions in the driver', () => {
     const page = {
       isClosed: () => false,
       setDefaultTimeout() {},
+      on() {},
+      off() {},
       goto: async () => {
         throw new Error('page.goto: net::ERR_TOO_MANY_REDIRECTS at https://www.linkedin.com/in/me/');
       },

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Browser, Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PlaywrightLinkedInDriver } from '../src/drivers/playwright/linkedin.js';
+import { Offline } from '../src/drivers/types.js';
 import { companyFromCard, connectionRows, parseTopCardLines, profileLinkRows, threadEvents, topCardSnapshot } from '../src/drivers/playwright/parse.js';
 import { LABELS, SEL } from '../src/drivers/playwright/selectors.js';
 import { mockLinkedIn, type MockState } from './fixtures/linkedin-mock.js';
@@ -44,6 +45,8 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
   const dir = mkdtempSync(join(tmpdir(), 'or-driver-'));
   const serve = mockLinkedIn(state);
   let redirectToCheckpoint = false;
+  // The network failure every request to LinkedIn gets, as when the Wi-Fi drops (null: online).
+  let offline: 'namenotresolved' | 'internetdisconnected' | null = null;
   const driver = new PlaywrightLinkedInDriver({
     liAt: 'fake-cookie',
     userDataDir: dir,
@@ -54,6 +57,7 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     onContext: async (ctx) => {
       await ctx.route('https://www.linkedin.com/**', async (route) => {
         const url = new URL(route.request().url());
+        if (offline) return route.abort(offline);
         if (redirectToCheckpoint) {
           // LinkedIn bounces to /checkpoint/...; rewrite the URL the same way before the page settles.
           return route.fulfill({ contentType: 'text/html', body: "<script>history.replaceState(null, '', '/checkpoint/challenge/')</script><h1>Security check</h1>" });
@@ -244,6 +248,18 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     redirectToCheckpoint = true;
     await expect(driver.viewProfile(url('jane-doe'))).rejects.toMatchObject({ code: 'CHECKPOINT' });
     redirectToCheckpoint = false;
+  }, 30_000);
+
+  it('reports a lost internet connection as such, and works again once it is back', async () => {
+    try {
+      offline = 'namenotresolved';
+      await expect(driver.viewProfile(url('max-mueller'))).rejects.toBeInstanceOf(Offline);
+      offline = 'internetdisconnected';
+      await expect(driver.connect(url('kim-classic'), '')).rejects.toThrow(/No internet connection.*ERR_INTERNET_DISCONNECTED/);
+    } finally {
+      offline = null;
+    }
+    expect((await driver.viewProfile(url('max-mueller'))).firstName).toBe('Max');
   }, 30_000);
 
   it('keeps a working session when the own profile card is slow, and says when nothing could be read', async () => {

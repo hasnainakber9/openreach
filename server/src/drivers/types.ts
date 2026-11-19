@@ -111,3 +111,13 @@ export class SignInOpen extends DriverError {
     this.name = 'SignInOpen';
   }
 }
+
+// The computer could not reach LinkedIn at all: the Wi-Fi dropped, DNS stopped answering, or the network was
+// changing. Nothing about the person or the account is wrong, so callers wait and try again without counting
+// the failure against anyone.
+export class Offline extends DriverError {
+  constructor(public netError: string) {
+    super('TRANSIENT', `No internet connection: LinkedIn could not be reached (${netError}). Nothing was sent; trying again shortly.`);
+    this.name = 'Offline';
+  }
+}
