@@ -1,21 +1,35 @@
 import http from 'node:http';
 import https from 'node:https';
 import type { LookupFunction } from 'node:net';
-import { pipeline, Readable } from 'node:stream';
+import { pipeline, Readable, Transform } from 'node:stream';
 import zlib from 'node:zlib';
 
 // A request that connects only to addresses the caller already checked, so a second DNS answer (rebinding)
 // can't send it anywhere else. Writes (POST, PUT, PATCH, DELETE) may carry a body already in memory: a string,
 // URLSearchParams or bytes; streams, Blobs and FormData are refused. The host name is still used for the Host header and for TLS (SNI and the
 // certificate check). ctx.fetch takes this path when the request init carries `pinnedAddresses`; a fake
-// ctx.fetch in tests sees the field and can check it.
+// ctx.fetch in tests sees the field and can check it. The body is decoded (gzip, deflate, br) up to `maxBytes`
+// (MAX_RESPONSE_BYTES by default): a few KB of gzip can expand to gigabytes, so reading past it fails.
 
 export interface PinnedAddress {
   address: string;
   family: number;
 }
 
-export type PinnedInit = RequestInit & { pinnedAddresses?: PinnedAddress[] };
+export type PinnedInit = RequestInit & { pinnedAddresses?: PinnedAddress[]; maxBytes?: number };
+
+export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+// "5 MB", "100 KB".
+export const sizeText = (bytes: number) => (bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`);
+
+// Reading a response body past its byte cap (decoded size).
+export class ResponseTooLargeError extends Error {
+  override name = 'ResponseTooLargeError';
+  constructor(readonly maxBytes: number) {
+    super(`the response is larger than ${sizeText(maxBytes)}`);
+  }
+}
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 
@@ -44,6 +58,7 @@ export function pinnedFetch(rawUrl: string, init: PinnedInit, addresses: PinnedA
   if (!addresses.length) return Promise.reject(failed('fetch failed: no address to connect to'));
   const signal = init.signal ?? undefined;
   if (signal?.aborted) return Promise.reject(signal.reason);
+  const maxBytes = init.maxBytes ?? MAX_RESPONSE_BYTES;
 
   const headers: Record<string, string> = {};
   new Headers(init.headers).forEach((v, k) => (headers[k] = v));
@@ -75,7 +90,6 @@ export function pinnedFetch(rawUrl: string, init: PinnedInit, addresses: PinnedA
           // A header fetch would refuse: dropped.
         }
       }
-      let body: Readable = res;
       const encoding = (res.headers['content-encoding'] ?? '').trim().toLowerCase();
       const decoder =
         encoding === 'gzip' || encoding === 'x-gzip'
@@ -85,14 +99,23 @@ export function pinnedFetch(rawUrl: string, init: PinnedInit, addresses: PinnedA
             : encoding === 'br'
               ? zlib.createBrotliDecompress()
               : null;
-      if (decoder) body = pipeline(res, decoder, () => {});
+      // Counted after decoding: past maxBytes the read fails and the connection is closed.
+      let read = 0;
+      const cap = new Transform({
+        transform(chunk: Buffer, _enc, done) {
+          read += chunk.length;
+          if (read > maxBytes) done(new ResponseTooLargeError(maxBytes));
+          else done(null, chunk);
+        },
+      });
+      const body: Readable = decoder ? pipeline(res, decoder, cap, () => {}) : pipeline(res, cap, () => {});
       // A timeout while the body streams ends the read with the signal's reason (a TimeoutError).
       const onAbort = () => body.destroy(signal!.reason);
       signal?.addEventListener('abort', onAbort, { once: true });
       body.once('close', () => signal?.removeEventListener('abort', onAbort));
       try {
         const stream = method === 'HEAD' || NULL_BODY.has(status) ? null : (Readable.toWeb(body) as ReadableStream<Uint8Array>);
-        if (!stream) res.resume();
+        if (!stream) body.resume();
         resolve(new Response(stream, { status, headers: out }));
       } catch (e) {
         // A status fetch can't represent (below 200 or above 599).

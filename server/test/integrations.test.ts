@@ -307,6 +307,20 @@ describe('foundation plumbing', () => {
     expect(scrub('key abc12345 and abc12345', ['abc12345', '', null])).toBe('key •••• and ••••');
   });
 
+  it('httpJson stops reading a reply past its size cap', async () => {
+    const w = makeWorld();
+    const big = JSON.stringify({ pad: 'x'.repeat(6_000_000) });
+    w.ctx.fetch = fakeFetch([
+      { url: /\/big$/, reply: () => ({ text: big }) },
+      { url: /\/small$/, reply: () => ({ json: { pad: 'x'.repeat(2000) } }) },
+    ]);
+    const e = await httpJson(w.ctx, 'https://v.example/big', { integrationId: 4 }).then(() => 'read it all', (x) => x as ProviderError);
+    expect(e).toBeInstanceOf(ProviderError);
+    expect(e).toMatchObject({ code: 'BAD_REQUEST', integrationId: 4, message: 'v.example sent a reply larger than 5 MB' });
+    expect(await httpJson(w.ctx, 'https://v.example/small')).toEqual({ pad: 'x'.repeat(2000) });
+    await expect(httpJson(w.ctx, 'https://v.example/small', { maxBytes: 1000 })).rejects.toMatchObject({ code: 'BAD_REQUEST', message: 'v.example sent a reply larger than 1 KB' });
+  });
+
   it('rate limiter spaces calls per key', () => {
     let t = 0;
     const limiter = new RateLimiter(2, 2, () => t);

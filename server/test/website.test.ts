@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parsePlans } from '../src/billing/plans.js';
-import { RateLimiter, ProviderError } from '../src/providers/http.js';
+import { httpJson, RateLimiter, ProviderError } from '../src/providers/http.js';
 import {
   attrs,
   decodeEntities,
@@ -31,7 +31,7 @@ import {
 import type { Enricher, EnrichInput } from '../src/providers/data/types.js';
 import { createIntegration } from '../src/providers/store.js';
 import { startEnrichmentRun } from '../src/services/enrichment.js';
-import { pinnedFetch } from '../src/services/pinned-fetch.js';
+import { pinnableFetch, pinnedFetch } from '../src/services/pinned-fetch.js';
 import { monthlyUsage, recordUsage } from '../src/services/usage.js';
 import type { LeadRow } from '../src/types.js';
 import { addLeads, drainJobs, fakeFetch, makeApi, makeWorld, type FakeRoute, type World } from './helpers.js';
@@ -808,6 +808,34 @@ describe('Company website: review fixes', () => {
       await expect(pinnedFetch(`http://rebind.invalid:${port}/`, { method: 'GET', body: 'x' }, at)).rejects.toThrow(/cannot have a body/);
       await expect(pinnedFetch(`http://rebind.invalid:${port}/`, { method: 'POST', body: new Blob(['x']) }, at)).rejects.toThrow(/string, URLSearchParams or bytes/);
       await expect(pinnedFetch(`http://rebind.invalid:${port}/`, { method: 'CONNECT' }, at)).rejects.toThrow(/not supported/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('pinnedFetch and httpJson stop decoding a compressed reply past the size cap (a gzip bomb)', async () => {
+    // 64 MB of zeros, about 64 KB on the wire.
+    const bomb = gzipSync(Buffer.alloc(64 * 1024 * 1024));
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' });
+      res.end(req.url === '/bomb' ? bomb : gzipSync('{"ok":true}'));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const at = [{ address: '127.0.0.1', family: 4 }];
+      const r = await pinnedFetch(`http://rebind.invalid:${port}/bomb`, { signal: AbortSignal.timeout(5000) }, at);
+      await expect(r.arrayBuffer().then((b) => b.byteLength)).rejects.toThrow('the response is larger than 5 MB');
+      const small = await pinnedFetch(`http://rebind.invalid:${port}/bomb`, { maxBytes: 100 * 1024 }, at);
+      await expect(small.arrayBuffer().then((b) => b.byteLength)).rejects.toThrow('the response is larger than 100 KB');
+      expect(await (await pinnedFetch(`http://rebind.invalid:${port}/ok`, {}, at)).json()).toEqual({ ok: true });
+      // A provider's request (an EspoCRM or verifier host on a hosted server) gets a clear error, not the whole body.
+      const w = makeWorld();
+      w.ctx.fetch = pinnableFetch;
+      const e = await httpJson(w.ctx, `http://crm.example.net:${port}/bomb`, { pinnedAddresses: at, integrationId: 7 }).then((v) => `read ${String(v).length} characters`, (x) => x);
+      expect(e).toBeInstanceOf(ProviderError);
+      expect(e).toMatchObject({ code: 'BAD_REQUEST', integrationId: 7, message: `crm.example.net:${port} sent a reply larger than 5 MB` });
+      expect(await httpJson(w.ctx, `http://crm.example.net:${port}/ok`, { pinnedAddresses: at })).toEqual({ ok: true });
     } finally {
       server.close();
     }

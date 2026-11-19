@@ -1,5 +1,5 @@
 import type { Ctx } from '../context.js';
-import type { PinnedAddress, PinnedInit } from '../services/pinned-fetch.js';
+import { MAX_RESPONSE_BYTES, ResponseTooLargeError, sizeText, type PinnedAddress, type PinnedInit } from '../services/pinned-fetch.js';
 
 export type ProviderErrorCode = 'AUTH' | 'QUOTA' | 'RATE_LIMIT' | 'BAD_REQUEST' | 'NOT_FOUND' | 'UNAVAILABLE' | 'TIMEOUT';
 
@@ -73,6 +73,8 @@ export interface HttpJsonOptions<T = any> {
   integrationId?: number | null;
   // Connect only to these already-checked addresses (services/pinned-fetch.ts).
   pinnedAddresses?: PinnedAddress[];
+  // The most of the reply body read, decoded (MAX_RESPONSE_BYTES by default); a bigger reply is an error.
+  maxBytes?: number;
   // A non-2xx reply the caller understands, turned into a result (undefined: mapped to an error as usual).
   // Gets the raw body text; whatever it returns must not carry that text into an error message unchecked.
   readError?: (status: number, text: string) => T | undefined;
@@ -93,6 +95,25 @@ function vendorMessage(data: any): string | null {
   const candidates = [data.error?.message, data.message, data.error_description, typeof data.error === 'string' ? data.error : null, data.errors?.[0]?.message, data.errors?.[0]?.details, data.detail];
   const m = candidates.find((c) => typeof c === 'string' && c.trim());
   return m ? String(m).trim() : null;
+}
+
+// The body as text, reading at most `max` bytes: a tenant-chosen host (or a gzip bomb) can't fill the memory.
+async function readText(res: Response, max: number): Promise<string> {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+    if (n > max) {
+      await reader.cancel().catch(() => {});
+      throw new ResponseTooLargeError(max);
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 function retryAfter(h: string | null): number | undefined {
@@ -130,7 +151,7 @@ export async function httpJson<T = any>(ctx: Ctx, url: string, opts: HttpJsonOpt
   let res: Response;
   try {
     const init: PinnedInit = { method: opts.method ?? (body ? 'POST' : 'GET'), headers, body, redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000) };
-    if (opts.pinnedAddresses) init.pinnedAddresses = opts.pinnedAddresses;
+    if (opts.pinnedAddresses) Object.assign(init, { pinnedAddresses: opts.pinnedAddresses, maxBytes: opts.maxBytes ?? MAX_RESPONSE_BYTES });
     res = await ctx.fetch(url, init);
   } catch (e) {
     const name = (e as Error)?.name;
@@ -138,7 +159,11 @@ export async function httpJson<T = any>(ctx: Ctx, url: string, opts: HttpJsonOpt
     throw fail('UNAVAILABLE', `Could not reach ${host}`);
   }
 
-  const text = await res.text().catch(() => '');
+  const maxBytes = opts.maxBytes ?? MAX_RESPONSE_BYTES;
+  const text = await readText(res, maxBytes).catch((e) => {
+    if ((e as Error)?.name === 'ResponseTooLargeError') throw fail('BAD_REQUEST', `${host} sent a reply larger than ${sizeText(maxBytes)}`);
+    return '';
+  });
   let data: any = null;
   if (text) {
     try {
