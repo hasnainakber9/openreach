@@ -111,6 +111,11 @@ export function startBrowserLogin(ctx: Ctx, a: AccountRow): SignInState {
   const why = browserLoginUnavailable(ctx, a);
   if (why) throw new HttpError(a.driver !== 'playwright' ? 400 : browserWindowUnavailable(ctx) ? 403 : 409, why);
   if (ctx.drivers.signIns.get(a.id)?.state === 'waiting') throw new HttpError(409, 'A sign-in window is already open for this account.');
+  // One window at a time on the computer, for any account in any workspace: several LinkedIn windows would leave
+  // the person at the screen guessing which account each is for. (Once signed in, the window is closed already.)
+  if ([...ctx.drivers.signIns.values()].some((s) => s.state === 'waiting' && s.cancellable)) {
+    throw new HttpError(409, 'A LinkedIn sign-in window is already open on this computer for another account. Finish or cancel that sign-in first.');
+  }
   let closed!: () => void;
   const st: SignInState = {
     state: 'waiting',

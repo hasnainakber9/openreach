@@ -211,6 +211,34 @@ describe('Sign in in a browser window', () => {
     await t.api.call('POST', `/api/accounts/${t.id}/browser-login/cancel`, undefined, admin);
   });
 
+  it('opens one sign-in window at a time on the computer, across accounts and workspaces', async () => {
+    const t = await setup();
+    const second = t.w.ctx.db.insert('accounts', { workspace_id: t.row().workspace_id, name: 'Second seat', driver: 'playwright', timezone: 'UTC', status: 'needs_login', created_at: t.w.ctx.clock.now() });
+    await t.api.call('POST', `/api/accounts/${t.id}/browser-login`);
+    await until(() => t.launches.length === 1);
+    const busy = await t.api.call('POST', `/api/accounts/${second}/browser-login`);
+    expect(busy.status).toBe(409);
+    expect(busy.body.error).toMatch(/already open on this computer/);
+    // Another workspace on the same install is refused too, without naming the other account.
+    t.w.ctx.config.allowSignup = true;
+    await t.api.register('Other');
+    t.w.ctx.config.allowSignup = false;
+    const other = (await t.api.call('POST', '/api/accounts', { name: 'Elsewhere', driver: 'playwright' })).body.id;
+    const elsewhere = await t.api.call('POST', `/api/accounts/${other}/browser-login`);
+    expect(elsewhere.status).toBe(409);
+    expect(elsewhere.body.error).not.toMatch(/Real seat/);
+    expect(t.launches).toHaveLength(1);
+    expect(t.w.ctx.drivers.signIns.has(second)).toBe(false);
+
+    // Once that window is cancelled, the next one opens.
+    t.w.ctx.drivers.signIns.get(t.id)!.cancel();
+    await until(() => !t.w.ctx.drivers.isHeld(t.id));
+    t.win.closed = false;
+    expect((await t.api.call('POST', `/api/accounts/${other}/browser-login`)).status).toBe(200);
+    await until(() => t.launches.length === 2);
+    t.w.ctx.drivers.signIns.get(other)!.cancel();
+  });
+
   it('creates a real account without a cookie as signed out, except where the window is not offered', async () => {
     const t = await setup();
     const r = await t.api.call('POST', '/api/accounts', { name: 'New seat', driver: 'playwright' });
