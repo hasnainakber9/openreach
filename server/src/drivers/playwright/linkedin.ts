@@ -61,6 +61,8 @@ export interface PlaywrightOptions extends BrowserSpec {
   readyTimeoutMs?: number;
   // How long to wait for the message composer after clicking Message (default 20 s; tests shorten it).
   composerTimeoutMs?: number;
+  // How long to wait for the invitation dialog after clicking Connect (default 15 s; tests shorten it).
+  inviteTimeoutMs?: number;
 }
 
 // What a session problem tells the user to do. A pasted cookie often stops working in OpenReach's browser
@@ -448,16 +450,18 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
       .locator(SEL.dialog)
       .filter({ has: page.getByRole('button', { name: inviteButton }).or(page.locator(SEL.inviteEmail)) })
       .first();
-    let opened = await dialog.waitFor({ timeout: 15_000 }).then(() => true, () => false);
+    const timeout = this.o.inviteTimeoutMs ?? 15_000;
+    let opened = await dialog.waitFor({ timeout }).then(() => true, () => false);
     if (!opened && href && /custom-invite/.test(href) && !/custom-invite/.test(page.url())) {
       // The click did nothing visible: open the invitation page the link points to.
       await this.go(new URL(href, page.url()).toString());
-      opened = await dialog.waitFor({ timeout: 15_000 }).then(() => true, () => false);
+      opened = await dialog.waitFor({ timeout }).then(() => true, () => false);
     }
     if (!opened) {
       if (LABELS.weeklyLimit.test(await page.locator('body').innerText().catch(() => ''))) throw new DriverError('LIMIT_REACHED', 'LinkedIn weekly invitation limit reached');
       await page.keyboard.press('Escape').catch(() => {});
-      throw new DriverError('NOT_AVAILABLE', 'The invitation dialog did not open');
+      // On a busy computer the dialog can be slower than this: worth another try, not a verdict on the person.
+      throw new DriverError('TRANSIENT', 'The invitation dialog did not open in time');
     }
     if (await dialog.locator(SEL.inviteEmail).count()) {
       await page.keyboard.press('Escape');

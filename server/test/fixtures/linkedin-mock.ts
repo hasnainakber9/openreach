@@ -37,6 +37,8 @@ export interface MockPerson {
   noComposer?: boolean;
   // 2026: the invitation dialog appears empty and draws its buttons a moment later, as LinkedIn's does.
   slowInvite?: boolean;
+  // Clicking Connect opens no invitation dialog in time (the page is too slow, say).
+  noInviteDialog?: boolean;
   // The profile has a video (an intro or featured one): its player (video.js) puts two role=dialog elements
   // on the page, ahead of any dialog LinkedIn opens later. The first one, its error message, shows because
   // the media fails to load in the automated browser; the caption settings stay hidden.
@@ -243,7 +245,7 @@ document.addEventListener('click', (ev) => {
     dialog('<section><h3>Email</h3><a href="mailto:${p?.email ?? ''}">${p?.email ?? ''}</a></section><button aria-label="Dismiss" onclick="this.parentElement.remove()">x</button>');
   }
   if (act === 'follow') { log({ type: 'follow', slug }); t.querySelector('p').textContent = 'Following'; }
-  if (act === 'connect') inviteDialog(slug, first, !!person.slowInvite);
+  if (act === 'connect' && !person.noInviteDialog) inviteDialog(slug, first, !!person.slowInvite);
   if (act === 'pending') {
     const d = dialog('<p>Withdraw invitation?</p><button>Withdraw</button>');
     d.querySelector('button').onclick = () => { log({ type: 'withdraw', slug }); d.remove(); };

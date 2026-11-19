@@ -26,6 +26,7 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       'nina-navigate': { name: 'Nina Navigate', degree: '2nd', invitePage: true },
       'sara-slowinvite': { name: 'Sara Slowinvite', degree: '2nd', slowInvite: true },
       'vic-video': { name: 'Vic Video', degree: '2nd', videoPlayer: true, slowInvite: true },
+      'stan-stall': { name: 'Stan Stall', degree: '2nd', connectInMoreMenu: true, noInviteDialog: true },
       'pat-pending': { name: 'Pat Pending', degree: '2nd', pending: true },
       'olga-open': { name: 'Olga Open', degree: '2nd', inmail: 'compose' },
       // The older layout, which LinkedIn still serves to some members.
@@ -51,6 +52,7 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     pace: 0,
     readyTimeoutMs: 5000,
     composerTimeoutMs: 6000,
+    inviteTimeoutMs: 6000,
     onContext: async (ctx) => {
       await ctx.route('https://www.linkedin.com/**', async (route) => {
         const url = new URL(route.request().url());
@@ -117,6 +119,11 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     expect(await driver.connect(url('vic-video'), '')).toBe('sent');
     await settle();
     expect(events('connect').at(-1)).toEqual({ type: 'connect', slug: 'vic-video', text: '' });
+  }, 60_000);
+
+  it('reports an invitation dialog that never opens as worth retrying, not as "can\'t connect"', async () => {
+    await expect(driver.connect(url('stan-stall'), 'Hi Stan')).rejects.toMatchObject({ code: 'TRANSIENT' });
+    expect(events('connect').filter((e) => e.slug === 'stan-stall')).toEqual([]);
   }, 60_000);
 
   it('invites through the custom-invite page when the Connect link leads there', async () => {
