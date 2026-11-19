@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import type { JobHelpers, JobInfo } from '../jobs/queue.js';
-import { ownText, ruleOptOut } from '../mail/replyText.js';
+import { ruleOptOut, writtenText } from '../mail/replyText.js';
 import { AI_MAX_TIMEOUT_SECONDS } from '../providers/ai/types.js';
 import { ProviderError } from '../providers/http.js';
 import { logActivity } from '../services/activity.js';
@@ -66,7 +66,7 @@ export async function classifyJob(job: JobInfo<{ messageId: number }>, h: JobHel
   if (msg.category) return { category: msg.category, note: 'Already classified' };
   const ws = job.workspaceId!;
   // The label is about what the person wrote, not our email they quoted (its footer asks for "unsubscribe").
-  const own = ownText(msg.body);
+  const own = writtenText(msg.body);
   if (!own) {
     applyCategory(ctx, { workspaceId: ws, conversationId: msg.conversation_id, messageId: msg.id, category: 'other', confidence: 0, source: 'rules', note: 'no text of their own' });
     return { category: 'other', confidence: 0, note: 'No text of their own' };

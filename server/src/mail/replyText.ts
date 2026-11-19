@@ -34,17 +34,32 @@ const OUR_FOOTER = /^don['’]t want to hear from me again\?/i;
 // Signatures and legal notices that tend to mention unsubscribing ("To unsubscribe from our newsletter...").
 const BOILERPLATE = /^(this (e-?mail|message)\b.{0,80}\b(confidential|intended)|confidentiality notice|disclaimer\b|to unsubscribe from\b)/i;
 
-// Only what the person typed: no quoted history (empty when there is nothing else, so our own footer quoted
-// back never counts), and nothing from the signature, a quoted header block, our footer or a legal notice on.
-export function ownText(text: string): string {
+// What the person wrote, for the classifier: no quoted history (empty when there is nothing else, so our own
+// footer quoted back never counts), and nothing from a quoted header block, a separator line or our footer on,
+// which a reply can only hold as history. Signatures and legal notices stay: they can be the reply itself
+// ("This email was intended for my former colleague...").
+export function writtenText(text: string): string {
   const lines = stripQuoted(text).split('\n');
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();
-    if (lines[i].trimEnd() === '--' || /^_{5,}$/.test(t) || /^(sent from my|get outlook for)\b/i.test(t) || OUR_FOOTER.test(t) || BOILERPLATE.test(t)) break;
+    if (/^_{5,}$/.test(t) || OUR_FOOTER.test(t)) break;
     // "From: x@y", or "From: Name" followed by another header line.
     if (HEADER_FROM.test(t) && (t.includes('@') || HEADER_LINE.test(lines.slice(i + 1).find((l) => l.trim())?.trim() ?? ''))) break;
     out.push(lines[i]);
+  }
+  return out.join('\n').trim();
+}
+
+// Only what the person typed, for the short rule-based opt-out check: what they wrote, with nothing from the
+// signature or a legal notice on (they tend to mention unsubscribing).
+export function ownText(text: string): string {
+  const lines = writtenText(text).split('\n');
+  const out: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (line.trimEnd() === '--' || /^(sent from my|get outlook for)\b/i.test(t) || BOILERPLATE.test(t)) break;
+    out.push(line);
   }
   return out.join('\n').trim();
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { classifyRequest } from '../src/ai/prompts.js';
 import { parsePlans } from '../src/billing/plans.js';
 import { DAY, HOUR, MINUTE } from '../src/clock.js';
@@ -1305,6 +1305,38 @@ describe('opt-out replies', () => {
     const ai = simulatedAi.create(w.ctx, { integrationId: null, workspaceId: w.workspaceId, credentials: {}, settings: {} });
     const answer = await ai.complete(classifyRequest([{ direction: 'out', body: 'Hi. Don\'t want to hear from me again? Just reply "unsubscribe".' }], ''));
     expect(JSON.parse(answer.text).category).not.toBe('unsubscribe');
+  });
+
+  it('classifies a reply that reads like a legal notice or a signature line, not only the short opt-out text', async () => {
+    const { w, leads, otherId, sync, sent } = await sentWorld(3);
+    const now = w.ctx.clock.now();
+    const quote = `On Mon, Sara wrote:\n> Hi First0\n> Don't want to hear from me again? Just reply "unsubscribe" and I won't contact you again.`;
+    sync([
+      inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, text: `This email was intended for my former colleague who left Acme. Please remove me from your list.\n\n${quote}`, date: now }),
+      inbound({ uid: 2, from: 'person1@acme.dev', inReplyTo: sent(leads[1]).message_id, text: `To unsubscribe from your emails, do I just reply here? Please remove me from your list.\n\n${quote}`, date: now }),
+      inbound({ uid: 3, from: 'person2@acme.dev', inReplyTo: sent(leads[2]).message_id, text: `Hi Sara,\n\nThis email was intended for my former colleague John, who left Acme last year.\n\n${quote}`, date: now }),
+    ]);
+    // Record what the classifier is asked about.
+    const asked: string[] = [];
+    const create = simulatedAi.create.bind(simulatedAi);
+    const spy = vi.spyOn(simulatedAi, 'create').mockImplementation((ctx, cfg) => {
+      const ai = create(ctx, cfg);
+      return { ...ai, complete: (req) => (req.purpose === 'classify' && asked.push(req.prompt.split('<latest_reply>')[1].split('</latest_reply>')[0].trim()), ai.complete(req)) };
+    });
+    try {
+      await w.ctx.jobs.drain();
+    } finally {
+      spy.mockRestore();
+    }
+    const category = (l: number) => w.ctx.db.get<{ category: string }>('SELECT category FROM conversations WHERE lead_id = ?', [l])!.category;
+    for (const l of leads.slice(0, 2)) {
+      expect(category(l)).toBe('unsubscribe');
+      expect(suppressed(w, l).map((s) => s.reason)).toEqual(['unsubscribe', 'unsubscribe']);
+      expect(cl(w, otherId, l).state).toBe('skipped');
+    }
+    // A real model gets the whole of what they wrote (never the quote) to tell a wrong person from anyone else.
+    expect(asked).toContain('Hi Sara, This email was intended for my former colleague John, who left Acme last year.');
+    expect(asked.join('\n')).not.toMatch(/hear from me again/);
   });
 
   it('suppresses every identity on an opt-out reply from someone already suppressed by one', async () => {
