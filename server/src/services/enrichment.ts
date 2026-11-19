@@ -88,7 +88,8 @@ export const emailVerified = (l: Pick<LeadRow, 'email' | 'email_status'>, s: Pic
 // A lead enriched with the same options this recently is not looked up again (double clicks, overlapping runs).
 export const REUSE_MS = 10 * MINUTE;
 const MAX_ATTEMPTS = 3;
-export const ENRICH_JOB_OPTIONS = { concurrency: 2, maxAttempts: MAX_ATTEMPTS, timeoutMs: 5 * MINUTE };
+// Fair: a workspace with a big run (or a slow self-hosted verifier) can't hold both slots while others wait.
+export const ENRICH_JOB_OPTIONS = { concurrency: 2, maxAttempts: MAX_ATTEMPTS, timeoutMs: 5 * MINUTE, fair: true };
 
 export const optionsKey = (o: EnrichOptions) => (['find', 'verify', 'company', 'overwrite'] as const).filter((k) => o[k]).join(',');
 

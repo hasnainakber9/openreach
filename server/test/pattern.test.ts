@@ -525,6 +525,35 @@ describe('Pattern finder: settings and connection test', () => {
 });
 
 describe('Pattern finder: in the waterfall', () => {
+  it('a workspace whose verifier hangs holds one enrichment slot, not every one, while another workspace waits', async () => {
+    const w = makeWorld();
+    mx(w, { 'acme.dev': MX });
+    finder(w);
+    addVerifier(w, 'testverifier');
+    let hold = true;
+    const pending: ((r: VerifyResult) => void)[] = [];
+    verdicts.testverifier = () => (hold ? new Promise<VerifyResult>((r) => pending.push(r)) : invalid());
+    const ids = addLeads(w, 5);
+    w.ctx.db.run(`UPDATE leads SET email = NULL, company_domain = 'acme.dev' WHERE id IN (${ids.join(',')})`);
+    const o = { find: true, verify: true, company: false, overwrite: false };
+    startEnrichmentRun(w.ctx, w.workspaceId, null, ids, o);
+    // Another workspace's single lead, queued after the backlog.
+    const other = w.ctx.db.insert('workspaces', { name: 'Other', created_at: 0 });
+    const otherList = w.ctx.db.insert('lead_lists', { workspace_id: other, name: 'List', created_at: 0 });
+    const [theirs] = addLeads({ ...w, workspaceId: other, listId: otherList }, 1, 'theirs');
+    w.ctx.db.run('UPDATE leads SET email = NULL WHERE id = ?', [theirs]);
+    w.ctx.clock.advance(1);
+    startEnrichmentRun(w.ctx, other, null, [theirs], o);
+    const t = w.ctx.jobs.tick();
+    for (let i = 0; i < 50 && lead(w, theirs).enrichment_status === 'queued'; i++) await new Promise((r) => setTimeout(r, 5));
+    // Their lead was looked up (the simulated finder knows nobody at Acme) while one of the backlog's waits.
+    expect(lead(w, theirs).enrichment_status).toBe('not_found');
+    expect(pending).toHaveLength(1);
+    hold = false;
+    for (const r of pending) r(invalid());
+    await t;
+  });
+
   it('finds and verifies with the self-hosted verifier end to end, at no credit cost, without checking the address twice', async () => {
     const w = makeWorld();
     w.ctx.stripe = {} as any;

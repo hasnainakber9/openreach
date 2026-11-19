@@ -45,6 +45,9 @@ export interface HandlerOptions {
   concurrency?: number;
   maxAttempts?: number;
   timeoutMs?: number; // longest a run may go without finishing or calling progress()
+  // Shared fairly between workspaces: a free slot goes to a workspace with none of this type running before
+  // another job of a workspace that has one, so one workspace's backlog can't hold every slot while others wait.
+  fair?: boolean;
 }
 
 export interface EnqueueOptions {
@@ -79,6 +82,7 @@ interface HandlerDef {
   concurrency: number;
   maxAttempts: number;
   timeoutMs: number;
+  fair: boolean;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -95,7 +99,7 @@ const THIS_RUN = "id = ? AND status = 'running' AND attempts = ?";
 export class JobQueue {
   private handlers = new Map<string, HandlerDef>();
   // Jobs running in this process. This (not the tick) bounds concurrency, since production ticks overlap.
-  private inFlight = new Map<number, string>();
+  private inFlight = new Map<number, { type: string; workspaceId: number | null }>();
   // Stops a run in this process (when this instance stops being the leader).
   private stoppers = new Map<number, () => void>();
   private recovered = false;
@@ -112,6 +116,7 @@ export class JobQueue {
       concurrency: opts.concurrency ?? Infinity,
       maxAttempts: opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT,
+      fair: opts.fair ?? false,
     });
   }
 
@@ -153,9 +158,10 @@ export class JobQueue {
     while (this.inFlight.size < this.ctx.config.jobConcurrency && this.gate()) {
       const types = this.eligibleTypes();
       if (!types.length) break;
-      const row = this.claim(types, now);
+      const busy = this.busyWorkspaces();
+      const row = (busy.length ? this.claim(types, now, busy) : undefined) ?? this.claim(types, now);
       if (!row) break;
-      this.inFlight.set(row.id, row.type);
+      this.inFlight.set(row.id, { type: row.type, workspaceId: row.workspace_id });
       started.push(this.run(row));
     }
     await Promise.all(started);
@@ -211,21 +217,33 @@ export class JobQueue {
 
   private eligibleTypes() {
     const running = new Map<string, number>();
-    for (const t of this.inFlight.values()) running.set(t, (running.get(t) ?? 0) + 1);
+    for (const { type: t } of this.inFlight.values()) running.set(t, (running.get(t) ?? 0) + 1);
     return [...this.handlers].filter(([t, d]) => (running.get(t) ?? 0) < d.concurrency).map(([t]) => t);
+  }
+
+  // Per fair type, the workspaces with a job of it running here.
+  private busyWorkspaces(): [string, number[]][] {
+    const busy = new Map<string, Set<number>>();
+    for (const { type, workspaceId } of this.inFlight.values()) {
+      if (workspaceId == null || !this.handlers.get(type)?.fair) continue;
+      busy.set(type, (busy.get(type) ?? new Set()).add(workspaceId));
+    }
+    return [...busy].map(([t, ids]) => [t, [...ids]]);
   }
 
   // One statement, so two workers can never claim the same job. On Postgres the row lock is skipped by
   // a concurrent claim (which takes the next job instead of waiting), and the status re-check makes a
-  // claim that lost the race return nothing rather than run the job twice.
-  private claim(types: string[], now: number): JobRow | undefined {
+  // claim that lost the race return nothing rather than run the job twice. `skip`: jobs of these types and
+  // workspaces are passed over (fair types whose workspace already has one running).
+  private claim(types: string[], now: number, skip: [string, number[]][] = []): JobRow | undefined {
     const skipLocked = this.ctx.db.dialect === 'postgres' ? ' FOR UPDATE SKIP LOCKED' : '';
+    const fair = skip.map(([, ids]) => ` AND NOT (type = ? AND workspace_id IS NOT NULL AND workspace_id IN (${ids.map(() => '?').join(',')}))`).join('');
     const row = this.ctx.db.get<JobRow>(
       `UPDATE jobs SET status = 'running', attempts = attempts + 1, locked_until = ?, updated_at = ?
-       WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_at <= ? AND type IN (${types.map(() => '?').join(',')}) ORDER BY run_at, id LIMIT 1${skipLocked})
+       WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_at <= ? AND type IN (${types.map(() => '?').join(',')})${fair} ORDER BY run_at, id LIMIT 1${skipLocked})
          AND status = 'queued'
        RETURNING *`,
-      [now + DEFAULT_TIMEOUT, now, now, ...types],
+      [now + DEFAULT_TIMEOUT, now, now, ...types, ...skip.flat(2)],
     );
     const timeout = row && this.handlers.get(row.type)!.timeoutMs;
     if (row && timeout !== DEFAULT_TIMEOUT) {
