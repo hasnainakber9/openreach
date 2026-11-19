@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import type { BrowserContext, Locator, Page } from 'playwright';
+import type { BrowserContext, Frame, Locator, Page } from 'playwright';
 import {
   DriverError,
+  Offline,
   profileUrl,
   publicIdFromUrl,
   type ConnectResult,
@@ -14,6 +15,8 @@ import {
 } from '../types.js';
 import {
   companyFromCard,
+  composerIsFor,
+  composerOwners,
   connectionRows,
   nameFromTitle,
   namesOtherPerson,
@@ -26,6 +29,10 @@ import {
   type TopCardSnapshot,
 } from './parse.js';
 import { BLOCKED_PATHS, LABELS, SEL, URLS } from './selectors.js';
+
+// Chromium's errors for a computer that can't reach the internet: no Wi-Fi, DNS not answering, a network that
+// is changing or drops every packet. A page that is merely slow ends in Playwright's own timeout instead.
+const OFFLINE = /net::ERR_(?:INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|NETWORK_CHANGED|NETWORK_IO_SUSPENDED|ADDRESS_UNREACHABLE|CONNECTION_TIMED_OUT|TIMED_OUT|CONNECTION_FAILED|PROXY_CONNECTION_FAILED)\b/;
 
 // Drives a real Chromium session logged in with the member's `li_at` cookie. Each account gets
 // its own persistent profile directory and (optionally) its own proxy, and every step is paced
@@ -61,6 +68,8 @@ export interface PlaywrightOptions extends BrowserSpec {
   readyTimeoutMs?: number;
   // How long to wait for the message composer after clicking Message (default 20 s; tests shorten it).
   composerTimeoutMs?: number;
+  // How long to wait for the invitation dialog after clicking Connect (default 15 s; tests shorten it).
+  inviteTimeoutMs?: number;
 }
 
 // What a session problem tells the user to do. A pasted cookie often stops working in OpenReach's browser
@@ -149,12 +158,28 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
 
   private async go(url: string): Promise<Page> {
     const page = await this.open();
+    // Chromium follows a load that found no connection with its own error page, a moment after the load
+    // failed. The failure is reported once that page is up: otherwise it cuts short the next page opened.
+    let errorPageUp = () => {};
+    const errorPage = new Promise<void>((r) => (errorPageUp = r));
+    const onNavigated = (f: Frame) => {
+      if (f === page.mainFrame() && f.url().startsWith('chrome-error:')) errorPageUp();
+    };
+    page.on('framenavigated', onNavigated);
     // LinkedIn's pages are heavy; on a busy laptop the first load can take well over 20 s.
-    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((e: Error) => {
-      // An invalid li_at typically sends LinkedIn into a login redirect loop.
-      if (/ERR_TOO_MANY_REDIRECTS/.test(e.message)) throw new DriverError('SESSION_EXPIRED', `LinkedIn keeps redirecting, so it does not accept this session in OpenReach's browser. ${RELOGIN_HINT}`);
-      throw new DriverError('TRANSIENT', `Navigation failed: ${e.message.split('\n')[0]}`);
-    });
+    const res = await page
+      .goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+      .catch(async (e: Error) => {
+        // An invalid li_at typically sends LinkedIn into a login redirect loop.
+        if (/ERR_TOO_MANY_REDIRECTS/.test(e.message)) throw new DriverError('SESSION_EXPIRED', `LinkedIn keeps redirecting, so it does not accept this session in OpenReach's browser. ${RELOGIN_HINT}`);
+        const offline = OFFLINE.exec(e.message);
+        if (offline) {
+          await Promise.race([errorPage, new Promise((r) => setTimeout(r, 5_000))]);
+          throw new Offline(offline[0]);
+        }
+        throw new DriverError('TRANSIENT', `Navigation failed: ${e.message.split('\n')[0]}`);
+      })
+      .finally(() => page.off('framenavigated', onNavigated));
     this.guard(page);
     if (res && res.status() === 999) throw new DriverError('LIMIT_REACHED', 'LinkedIn is throttling this account (HTTP 999)');
     if (res && res.status() === 404) throw new DriverError('NOT_FOUND', `Page not found: ${url}`);
@@ -288,11 +313,13 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   // Waits for the composer that clicking Message opened. LinkedIn keeps conversation bubbles open across
   // pages, so a bubble whose own profile card or header links to this person comes first (a link further
   // down, in a message or a shared profile, can be anyone), then a new dialog holding a composer (Sales
-  // Navigator), then a composer that was not there before. A new dialog without one (an InMail upsell,
-  // say) is LinkedIn's answer instead: 'declined'. Nothing at all before the deadline is null: on a busy
-  // computer the bubble can be slow, and that is worth another try, not a verdict on the person. The
-  // profile URL may have redirected (a URN to the vanity name), so both ids count.
-  private async waitForComposer(page: Page, url: string, boxSel: string, before: ComposerBaseline): Promise<{ box: Locator; scope: Locator } | 'declined' | null> {
+  // Navigator), then a composer that was not there before, once its bubble names this person (`person`):
+  // another bubble can open meanwhile (an incoming chat, one LinkedIn restores late) and is never written
+  // in. A new dialog without one (an InMail upsell, say) is LinkedIn's answer instead: 'declined'. Nothing
+  // usable before the deadline is null: on a busy computer the bubble can be slow, and that is worth
+  // another try, not a verdict on the person. The profile URL may have redirected (a URN to the vanity
+  // name), so both ids count.
+  private async waitForComposer(page: Page, url: string, person: string, boxSel: string, before: ComposerBaseline): Promise<{ box: Locator; scope: Locator } | 'declined' | null> {
     const ids = [...new Set([publicIdFromUrl(url), publicIdFromUrl(page.url())].filter((id): id is string => !!id))];
     const own = ids.map((id) => SEL.bubbleOwnerLink(encodeURIComponent(id))).join(', ');
     const bubble = own ? page.locator(SEL.messageBubble).filter({ has: page.locator(own) }) : null;
@@ -300,7 +327,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     const dialogs = page.locator(SEL.dialog);
     const deadline = Date.now() + (this.o.composerTimeoutMs ?? 20_000);
     let answeredAt = 0;
-    while (Date.now() < deadline) {
+    for (let poll = 0; Date.now() < deadline; poll++) {
       if (bubble && (await bubble.locator(boxSel).count())) return this.pinComposer(page, bubble.last().locator(boxSel).last());
       if ((await dialogs.count()) > before.dialogs) {
         const d = dialogs.last();
@@ -308,7 +335,12 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
         answeredAt ||= Date.now();
         if (Date.now() - answeredAt > 1500) return 'declined';
       }
-      if (await fresh.count()) return this.pinComposer(page, fresh.first());
+      const tag = `${poll}-${Math.round(Math.random() * 1e9)}`;
+      const owners = await fresh
+        .evaluateAll(composerOwners, { container: SEL.composerContainer, ownerLinks: SEL.bubbleOwnerLinks, title: SEL.bubbleTitle, recipients: SEL.bubbleRecipients, tag })
+        .catch(() => []);
+      const i = owners.findIndex((o) => composerIsFor(o, ids, person));
+      if (i >= 0) return this.pinComposer(page, page.locator(`[data-or-fresh="${tag}-${i}"]`));
       await new Promise((r) => setTimeout(r, 250));
     }
     return null;
@@ -438,19 +470,35 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     await btn.click();
     await this.pause();
 
-    const dialog = page.locator(SEL.dialog).first();
-    let opened = await dialog.waitFor({ timeout: 10_000 }).then(() => true, () => false);
+    // The invitation dialog is the one with the invitation's buttons (or the email field LinkedIn sometimes
+    // asks for): other role=dialog elements can come first on the page, such as the "Modal Window" a profile
+    // video's player shows when its media doesn't load. Waiting for the buttons also covers 2026's dialog,
+    // which appears first and draws them a moment later (read too early, it has no "Add a note" and no
+    // "Send without a note").
+    const inviteButton = new RegExp([LABELS.addNote, LABELS.sendWithoutNote, LABELS.sendInvite].map((r) => r.source).join('|'), 'i');
+    const dialog = page
+      .locator(SEL.dialog)
+      .filter({ has: page.getByRole('button', { name: inviteButton }).or(page.locator(SEL.inviteEmail)) })
+      .first();
+    const timeout = this.o.inviteTimeoutMs ?? 15_000;
+    let opened = await dialog.waitFor({ timeout }).then(() => true, () => false);
     if (!opened && href && /custom-invite/.test(href) && !/custom-invite/.test(page.url())) {
       // The click did nothing visible: open the invitation page the link points to.
       await this.go(new URL(href, page.url()).toString());
-      opened = await dialog.waitFor({ timeout: 10_000 }).then(() => true, () => false);
+      opened = await dialog.waitFor({ timeout }).then(() => true, () => false);
     }
-    if (!opened) throw new DriverError('NOT_AVAILABLE', 'The invitation dialog did not open');
+    if (!opened) {
+      if (LABELS.weeklyLimit.test(await page.locator('body').innerText().catch(() => ''))) throw new DriverError('LIMIT_REACHED', 'LinkedIn weekly invitation limit reached');
+      await page.keyboard.press('Escape').catch(() => {});
+      // On a busy computer the dialog can be slower than this: worth another try, not a verdict on the person.
+      throw new DriverError('TRANSIENT', 'The invitation dialog did not open in time');
+    }
     if (await dialog.locator(SEL.inviteEmail).count()) {
       await page.keyboard.press('Escape');
       throw new DriverError('NOT_AVAILABLE', 'LinkedIn requires their email address to connect');
     }
-    if (note.trim()) {
+    let withNote = !!note.trim();
+    if (withNote) {
       const add = dialog.getByRole('button', { name: LABELS.addNote });
       if (await add.count()) {
         await add.click();
@@ -460,15 +508,22 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
           await page.keyboard.press('Escape');
           await btn.click({ timeout: 5000 }).catch(() => {});
           await this.pause();
+          withNote = false;
         } else {
           await this.type(dialog.locator(SEL.inviteNote).first(), note);
           await this.pause();
         }
       }
     }
-    const send = dialog.getByRole('button', { name: note.trim() ? LABELS.sendInvite : LABELS.sendWithoutNote });
-    const fallback = dialog.getByRole('button', { name: LABELS.sendInvite });
-    await ((await send.count()) ? send : fallback).first().click();
+    const send = dialog
+      .getByRole('button', { name: withNote ? LABELS.sendInvite : LABELS.sendWithoutNote })
+      .or(dialog.getByRole('button', { name: LABELS.sendInvite }))
+      .first();
+    if (!(await send.waitFor({ timeout: 15_000 }).then(() => true, () => false))) {
+      await page.keyboard.press('Escape').catch(() => {});
+      throw new DriverError('TRANSIENT', 'The invitation dialog showed no Send button');
+    }
+    await send.click();
     await this.pause(1.5, 3);
     const body = await page.locator('body').innerText().catch(() => '');
     if (LABELS.weeklyLimit.test(body)) throw new DriverError('LIMIT_REACHED', 'LinkedIn weekly invitation limit reached');
@@ -495,7 +550,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     const before = await this.composerBaseline(page, SEL.messageBox);
     // 2026: Message is a link to /messaging/compose/...; LinkedIn opens it as a bubble on the same page.
     await btn.click();
-    const composer = await this.waitForComposer(page, url, SEL.messageBox, before);
+    const composer = await this.waitForComposer(page, url, name, SEL.messageBox, before);
     if (!composer || composer === 'declined') {
       await page.keyboard.press('Escape');
       if (!composer) throw new DriverError('TRANSIENT', 'The message box did not open in time');
@@ -720,7 +775,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     await this.pause();
 
     // Either the composer opens or LinkedIn answers with a dialog (Premium upsell, no credits left).
-    const composer = await this.waitForComposer(page, url, SEL.inmailBody, before);
+    const composer = await this.waitForComposer(page, url, name, SEL.inmailBody, before);
     await this.pause(0.5, 1.2);
     if (!composer) {
       await page.keyboard.press('Escape');

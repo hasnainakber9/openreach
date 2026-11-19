@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CONTACT_MARK, companyFromCard, nameFromTitle, namesOtherPerson, parseDegree, parseTopCardLines } from '../src/drivers/playwright/parse.js';
+import { CONTACT_MARK, companyFromCard, composerIsFor, isPersonName, nameFromTitle, namesOtherPerson, parseDegree, parseTopCardLines } from '../src/drivers/playwright/parse.js';
 import { LABELS } from '../src/drivers/playwright/selectors.js';
 
 // The pure parts of reading LinkedIn's 2026 profile page. The same helpers run against the scrubbed live
@@ -82,6 +82,26 @@ describe('LinkedIn control labels', () => {
     expect(namesOtherPerson('Follow', 'Jane Doe')).toBe(false);
     expect(namesOtherPerson('Message', 'Jane Doe')).toBe(false);
     expect(namesOtherPerson('Invite Alex Other to connect', '')).toBe(false);
+  });
+
+  it('tells whose conversation a message composer is in', () => {
+    const bubble = { contained: true, links: [], title: '', recipients: [] };
+    expect(isPersonName(' jane  DOE ', 'Jane Doe')).toBe(true);
+    expect(isPersonName('José Ruiz', 'Jose Ruiz')).toBe(true);
+    expect(isPersonName('Jane', 'Jane Doe')).toBe(false);
+    expect(isPersonName('Jane Doe', '')).toBe(false);
+    // The bubble's own profile link decides, whatever its header says.
+    expect(composerIsFor({ ...bubble, links: ['/in/jane-doe/'], title: 'Ollie Other' }, ['jane-doe'], 'Jane Doe')).toBe(true);
+    expect(composerIsFor({ ...bubble, links: ['https://www.linkedin.com/in/ollie-other/'], title: 'Jane Doe' }, ['jane-doe'], 'Jane Doe')).toBe(false);
+    // A new message: its recipients, all of them this person; then the header's title.
+    expect(composerIsFor({ ...bubble, title: 'New message', recipients: ['Jane Doe'] }, ['jane-doe'], 'Jane Doe')).toBe(true);
+    expect(composerIsFor({ ...bubble, title: 'New message', recipients: ['Jane Doe', 'Ollie Other'] }, ['jane-doe'], 'Jane Doe')).toBe(false);
+    expect(composerIsFor({ ...bubble, title: 'Jane Doe' }, ['jane-doe'], 'Jane Doe')).toBe(true);
+    expect(composerIsFor({ ...bubble, title: 'Ollie Other' }, ['jane-doe'], 'Jane Doe')).toBe(false);
+    // Still loading, naming nobody: not yet.
+    expect(composerIsFor(bubble, ['jane-doe'], 'Jane Doe')).toBe(false);
+    // A composer outside any bubble or dialog is nobody else's conversation.
+    expect(composerIsFor({ ...bubble, contained: false }, ['jane-doe'], 'Jane Doe')).toBe(true);
   });
 
   it('matches the 2026 names and the older ones', () => {

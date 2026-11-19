@@ -26,9 +26,11 @@ import {
   mailboxSchedule,
   optOutProblem,
   pinMailbox,
+  readsReplies,
   releaseUnstartedMailboxLeads,
   remainingToday,
   smtpTransport,
+  syncedMailboxes,
   type MailboxCapacityCache,
 } from './mailboxes.js';
 import { mailLinks, signToken } from './tracking.js';
@@ -71,7 +73,7 @@ export class MailRunner {
     // Leads such a mailbox hasn't emailed yet go to the campaign's other mailboxes meanwhile. Replies are
     // still read, so a lead it already emailed stops when they answer.
     for (const id of this.overPlan) releaseUnstartedMailboxLeads(this.ctx, id);
-    const boxes = this.ctx.db.all<MailboxRow>("SELECT * FROM mailboxes WHERE status IN ('active', 'paused')");
+    const boxes = syncedMailboxes(this.ctx);
     this.scheduleSyncs(boxes);
     await Promise.all(
       boxes
@@ -89,7 +91,8 @@ export class MailRunner {
     );
   }
 
-  // Replies and bounces arrive at any hour, so syncs ignore the sending window (paused mailboxes too).
+  // Replies and bounces arrive at any hour, so syncs ignore the sending window (paused mailboxes too, and those
+  // stopped until a sync works).
   private scheduleSyncs(boxes: MailboxRow[]) {
     const now = this.ctx.clock.now();
     for (const mb of boxes) {
@@ -107,7 +110,8 @@ export class MailRunner {
     for (let tries = 0; tries < CANDIDATES; tries++) {
       const job = this.nextJob(mb);
       if (!job) return;
-      // Hosted servers need a working unsubscribe link; self-hosted ones fall back to reply mode (see optOutProblem).
+      // Hosted servers need a working unsubscribe link; self-hosted ones fall back to reply mode, which needs the
+      // inbox read (see optOutProblem).
       const optOut = optOutProblem(ctx, mb);
       if (optOut) return mailboxNeedsAttention(ctx, mb, optOut);
       if (!isSimulated(mb) && !smtpTransport(ctx, mb)) return mailboxNeedsAttention(ctx, mb, 'Add SMTP settings to send from this mailbox');
@@ -263,6 +267,7 @@ export class MailRunner {
       signature: mb.signature,
       messageId,
       thread,
+      repliesRead: readsReplies(ctx, mb),
       links: links && {
         unsubscribe: links.unsubscribe,
         openPixel: settings.trackOpens ? links.openPixel : null,

@@ -36,6 +36,19 @@ describe('inbox threads without a profile link', () => {
     expect(w.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM conversations')!.n).toBe(2);
   });
 
+  it('matches a message of several lines however LinkedIn spaced its lines', () => {
+    const w = makeWorld();
+    const [a] = addLeads(w, 1);
+    recordOutbound(w.ctx, w.account(), lead(w, a), 'Hi First0,\n\nSaw your post on growth.\nWorth a chat?');
+    // One <p> per line and <p><br></p> for a blank one: innerText puts blank lines around each paragraph.
+    const read = 'Hi First0,\n\n\n\n\nSaw your post on growth.\n\nWorth a chat?';
+    expect(storeThread(w.ctx, w.account(), thread('2-x', 'First0 Last', [['out', read], ['in', 'Sure, when?']]))).toBe(1);
+    expect(convOf(w, '2-x')).toMatchObject({ lead_id: a });
+    expect(lead(w, a).replied_at).toBeTruthy();
+    // The campaign's local copy is adopted, not stored a second time.
+    expect(w.ctx.db.all<{ external_id: string }>("SELECT external_id FROM messages WHERE direction = 'out'")).toEqual([{ external_id: `2-x:${read}` }]);
+  });
+
   it('leaves the thread without a lead when the name or message does not settle it', () => {
     const w = makeWorld();
     const [a, b] = addLeads(w, 2);

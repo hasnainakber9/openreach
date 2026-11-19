@@ -320,6 +320,81 @@ describe('job queue', () => {
     await t;
   });
 
+  it('gives a fair type’s free slot to a workspace with none running before another of a busy one', async () => {
+    const w = makeWorld();
+    const other = w.ctx.db.insert('workspaces', { name: 'Other', created_at: w.ctx.clock.now() });
+    const gate = deferred();
+    const started: [number | null, number][] = [];
+    w.ctx.jobs.register(
+      'test.block',
+      async (j) => {
+        started.push([j.workspaceId, j.payload.n]);
+        await gate.promise;
+      },
+      { concurrency: 2, fair: true },
+    );
+    // A big backlog from one workspace, then one job from another, due later.
+    for (let n = 0; n < 5; n++) w.ctx.jobs.enqueue('test.block', { n }, { workspaceId: w.workspaceId });
+    w.ctx.jobs.enqueue('test.block', { n: 9 }, { workspaceId: other, runAt: w.ctx.clock.now() + 1 });
+    w.ctx.jobs.enqueue('test.block', { n: 7 }, { workspaceId: null, runAt: w.ctx.clock.now() + 2 });
+    w.ctx.clock.advance(2);
+    const t = w.ctx.jobs.tick();
+    await settle();
+    expect(started).toEqual([
+      [w.workspaceId, 0],
+      [other, 9],
+    ]);
+    gate.resolve();
+    await t;
+    // With no one else waiting, a workspace may use every slot (system jobs take their turn too, and had none yet).
+    started.length = 0;
+    await w.ctx.jobs.tick();
+    expect(started).toEqual([
+      [null, 7],
+      [w.workspaceId, 1],
+    ]);
+    started.length = 0;
+    await w.ctx.jobs.tick();
+    expect(started).toEqual([
+      [w.workspaceId, 2],
+      [w.workspaceId, 3],
+    ]);
+  });
+
+  it('takes turns between billing roots and their workspaces, so backlogs in several workspaces can’t keep another waiting', async () => {
+    const w = makeWorld();
+    const now = w.ctx.clock.now();
+    // One tenant with an agency client workspace (same billing root) and a second sign-up, each with a backlog.
+    const client = w.ctx.db.insert('workspaces', { name: 'Client', kind: 'client', parent_id: w.workspaceId, created_at: now });
+    const second = w.ctx.db.insert('workspaces', { name: 'Second', created_at: now });
+    const victim = w.ctx.db.insert('workspaces', { name: 'Victim', created_at: now });
+    const started: number[] = [];
+    const release: (() => void)[] = [];
+    w.ctx.jobs.register(
+      'test.block',
+      async (j) => {
+        started.push(j.workspaceId!);
+        await new Promise<void>((r) => release.push(r));
+      },
+      { concurrency: 2, fair: true },
+    );
+    for (let n = 0; n < 20; n++) for (const ws of [w.workspaceId, client, second]) w.ctx.jobs.enqueue('test.block', { n }, { workspaceId: ws });
+    w.ctx.jobs.enqueue('test.block', { n: 0 }, { workspaceId: victim, runAt: now + 1 });
+    w.ctx.clock.advance(1);
+    const ticks = [w.ctx.jobs.tick()];
+    await settle();
+    // Production ticks overlap: a freed slot is filled by the next tick while the other job still runs.
+    for (let i = 0; i < 4; i++) {
+      release.shift()!();
+      await settle();
+      ticks.push(w.ctx.jobs.tick());
+      await settle();
+    }
+    expect(started).toEqual([w.workspaceId, second, victim, client, second, w.workspaceId]);
+    while (release.length) release.shift()!();
+    await Promise.all(ticks);
+  });
+
   it('cleans up old finished jobs', async () => {
     const w = makeWorld();
     const old = w.ctx.clock.now() - 8 * 24 * HOUR;

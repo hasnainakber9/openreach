@@ -37,21 +37,22 @@ export function suppressIdentity(ctx: Ctx, workspaceId: number, kind: Suppressio
 }
 
 // Suppresses every identity the lead has (profile, email, phone) and takes the lead out of
-// every running campaign, so no channel contacts them again.
-export function suppressLead(ctx: Ctx, lead: LeadRow, reason: SuppressionReason, source: string | null) {
-  ctx.db.tx(() => {
-    suppressIdentity(ctx, lead.workspace_id, 'linkedin', lead.public_id, reason, source, lead.id);
-    if (lead.email) suppressIdentity(ctx, lead.workspace_id, 'email', lead.email, reason, source, lead.id);
-    if (lead.phone) suppressIdentity(ctx, lead.workspace_id, 'phone', lead.phone, reason, source, lead.id);
-    stopLeadEverywhere(ctx, lead.id, 'skipped', `Suppressed: ${reason}`);
+// every running campaign, so no channel contacts them again. Every identity is written even when one is
+// already on the list, so the opt-out stays when that row is removed. Returns false, and emits no
+// lead.suppressed event, when it changed nothing (every identity listed, no running campaign).
+export function suppressLead(ctx: Ctx, lead: LeadRow, reason: SuppressionReason, source: string | null): boolean {
+  const changed = ctx.db.tx(() => {
+    const ids: [SuppressionKind, string | null][] = [
+      ['linkedin', lead.public_id],
+      ['email', lead.email],
+      ['phone', lead.phone],
+    ];
+    let added = false;
+    for (const [kind, value] of ids) if (value && suppressIdentity(ctx, lead.workspace_id, kind, value, reason, source, lead.id)) added = true;
+    return stopLeadEverywhere(ctx, lead.id, 'skipped', `Suppressed: ${reason}`) > 0 || added;
   });
-  ctx.webhooks.emit(lead.workspace_id, 'lead.suppressed', { lead: publicLead(lead, ctx), reason, source });
-}
-
-// Already on the do-not-contact list and in no running campaign: suppressing again would change nothing
-// (and only repeat the lead.suppressed event).
-export function alreadySuppressed(ctx: Ctx, lead: LeadRow): boolean {
-  return !!suppressionReason(ctx, lead) && !ctx.db.get("SELECT 1 FROM campaign_leads WHERE lead_id = ? AND state = 'active'", [lead.id]);
+  if (changed) ctx.webhooks.emit(lead.workspace_id, 'lead.suppressed', { lead: publicLead(lead, ctx), reason, source });
+  return changed;
 }
 
 // Why this lead must not be contacted, or null. Checked when leads join a campaign and before every action.

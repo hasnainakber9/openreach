@@ -836,4 +836,12 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE accounts ADD COLUMN session_origin TEXT;
   UPDATE accounts SET session_origin = 'pasted' WHERE session_enc IS NOT NULL;
   `,
+  // IMAP sync health: last_sync_at is stamped when a sync is queued, so it says nothing about whether replies
+  // were read. These record the last sync that read the inbox, and since when (and why) syncs have failed:
+  // reply mode stops sending while "unsubscribe" replies go unread (see optOutProblem).
+  `
+  ALTER TABLE mailboxes ADD COLUMN last_sync_ok_at INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE mailboxes ADD COLUMN sync_failing_since INTEGER;
+  ALTER TABLE mailboxes ADD COLUMN sync_error TEXT;
+  `,
 ];

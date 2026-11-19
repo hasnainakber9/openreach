@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import type { Browser, Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PlaywrightLinkedInDriver } from '../src/drivers/playwright/linkedin.js';
-import { companyFromCard, connectionRows, parseTopCardLines, profileLinkRows, threadEvents, topCardSnapshot } from '../src/drivers/playwright/parse.js';
+import { Offline } from '../src/drivers/types.js';
+import { companyFromCard, composerIsFor, composerOwners, connectionRows, parseTopCardLines, profileLinkRows, threadEvents, topCardSnapshot } from '../src/drivers/playwright/parse.js';
 import { LABELS, SEL } from '../src/drivers/playwright/selectors.js';
 import { mockLinkedIn, type MockState } from './fixtures/linkedin-mock.js';
 
@@ -21,9 +22,15 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       'jane-doe': { name: 'Jane Doe', degree: '1st', email: 'jane@northwind.example', staleBubble: true },
       'lucy-late': { name: 'Lucy Late', degree: '1st', staleBubble: true, lateCard: true },
       'sam-slow': { name: 'Sam Slow', degree: '1st', noComposer: true },
+      'paula-pop': { name: 'Paula Pop', degree: '1st', otherBubbleFirst: true, lateCard: true },
+      'sid-stuck': { name: 'Sid Stuck', degree: '1st', otherBubbleFirst: true, noComposer: true },
+      'ivy-inmail': { name: 'Ivy Inmail', degree: '2nd', inmail: 'compose', otherBubbleFirst: true, lateCard: true },
       'max-mueller': { name: 'Max Mueller', degree: '2nd', staleBubble: true },
       'lena-hidden': { name: 'Lena Hidden', degree: '2nd', connectInMoreMenu: true },
       'nina-navigate': { name: 'Nina Navigate', degree: '2nd', invitePage: true },
+      'sara-slowinvite': { name: 'Sara Slowinvite', degree: '2nd', slowInvite: true },
+      'vic-video': { name: 'Vic Video', degree: '2nd', videoPlayer: true, slowInvite: true },
+      'stan-stall': { name: 'Stan Stall', degree: '2nd', connectInMoreMenu: true, noInviteDialog: true },
       'pat-pending': { name: 'Pat Pending', degree: '2nd', pending: true },
       'olga-open': { name: 'Olga Open', degree: '2nd', inmail: 'compose' },
       // The older layout, which LinkedIn still serves to some members.
@@ -42,6 +49,8 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
   const dir = mkdtempSync(join(tmpdir(), 'or-driver-'));
   const serve = mockLinkedIn(state);
   let redirectToCheckpoint = false;
+  // The network failure every request to LinkedIn gets, as when the Wi-Fi drops (null: online).
+  let offline: 'namenotresolved' | 'internetdisconnected' | null = null;
   const driver = new PlaywrightLinkedInDriver({
     liAt: 'fake-cookie',
     userDataDir: dir,
@@ -49,9 +58,11 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     pace: 0,
     readyTimeoutMs: 5000,
     composerTimeoutMs: 6000,
+    inviteTimeoutMs: 6000,
     onContext: async (ctx) => {
       await ctx.route('https://www.linkedin.com/**', async (route) => {
         const url = new URL(route.request().url());
+        if (offline) return route.abort(offline);
         if (redirectToCheckpoint) {
           // LinkedIn bounces to /checkpoint/...; rewrite the URL the same way before the page settles.
           return route.fulfill({ contentType: 'text/html', body: "<script>history.replaceState(null, '', '/checkpoint/challenge/')</script><h1>Security check</h1>" });
@@ -102,6 +113,26 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     expect(events('wrong')).toEqual([]);
   }, 60_000);
 
+  it('waits for an invitation dialog that draws its buttons late, with and without a note', async () => {
+    expect(await driver.connect(url('sara-slowinvite'), '')).toBe('sent');
+    await settle();
+    expect(events('connect').at(-1)).toEqual({ type: 'connect', slug: 'sara-slowinvite', text: '' });
+    expect(await driver.connect(url('sara-slowinvite'), 'Hi Sara')).toBe('sent');
+    await settle();
+    expect(events('connect').at(-1)).toEqual({ type: 'connect', slug: 'sara-slowinvite', text: 'Hi Sara' });
+  }, 90_000);
+
+  it('uses the invitation dialog, not the dialogs of a profile video player', async () => {
+    expect(await driver.connect(url('vic-video'), '')).toBe('sent');
+    await settle();
+    expect(events('connect').at(-1)).toEqual({ type: 'connect', slug: 'vic-video', text: '' });
+  }, 60_000);
+
+  it('reports an invitation dialog that never opens as worth retrying, not as "can\'t connect"', async () => {
+    await expect(driver.connect(url('stan-stall'), 'Hi Stan')).rejects.toMatchObject({ code: 'TRANSIENT' });
+    expect(events('connect').filter((e) => e.slug === 'stan-stall')).toEqual([]);
+  }, 60_000);
+
   it('invites through the custom-invite page when the Connect link leads there', async () => {
     expect(await driver.connect(url('nina-navigate'), 'Hello Nina')).toBe('sent');
     await settle();
@@ -140,6 +171,21 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     expect(events('message').filter((e) => e.slug === 'sam-slow')).toEqual([]);
   }, 60_000);
 
+  it('never writes into a bubble with someone else that pops up while the person’s own is opening', async () => {
+    // Ollie's bubble opens first and names only Ollie; Paula's opens later, naming her in its header only.
+    await driver.sendMessage(url('paula-pop'), 'Hi Paula,\nprivate pricing for you');
+    await settle();
+    expect(events('message').at(-1)).toEqual({ type: 'message', slug: 'paula-pop', text: 'Hi Paula,\nprivate pricing for you' });
+    await driver.sendInMail(url('ivy-inmail'), { subject: 'For Ivy', body: 'Hi Ivy', via: 'profile' });
+    await settle();
+    expect(events('inmail').at(-1)).toEqual({ type: 'inmail', slug: 'ivy-inmail', subject: 'For Ivy', text: 'Hi Ivy' });
+    // Sid's own bubble never opens: try again later, and nothing is sent anywhere.
+    await expect(driver.sendMessage(url('sid-stuck'), 'Hi Sid')).rejects.toMatchObject({ code: 'TRANSIENT' });
+    await settle();
+    expect(events('message').filter((e) => e.slug === 'sid-stuck')).toEqual([]);
+    expect(events('wrong')).toEqual([]);
+  }, 90_000);
+
   it('follows, endorses and likes, leaving people already followed alone', async () => {
     await driver.follow(url('lena-hidden'));
     await driver.follow(url('jane-doe'));
@@ -166,6 +212,8 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       ['jane-doe', 'Jane', 'Head of Growth at Northwind'],
       ['lucy-late', 'Lucy', 'Head of Growth at Northwind'],
       ['sam-slow', 'Sam', 'Head of Growth at Northwind'],
+      ['paula-pop', 'Paula', 'Head of Growth at Northwind'],
+      ['sid-stuck', 'Sid', 'Head of Growth at Northwind'],
       ['carl-classic', 'Carl', 'Head of Growth at Northwind'],
     ]);
     const threads = await driver.inbox(0);
@@ -227,6 +275,18 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     redirectToCheckpoint = true;
     await expect(driver.viewProfile(url('jane-doe'))).rejects.toMatchObject({ code: 'CHECKPOINT' });
     redirectToCheckpoint = false;
+  }, 30_000);
+
+  it('reports a lost internet connection as such, and works again once it is back', async () => {
+    try {
+      offline = 'namenotresolved';
+      await expect(driver.viewProfile(url('max-mueller'))).rejects.toBeInstanceOf(Offline);
+      offline = 'internetdisconnected';
+      await expect(driver.connect(url('kim-classic'), '')).rejects.toThrow(/No internet connection.*ERR_INTERNET_DISCONNECTED/);
+    } finally {
+      offline = null;
+    }
+    expect((await driver.viewProfile(url('max-mueller'))).firstName).toBe('Max');
   }, 30_000);
 
   it('keeps a working session when the own profile card is slow, and says when nothing could be read', async () => {
@@ -356,6 +416,20 @@ describe.skipIf(!haveBrowser)('LinkedIn 2026 snapshots (scrubbed live markup)', 
     expect(events[0].sender).toBe('TTTTTTTTTTTT');
     expect(events[0].urn).toMatch(/^urn:li:X:ID,/);
     expect(events[0].body).toContain('TTTTTTTTTTTT');
+    // Each line is its own <p> (a blank line is <p><br/></p>): the body reads back line by line, as typed.
+    expect(events[0].body).not.toMatch(/\n\n\n/);
+    await page.evaluate(() => {
+      const body = document.querySelector('.msg-s-event-listitem__body')!;
+      body.replaceChildren(
+        ...['Hi First0,', '', 'Saw your post on growth.', 'Worth a chat?'].map((line) => {
+          const p = document.createElement('p');
+          if (line) p.textContent = line;
+          else p.appendChild(document.createElement('br'));
+          return p;
+        }),
+      );
+    });
+    expect((await page.evaluate(threadEvents, eventSelectors))[0].body).toBe('Hi First0,\n\nSaw your post on growth.\nWorth a chat?');
     // The live thread has no profile link at all: the participant is behind the name's hovercard button.
     expect(await page.locator('.msg-thread a[href*="/in/"]').count()).toBe(0);
     expect(await page.locator(SEL.threadHeaderLink).count()).toBe(0);
@@ -369,6 +443,15 @@ describe.skipIf(!haveBrowser)('LinkedIn 2026 snapshots (scrubbed live markup)', 
     // The bubble names its participant in its own profile card.
     expect(await page.locator(SEL.messageBubble).filter({ has: page.locator(SEL.bubbleOwnerLink('slug')) }).count()).toBe(1);
     expect(await page.locator(SEL.messageBubble).filter({ has: page.locator(SEL.bubbleOwnerLink('someone-else')) }).count()).toBe(0);
+    // ...and in the recipient pill of a new message; its header says "New message" (scrubbed).
+    const ownerSel = { container: SEL.composerContainer, ownerLinks: SEL.bubbleOwnerLinks, title: SEL.bubbleTitle, recipients: SEL.bubbleRecipients, tag: 't' };
+    const [owner] = await page.locator(SEL.messageBox).evaluateAll(composerOwners, ownerSel);
+    expect(owner).toMatchObject({ contained: true, title: 'TTTTTTTTTTT', recipients: ['NAME'] });
+    expect(owner.links.length).toBeGreaterThan(0);
+    expect(composerIsFor(owner, ['slug'], 'Name')).toBe(true);
+    expect(composerIsFor(owner, ['someone-else'], 'Name')).toBe(false);
+    expect(composerIsFor({ ...owner, links: [] }, [], 'Name')).toBe(true);
+    expect(composerIsFor({ ...owner, links: [] }, [], 'Someone Else')).toBe(false);
     // Expand comes first, close second; the close selector picks close.
     expect(await page.locator(SEL.messageOverlayClose).last().locator('svg').getAttribute('data-test-icon')).toBe('close-small');
   });

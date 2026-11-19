@@ -1041,14 +1041,16 @@ export function websiteEnrichment(domain: string, site: SiteFacts | null, wd: Wi
 }
 
 // Hosted: each billing root gets limits.dailyLookups lookups in any 24 hours (every call is in the usage log,
-// at 0 credits), so one tenant can't turn the server into a crawler. Over it, the job waits and retries.
+// at 0 credits), so one tenant can't turn the server into a crawler. Over it, the job waits and retries. Only
+// lookups that ran count: a refused one is logged as failed, and counting those would keep a busy root over
+// the limit for good.
 function withinDailyLookups(ctx: Ctx, cfg: ProviderConfig) {
   if (!billingEnabled(ctx)) return;
   const root = billingRoot(ctx, cfg.workspaceId);
   const since = ctx.clock.now() - DAY;
   const used =
     ctx.db.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM usage_events WHERE kind = 'enrichment' AND provider = 'website' AND created_at > ? AND workspace_id IN (SELECT id FROM workspaces WHERE id = ? OR parent_id = ?)",
+      "SELECT COUNT(*) AS n FROM usage_events WHERE kind = 'enrichment' AND provider = 'website' AND ok = 1 AND created_at > ? AND workspace_id IN (SELECT id FROM workspaces WHERE id = ? OR parent_id = ?)",
       [since, root, root],
     )?.n ?? 0;
   if (used >= limits.dailyLookups) {
@@ -1095,6 +1097,9 @@ export const websiteEnricher: ProviderDef<'enrichment'> = {
         const r = await sparql(ctx, cfg, 'ASK { BIND(1 AS ?x) }');
         if (r.boolean !== true) throw new ProviderError('UNAVAILABLE', 'Wikidata returned an unexpected answer', { integrationId: cfg.integrationId });
         return { ok: true, message: 'Ready: reads public company websites, and Wikidata answered.' };
+      },
+      checkLimits(lead) {
+        if (leadDomain(lead)) withinDailyLookups(ctx, cfg);
       },
       async enrich(lead) {
         const target = leadDomain(lead);

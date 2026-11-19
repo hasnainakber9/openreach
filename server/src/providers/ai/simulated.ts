@@ -129,8 +129,9 @@ export const simulatedAi: ProviderDef<'ai'> = {
         const title = field(req.prompt, 'title', 'leader');
         const fill = (s: string) => s.replace('{name}', name).replace('{company}', company).replace('{title}', title);
         let text: string;
-        // Classification uses keyword rules on the latest reply, so demos branch the way a real model would.
-        if (req.purpose === 'classify') text = JSON.stringify(keywordCategory(block(req.prompt, 'latest_reply') || req.prompt));
+        // Classification uses keyword rules on the latest reply (only the person's own text; never the
+        // conversation around it, which holds our own footer), so demos branch the way a real model would.
+        if (req.purpose === 'classify') text = JSON.stringify(keywordCategory(req.prompt.includes('<latest_reply>') ? block(req.prompt, 'latest_reply') : req.prompt));
         else if (req.purpose === 'reply') text = replyDrafts(req, name);
         // Writer requests (they carry a "channel:" line) want JSON drafts; anything else gets a greeting.
         else if (req.purpose === 'write' && /^\s*channel\s*:/im.test(req.prompt)) text = drafts(req);

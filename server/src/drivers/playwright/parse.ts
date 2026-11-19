@@ -5,6 +5,8 @@
 // from this module and must not bind named inner functions: tsx (the dev server) wraps those in a
 // `__name(...)` helper that does not exist in the page. Object-literal methods and inline loops are fine.
 
+import { publicIdFromUrl } from '../types.js';
+
 // The contact-info link's place among the top card's lines (the location is the line before it).
 export const CONTACT_MARK = '[contact-info]';
 
@@ -132,15 +134,24 @@ export function nameFromTitle(title: string): string {
 export function namesOtherPerson(label: string, person: string): boolean {
   const m = label.trim().match(/^(?:Invite|Follow|Unfollow|Following|Message|Send a message to|Pending, click to withdraw invitation sent to)\s+(.+?)(?:\s+to connect)?$/i);
   if (!m || !person.trim()) return false;
-  const words = (s: string) =>
-    s
-      .normalize('NFKD')
-      .replace(/[̀-ͯ]/g, '')
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}]+/u)
-      .filter((w) => w.length > 1);
-  const own = new Set(words(person));
-  return !words(m[1]).some((w) => own.has(w));
+  const own = new Set(nameWords(person));
+  return !nameWords(m[1]).some((w) => own.has(w));
+}
+
+// True when `text` is this person's name and nothing more (accents, case and punctuation aside).
+export function isPersonName(text: string, person: string): boolean {
+  const a = new Set(nameWords(text));
+  const b = new Set(nameWords(person));
+  return a.size > 0 && a.size === b.size && [...a].every((w) => b.has(w));
+}
+
+function nameWords(s: string): string[] {
+  return s
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length > 1);
 }
 
 export interface ConnectionRow {
@@ -227,9 +238,52 @@ export function threadEvents(s: { threadEvent: string; eventSender: string; even
   const out: ThreadEvent[] = [];
   for (const li of items) {
     sender = ((li.querySelector(s.eventSender) as HTMLElement | null)?.innerText ?? '').replace(/\s+/g, ' ').trim() || sender;
-    const body = (li.querySelector(s.eventBody) as HTMLElement | null)?.innerText.trim() ?? '';
+    // 2026 shows each line of a message as its own <p> (a blank line as <p><br></p>), and innerText puts
+    // blank lines around every one of them, so such a body is read line by line to come back as typed.
+    const el = li.querySelector(s.eventBody) as HTMLElement | null;
+    const lines = el ? Array.from(el.children) : [];
+    const body = lines.length && lines.every((c) => c.localName === 'p') ? lines.map((p) => (p as HTMLElement).innerText.trim()).join('\n').trim() : (el?.innerText.trim() ?? '');
     const urn = li.querySelector(s.eventUrn)?.getAttribute('data-event-urn') ?? '';
     if (body) out.push({ sender, body, urn });
   }
   return out;
+}
+
+// Who a message composer's conversation is with, as far as the bubble or dialog around it says: the
+// profile links in its own profile card or header, its header's title, and the recipients picked in a new
+// message ("Remove NAME" pills). `contained` is false for a composer outside any bubble or dialog.
+export interface ComposerOwner {
+  contained: boolean;
+  links: string[];
+  title: string;
+  recipients: string[];
+}
+
+// Runs in the page, over composers (in 2026 inside the open shadow root on div#interop-outlet, which
+// Playwright's locators reach). Each composer is tagged data-or-fresh="<tag>-<index>" so the one chosen
+// can be found again even if LinkedIn opens another bubble in between.
+export function composerOwners(els: Element[], s: { container: string; ownerLinks: string; title: string; recipients: string; tag: string }): ComposerOwner[] {
+  return els.map((el, i) => {
+    el.setAttribute('data-or-fresh', s.tag + '-' + i);
+    const c = el.closest(s.container);
+    if (!c) return { contained: false, links: [], title: '', recipients: [] };
+    return {
+      contained: true,
+      links: Array.from(c.querySelectorAll(s.ownerLinks)).map((a) => a.getAttribute('href') ?? ''),
+      title: ((c.querySelector(s.title) as HTMLElement | null)?.innerText ?? '').replace(/\s+/g, ' ').trim(),
+      recipients: Array.from(c.querySelectorAll(s.recipients)).map((b) => (b.getAttribute('aria-label') ?? '').replace(/^Remove\s+/i, '').trim()),
+    };
+  });
+}
+
+// True when a composer's bubble or dialog says it is the conversation with this person (`ids`: their
+// profile ids, `person`: their name). Its own profile links decide when it has any, else the recipients
+// of a new message, else the header's title. A bubble that names nobody yet (still loading) or anyone
+// else is not theirs: an incoming chat, or a bubble LinkedIn restores late, can open while the person's
+// own is still loading. A composer outside any bubble or dialog can't be someone else's conversation.
+export function composerIsFor(o: ComposerOwner, ids: string[], person: string): boolean {
+  if (!o.contained) return true;
+  if (o.links.length) return o.links.some((l) => ids.includes(publicIdFromUrl(new URL(l, 'https://www.linkedin.com/').toString()) ?? ''));
+  if (o.recipients.length) return o.recipients.every((r) => isPersonName(r, person));
+  return isPersonName(o.title, person);
 }

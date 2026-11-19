@@ -35,6 +35,18 @@ export interface MockPerson {
   lateCard?: boolean;
   // Clicking Message opens nothing (the page is too slow, say): no bubble, no dialog.
   noComposer?: boolean;
+  // 2026: right after clicking Message, a bubble with someone else pops up (an incoming chat, say), named
+  // only in its header, and this person's own bubble opens a while later (or never, with noComposer).
+  // Sending from the other bubble logs a 'wrong' event.
+  otherBubbleFirst?: boolean;
+  // 2026: the invitation dialog appears empty and draws its buttons a moment later, as LinkedIn's does.
+  slowInvite?: boolean;
+  // Clicking Connect opens no invitation dialog in time (the page is too slow, say).
+  noInviteDialog?: boolean;
+  // The profile has a video (an intro or featured one): its player (video.js) puts two role=dialog elements
+  // on the page, ahead of any dialog LinkedIn opens later. The first one, its error message, shows because
+  // the media fails to load in the automated browser; the caption settings stay hidden.
+  videoPlayer?: boolean;
 }
 
 export interface MockState {
@@ -55,7 +67,7 @@ const LOCATION = 'London, England, United Kingdom';
 const SCHOOL = 'London School of Economics';
 
 const shell = (body: string, script = '', title = 'LinkedIn') => `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
-<style>/* The hidden copies LinkedIn renders (second degree line, second action row). */ .gvyaz2, .gvya3t { display: none; }</style></head><body>
+<style>/* The hidden copies LinkedIn renders (second degree line, second action row). */ .gvyaz2, .gvya3t { display: none; } .vjs-hidden { display: none; }</style></head><body>
 <main>${body}</main>
 <script>
 const log = (e) => fetch('/__event', { method: 'POST', body: JSON.stringify(e) });
@@ -65,13 +77,18 @@ ${script}
 
 // The invitation dialog, as LinkedIn has shown it so far (not seen in the 2026 snapshots).
 const inviteDialogScript = `
-const inviteDialog = (slug, first) => {
-  const d = dialog('<p>You can add a note to personalize your invitation to ' + first + '.</p><button aria-label="Add a note" id="addnote">Add a note</button><button aria-label="Send without a note" id="nonote">Send without a note</button>');
-  d.querySelector('#nonote').onclick = () => { log({ type: 'connect', slug, text: '' }); d.remove(); };
-  d.querySelector('#addnote').onclick = () => {
-    d.innerHTML = '<textarea name="message"></textarea><button aria-label="Send invitation" id="send">Send</button>';
-    d.querySelector('#send').onclick = () => { log({ type: 'connect', slug, text: d.querySelector('textarea').value }); d.remove(); };
+const inviteDialog = (slug, first, slow) => {
+  const d = dialog(slow ? '<p>Loading…</p>' : '');
+  const fill = () => {
+    d.innerHTML = '<p>You can add a note to personalize your invitation to ' + first + '.</p><button aria-label="Add a note" id="addnote">Add a note</button><button aria-label="Send without a note" id="nonote">Send without a note</button>';
+    d.querySelector('#nonote').onclick = () => { log({ type: 'connect', slug, text: '' }); d.remove(); };
+    d.querySelector('#addnote').onclick = () => {
+      d.innerHTML = '<textarea name="message"></textarea><button aria-label="Send invitation" id="send">Send</button>';
+      d.querySelector('#send').onclick = () => { log({ type: 'connect', slug, text: d.querySelector('textarea').value }); d.remove(); };
+    };
   };
+  if (slow) setTimeout(fill, 1500);
+  else fill();
 };`;
 
 // ---- 2026 layout ----
@@ -209,6 +226,13 @@ setTimeout(() => {
   menu.innerHTML = ${JSON.stringify(menuItems(p))};
   document.body.appendChild(menu);
   document.title = ${JSON.stringify(title)};
+  if (person.videoPlayer) {
+    const player = document.createElement('div');
+    player.className = 'video-js';
+    player.innerHTML = '<div class="vjs-error-display vjs-modal-dialog" role="dialog" aria-label="Modal Window" tabindex="-1"><p>This is a modal window. The media could not be loaded.</p></div>' +
+      '<div class="vjs-text-track-settings vjs-modal-dialog vjs-hidden" role="dialog" aria-label="Caption Settings Dialog" tabindex="-1"><select></select></div>';
+    document.querySelector('main').prepend(player);
+  }
   if (person.staleBubble) bubble('ollie-other', 'Ollie Other', { draft: 'Half-written draft for Ollie', shared: slug, onSend: () => log({ type: 'wrong', what: 'stale bubble send' }) });
 }, 400);
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') { const m = document.querySelector('[role=menu]'); if (m) m.hidden = true; } });
@@ -225,14 +249,19 @@ document.addEventListener('click', (ev) => {
     dialog('<section><h3>Email</h3><a href="mailto:${p?.email ?? ''}">${p?.email ?? ''}</a></section><button aria-label="Dismiss" onclick="this.parentElement.remove()">x</button>');
   }
   if (act === 'follow') { log({ type: 'follow', slug }); t.querySelector('p').textContent = 'Following'; }
-  if (act === 'connect') inviteDialog(slug, first);
+  if (act === 'connect' && !person.noInviteDialog) inviteDialog(slug, first, !!person.slowInvite);
   if (act === 'pending') {
     const d = dialog('<p>Withdraw invitation?</p><button>Withdraw</button>');
     d.querySelector('button').onclick = () => { log({ type: 'withdraw', slug }); d.remove(); };
   }
+  if (act === 'message' && person.otherBubbleFirst) {
+    setTimeout(() => bubble('ollie-other', 'Ollie Other', { card: false, onSend: () => log({ type: 'wrong', what: 'other bubble send' }) }), 100);
+  }
   if (act === 'message' && !person.noComposer) {
     const kind = person.degree === '1st' ? 'message' : 'inmail';
-    bubble(slug, name, { subject: kind === 'inmail', card: !person.lateCard, onSend: (m) => log(kind === 'inmail' ? { type: kind, slug, subject: m.subject, text: m.text } : { type: kind, slug, text: m.text }) });
+    const open = () => bubble(slug, name, { subject: kind === 'inmail', card: !person.lateCard, onSend: (m) => log(kind === 'inmail' ? { type: kind, slug, subject: m.subject, text: m.text } : { type: kind, slug, text: m.text }) });
+    if (person.otherBubbleFirst) setTimeout(open, 1500);
+    else open();
   }
 });`,
     'LinkedIn',

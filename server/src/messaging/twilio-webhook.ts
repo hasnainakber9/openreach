@@ -6,6 +6,7 @@ import { HttpError, parse } from '../http.js';
 import { providerDef } from '../providers/registry.js';
 import type { SmsProvider } from '../providers/sms/types.js';
 import type { IntegrationRow } from '../providers/store.js';
+import { publicLead } from '../services/leads.js';
 import { handleInboundReply } from '../services/replies.js';
 import { normalizePhone, suppressIdentity, suppressLead } from '../services/suppression.js';
 import type { LeadRow } from '../types.js';
@@ -74,8 +75,9 @@ export function processTwilioInbound(ctx: Ctx, integration: IntegrationRow, prov
     // "Suppress the lead": every channel stops, not just SMS. The number itself is kept too, in case the
     // lead's phone is written in a national form the suppression list can't normalize.
     ctx.db.tx(() => {
-      suppressIdentity(ctx, ws, 'phone', phone, 'sms_stop', 'twilio', lead?.id ?? null);
-      if (lead) suppressLead(ctx, lead, 'sms_stop', 'twilio');
+      const added = suppressIdentity(ctx, ws, 'phone', phone, 'sms_stop', 'twilio', lead?.id ?? null);
+      // suppressLead finds that number already listed; the STOP still changed something worth telling.
+      if (lead && !suppressLead(ctx, lead, 'sms_stop', 'twilio') && added) ctx.webhooks.emit(ws, 'lead.suppressed', { lead: publicLead(lead, ctx), reason: 'sms_stop', source: 'twilio' });
     });
     return { status: 'stopped', leadId: lead?.id ?? null };
   }
