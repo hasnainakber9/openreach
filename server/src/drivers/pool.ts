@@ -158,10 +158,11 @@ export class DriverPool {
     this.timer.unref();
   }
 
-  // Closes every browser (each after the call it is busy with) and any sign-in window; the idle reaper keeps running.
+  // Closes every browser (each after the call it is busy with) and any sign-in window, and resolves once they
+  // have all closed; the idle reaper keeps running.
   async closeSessions() {
     for (const s of this.signIns.values()) s.cancel();
-    await Promise.all([...this.entries.keys()].map((id) => this.drop(id)));
+    await Promise.all([...[...this.signIns.values()].map((s) => s.windowClosed), ...[...this.entries.keys()].map((id) => this.drop(id))]);
   }
 
   async closeAll() {

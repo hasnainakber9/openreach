@@ -451,6 +451,26 @@ describe('Sign-in window edge cases', () => {
     expect(t.w.ctx.drivers.signIns.has(t.id)).toBe(false);
     expect(t.w.ctx.drivers.isHeld(t.id)).toBe(false);
   });
+
+  it('closing the sessions (shutdown, losing the lead) waits until each sign-in window has closed', async () => {
+    const t = await setup();
+    let exited!: () => void;
+    const exit = new Promise<void>((r) => (exited = r));
+    t.win.close = async () => {
+      await exit;
+      t.win.closed = true;
+    };
+    await t.api.call('POST', `/api/accounts/${t.id}/browser-login`);
+    await until(() => t.launches.length === 1);
+    let done = false;
+    const closing = t.w.ctx.drivers.closeSessions().then(() => void (done = true));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(done).toBe(false);
+    exited();
+    await closing;
+    expect(t.win.closed).toBe(true);
+    expect(t.w.ctx.drivers.isHeld(t.id)).toBe(false);
+  });
 });
 
 describe('Driver pool closing browsers', () => {

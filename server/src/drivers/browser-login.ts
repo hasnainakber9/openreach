@@ -57,10 +57,13 @@ export const playwrightLoginWindow: LoginLauncher = async (userDataDir, options)
     await ctx.close().catch(() => {});
     throw e;
   }
+  // Playwright's close() returns at once while an earlier one is still under way (as after Cancel), so every
+  // caller waits for the first one: the profile is free only once Chromium has exited.
+  let closing: Promise<void> | undefined;
   return {
     urls: () => (closed ? [] : ctx.pages().filter((p) => !p.isClosed()).map((p) => p.url())),
     liAt: () => profileLiAt(ctx),
-    close: () => ctx.close().catch(() => {}),
+    close: () => (closing ??= ctx.close().catch(() => {})),
     previousLiAt,
   };
 };
