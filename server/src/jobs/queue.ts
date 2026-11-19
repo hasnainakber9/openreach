@@ -45,8 +45,9 @@ export interface HandlerOptions {
   concurrency?: number;
   maxAttempts?: number;
   timeoutMs?: number; // longest a run may go without finishing or calling progress()
-  // Shared fairly between workspaces: a free slot goes to a workspace with none of this type running before
-  // another job of a workspace that has one, so one workspace's backlog can't hold every slot while others wait.
+  // Shared fairly between tenants: billing roots (a workspace, or an agency with its client workspaces) take
+  // turns at the free slots, least recently served first, and so do the workspaces within a root, so a backlog,
+  // even one spread over several workspaces, can't hold every slot while others wait.
   fair?: boolean;
 }
 
@@ -85,6 +86,13 @@ interface HandlerDef {
   fair: boolean;
 }
 
+// A fair type's turn: the workspace (null: system jobs) it may be claimed for, and each waiting workspace's root.
+interface FairTurn {
+  type: string;
+  workspaceId: number | null;
+  roots: Map<number | null, number | null>;
+}
+
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT = 10 * MINUTE;
 const BACKOFF_BASE = 30_000;
@@ -99,7 +107,10 @@ const THIS_RUN = "id = ? AND status = 'running' AND attempts = ?";
 export class JobQueue {
   private handlers = new Map<string, HandlerDef>();
   // Jobs running in this process. This (not the tick) bounds concurrency, since production ticks overlap.
-  private inFlight = new Map<number, { type: string; workspaceId: number | null }>();
+  private inFlight = new Map<number, string>();
+  // Per fair type, when each waiting billing root ('r1') and workspace ('w1') last got a slot (a sequence number).
+  private served = new Map<string, Map<string, number>>();
+  private servedSeq = 0;
   // Stops a run in this process (when this instance stops being the leader).
   private stoppers = new Map<number, () => void>();
   private recovered = false;
@@ -158,10 +169,16 @@ export class JobQueue {
     while (this.inFlight.size < this.ctx.config.jobConcurrency && this.gate()) {
       const types = this.eligibleTypes();
       if (!types.length) break;
-      const busy = this.busyWorkspaces();
-      const row = (busy.length ? this.claim(types, now, busy) : undefined) ?? this.claim(types, now);
+      const turns = this.fairTurns(types, now);
+      const row = (turns.length ? this.claim(types, now, turns) : undefined) ?? this.claim(types, now);
       if (!row) break;
-      this.inFlight.set(row.id, { type: row.type, workspaceId: row.workspace_id });
+      const turn = turns.find((t) => t.type === row.type);
+      if (turn) {
+        const served = this.served.get(row.type)!;
+        const seq = ++this.servedSeq;
+        served.set(`r${turn.roots.get(row.workspace_id) ?? row.workspace_id}`, seq).set(`w${row.workspace_id}`, seq);
+      }
+      this.inFlight.set(row.id, row.type);
       started.push(this.run(row));
     }
     await Promise.all(started);
@@ -217,33 +234,48 @@ export class JobQueue {
 
   private eligibleTypes() {
     const running = new Map<string, number>();
-    for (const { type: t } of this.inFlight.values()) running.set(t, (running.get(t) ?? 0) + 1);
+    for (const t of this.inFlight.values()) running.set(t, (running.get(t) ?? 0) + 1);
     return [...this.handlers].filter(([t, d]) => (running.get(t) ?? 0) < d.concurrency).map(([t]) => t);
   }
 
-  // Per fair type, the workspaces with a job of it running here.
-  private busyWorkspaces(): [string, number[]][] {
-    const busy = new Map<string, Set<number>>();
-    for (const { type, workspaceId } of this.inFlight.values()) {
-      if (workspaceId == null || !this.handlers.get(type)?.fair) continue;
-      busy.set(type, (busy.get(type) ?? new Set()).add(workspaceId));
+  // Per fair type with due jobs, the workspace whose turn it is: the billing root served least recently (or
+  // never), then its workspace served least recently, the oldest waiting first among equals. System jobs (no
+  // workspace) take their turn like a workspace.
+  private fairTurns(types: string[], now: number): FairTurn[] {
+    const turns: FairTurn[] = [];
+    for (const type of types) {
+      if (!this.handlers.get(type)!.fair) continue;
+      const waiting = this.ctx.db.all<{ ws: number | null; root: number | null; first: number }>(
+        `SELECT j.workspace_id AS ws, COALESCE(w.parent_id, j.workspace_id) AS root, MIN(j.run_at) AS first FROM jobs j LEFT JOIN workspaces w ON w.id = j.workspace_id
+         WHERE j.status = 'queued' AND j.run_at <= ? AND j.type = ? GROUP BY j.workspace_id, w.parent_id`,
+        [now, type],
+      );
+      if (!waiting.length) continue;
+      // Who isn't waiting any more starts afresh when they are again, which also keeps this to the waiting few.
+      const served = this.served.get(type) ?? new Map<string, number>();
+      const keys = new Set(waiting.flatMap((r) => [`r${r.root}`, `w${r.ws}`]));
+      for (const k of served.keys()) if (!keys.has(k)) served.delete(k);
+      this.served.set(type, served);
+      const last = (k: string) => served.get(k) ?? 0;
+      const pick = waiting.reduce((a, b) => ((last(`r${a.root}`) - last(`r${b.root}`) || last(`w${a.ws}`) - last(`w${b.ws}`) || Number(a.first) - Number(b.first)) <= 0 ? a : b));
+      turns.push({ type, workspaceId: pick.ws, roots: new Map(waiting.map((r) => [r.ws, r.root])) });
     }
-    return [...busy].map(([t, ids]) => [t, [...ids]]);
+    return turns;
   }
 
   // One statement, so two workers can never claim the same job. On Postgres the row lock is skipped by
   // a concurrent claim (which takes the next job instead of waiting), and the status re-check makes a
-  // claim that lost the race return nothing rather than run the job twice. `skip`: jobs of these types and
-  // workspaces are passed over (fair types whose workspace already has one running).
-  private claim(types: string[], now: number, skip: [string, number[]][] = []): JobRow | undefined {
+  // claim that lost the race return nothing rather than run the job twice. `turns`: jobs of these fair types
+  // are taken only from the workspace whose turn it is.
+  private claim(types: string[], now: number, turns: FairTurn[] = []): JobRow | undefined {
     const skipLocked = this.ctx.db.dialect === 'postgres' ? ' FOR UPDATE SKIP LOCKED' : '';
-    const fair = skip.map(([, ids]) => ` AND NOT (type = ? AND workspace_id IS NOT NULL AND workspace_id IN (${ids.map(() => '?').join(',')}))`).join('');
+    const fair = turns.map((t) => ` AND (type <> ? OR workspace_id ${t.workspaceId == null ? 'IS NULL' : '= ?'})`).join('');
     const row = this.ctx.db.get<JobRow>(
       `UPDATE jobs SET status = 'running', attempts = attempts + 1, locked_until = ?, updated_at = ?
        WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_at <= ? AND type IN (${types.map(() => '?').join(',')})${fair} ORDER BY run_at, id LIMIT 1${skipLocked})
          AND status = 'queued'
        RETURNING *`,
-      [now + DEFAULT_TIMEOUT, now, now, ...types, ...skip.flat(2)],
+      [now + DEFAULT_TIMEOUT, now, now, ...types, ...turns.flatMap((t) => (t.workspaceId == null ? [t.type] : [t.type, t.workspaceId]))],
     );
     const timeout = row && this.handlers.get(row.type)!.timeoutMs;
     if (row && timeout !== DEFAULT_TIMEOUT) {
