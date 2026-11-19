@@ -26,6 +26,7 @@ import {
   mailboxSchedule,
   optOutProblem,
   pinMailbox,
+  readsReplies,
   releaseUnstartedMailboxLeads,
   remainingToday,
   smtpTransport,
@@ -263,6 +264,7 @@ export class MailRunner {
       signature: mb.signature,
       messageId,
       thread,
+      repliesRead: readsReplies(mb),
       links: links && {
         unsubscribe: links.unsubscribe,
         openPixel: settings.trackOpens ? links.openPixel : null,

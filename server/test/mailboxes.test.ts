@@ -948,6 +948,31 @@ describe('public links and reply mode', () => {
     expect(composeEmail({ ...base, replyTo: 'Sara@Sender.dev' }).text).toContain('Just reply "unsubscribe"');
   });
 
+  it('offers the reply opt-out next to the link only when the mailbox reads its inbox', async () => {
+    const base = { from: 'sara@sender.dev', fromEmail: 'sara@sender.dev', to: 'ann@acme.dev', subject: 'Hi', body: 'Hello Ann', messageId: '<m@sender.dev>', links: { unsubscribe: 'https://app.dev/u/tok' } };
+    const unread = composeEmail({ ...base, repliesRead: false });
+    expect(unread.text).toBe(`Hello Ann\n\nDon't want to hear from me again? Unsubscribe: https://app.dev/u/tok`);
+    expect(unread.html).not.toMatch(/reply/);
+    // No mailto either: nothing would read the email it sends.
+    expect(unread.headers).toEqual({ 'List-Unsubscribe': '<https://app.dev/u/tok>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' });
+    expect(composeEmail({ ...base, repliesRead: true }).text).toMatch(/ or just reply "unsubscribe"\.$/);
+
+    // A real mailbox without IMAP sends with the link alone, and with IMAP the reply is offered too.
+    for (const imap of [false, true]) {
+      const w = makeWorld();
+      w.ctx.config.publicUrl = PUBLIC;
+      const mb = addMailbox(w, { provider: 'smtp', ...(imap ? {} : { imap_enc: null }) });
+      emailCampaign(w, oneEmail, emailLeads(w, 1), [mb]);
+      await runFor(w, 30 * MINUTE);
+      const [sent] = mailerOf(w).sent;
+      expect(mailbox(w, mb).status).toBe('active');
+      expect(sent.msg.text).toMatch(/Unsubscribe: https:\/\/reach\.example\.net\/u\/[\w.-]+( or just reply "unsubscribe"\.)?$/);
+      expect(sent.msg.text.includes('or just reply'), String(imap)).toBe(imap);
+      expect(sent.msg.html!.includes('or just reply'), String(imap)).toBe(imap);
+      expect(sent.msg.headers!['List-Unsubscribe'].includes('mailto:'), String(imap)).toBe(imap);
+    }
+  });
+
   it('stops a real mailbox without IMAP in reply mode, and treats open sign-up as hosted', async () => {
     const w = makeWorld();
     const mb = addMailbox(w, { provider: 'smtp', imap_enc: null });

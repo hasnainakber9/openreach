@@ -65,6 +65,12 @@ export const presetById = (id: string) => MAILBOX_PRESETS.find((p) => p.id === i
 
 export const isSimulated = (mb: Pick<MailboxRow, 'provider'>) => mb.provider === 'simulated';
 
+// Whether OpenReach reads this mailbox's inbox, so a reply "unsubscribe" is honoured. Only then do campaign
+// emails offer that reply (see composeEmail).
+export function readsReplies(mb: Pick<MailboxRow, 'provider' | 'imap_enc'>): boolean {
+  return isSimulated(mb) || !!mb.imap_enc;
+}
+
 // Why a mailbox can't send campaign email for lack of an unsubscribe link, or null. Every campaign email
 // offers an opt-out: an unsubscribe link when PUBLIC_URL is a public https address, otherwise (reply mode)
 // a footer asking people to reply "unsubscribe", which inbound mail detection honours, so the mailbox must
