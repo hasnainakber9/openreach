@@ -396,7 +396,7 @@ function senderWarnings(ctx: Ctx, seq: Sequence, settings: CampaignSettings, mai
       out.push('PUBLIC_URL is not a public https:// address, so emails carry no unsubscribe link: their footer asks people to reply “unsubscribe”, and such replies put them on the do-not-contact list.');
       // Those replies must be read, so a real mailbox without IMAP stops (see optOutProblem).
       const ids = mailboxes.filter((m) => m.provider !== 'simulated').map((m) => m.id);
-      const noImap = ctx.db.all<{ name: string }>(`SELECT name FROM mailboxes WHERE imap_enc IS NULL AND legacy_account_id IS NULL AND id IN (${ids.map(() => '?').join(',')})`, ids);
+      const noImap = ctx.db.all<{ name: string }>(`SELECT name FROM mailboxes WHERE imap_enc IS NULL AND id IN (${ids.map(() => '?').join(',')})`, ids);
       if (noImap.length) out.push(`Without IMAP settings those replies are never read, so ${noImap.map((m) => m.name).join(', ')} can’t send campaign email. Add IMAP settings on the Mailboxes page.`);
     }
   }

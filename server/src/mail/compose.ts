@@ -4,7 +4,8 @@ import type { OutgoingEmail } from '../services/email.js';
 // Builds the email a step sends: Message-ID, threading headers, a plain-text body with a minimal HTML
 // twin, the signature, the unsubscribe footer and List-Unsubscribe headers (RFC 2369 / RFC 8058), and
 // the optional open pixel and click-tracked links. Without a public PUBLIC_URL there is no link: the footer
-// asks people to reply "unsubscribe" (reply mode), and inbound mail detection honours that reply.
+// asks people to reply "unsubscribe" (reply mode), and inbound mail detection honours that reply. A reply is
+// only offered when the mailbox's inbox is read (repliesRead); the runner never sends linkless email otherwise.
 
 export function newMessageId(fromEmail: string | null | undefined, random: () => number = Math.random): string {
   const domain = (fromEmail ?? '').split('@')[1]?.replace(/[^a-z0-9.-]/gi, '') || 'openreach.invalid';
@@ -38,6 +39,9 @@ export interface ComposeInput {
   } | null;
   // Campaign emails carry the unsubscribe footer (link or reply mode); one-to-one replies from the inbox don't.
   footer?: boolean;
+  // Whether OpenReach reads this mailbox's inbox (IMAP), so a reply "unsubscribe" is honoured. When it doesn't,
+  // an email with a link offers the link alone. Default true.
+  repliesRead?: boolean;
 }
 
 export const replySubject = (subject: string) => (/^re:/i.test(subject.trim()) ? subject.trim() : `Re: ${subject.trim()}`);
@@ -71,27 +75,29 @@ export function composeEmail(input: ComposeInput): OutgoingEmail {
   const footer = input.footer !== false;
   const unsubscribe = footer ? (input.links?.unsubscribe ?? null) : null;
   const mailto = `mailto:${input.fromEmail}?subject=unsubscribe`;
+  const repliesRead = input.repliesRead !== false;
 
-  // A reply always works as well (the List-Unsubscribe mailto sends the same word), so the opt-out still
-  // works for someone whose mail client hides links. Without a link it is the only way, said in full.
-  // With a Reply-To elsewhere a reply never reaches this mailbox, so people are asked to email the sender.
+  // A reply works as well when the inbox is read (the List-Unsubscribe mailto sends the same word), so the
+  // opt-out still works for someone whose mail client hides links. Without a link it is the only way, said
+  // in full. With a Reply-To elsewhere a reply never reaches this mailbox, so people are asked to email the sender.
   const elsewhere = !!input.replyTo && input.replyTo.trim().toLowerCase() !== input.fromEmail.trim().toLowerCase();
+  const orReply = !elsewhere && repliesRead;
   let text = input.body.trim();
   if (signature) text += `\n\n-- \n${signature}`;
-  if (unsubscribe) text += `\n\nDon't want to hear from me again? Unsubscribe: ${unsubscribe}${elsewhere ? '' : ' or just reply "unsubscribe".'}`;
+  if (unsubscribe) text += `\n\nDon't want to hear from me again? Unsubscribe: ${unsubscribe}${orReply ? ' or just reply "unsubscribe".' : ''}`;
   else if (footer && elsewhere) text += `\n\nDon't want to hear from me again? Email ${input.fromEmail} with the subject "unsubscribe" and I won't contact you again.`;
   else if (footer) text += `\n\nDon't want to hear from me again? Just reply "unsubscribe" and I won't contact you again.`;
 
   let html = toHtml(input.body.trim(), input.links?.click);
   if (signature) html += `\n<p style="color:#555">${escapeHtml(signature).replace(/\n/g, '<br>')}</p>`;
-  if (unsubscribe) html += `\n<p style="color:#888;font-size:12px">Don't want to hear from me again? <a href="${escapeHtml(unsubscribe)}">Unsubscribe</a>${elsewhere ? '' : ' or just reply &quot;unsubscribe&quot;.'}</p>`;
+  if (unsubscribe) html += `\n<p style="color:#888;font-size:12px">Don't want to hear from me again? <a href="${escapeHtml(unsubscribe)}">Unsubscribe</a>${orReply ? ' or just reply &quot;unsubscribe&quot;.' : ''}</p>`;
   else if (footer && elsewhere) html += `\n<p style="color:#888;font-size:12px">Don't want to hear from me again? Email <a href="${escapeHtml(mailto)}">${escapeHtml(input.fromEmail)}</a> with the subject &quot;unsubscribe&quot; and I won't contact you again.</p>`;
   else if (footer) html += `\n<p style="color:#888;font-size:12px">Don't want to hear from me again? Just reply &quot;unsubscribe&quot; and I won't contact you again.</p>`;
   if (input.links?.openPixel) html += `\n<img src="${escapeHtml(input.links.openPixel)}" width="1" height="1" alt="" style="display:block;border:0">`;
 
   const headers: Record<string, string> = {};
   if (footer) {
-    headers['List-Unsubscribe'] = unsubscribe ? `<${unsubscribe}>, <${mailto}>` : `<${mailto}>`;
+    headers['List-Unsubscribe'] = !unsubscribe ? `<${mailto}>` : repliesRead ? `<${unsubscribe}>, <${mailto}>` : `<${unsubscribe}>`;
     if (unsubscribe) headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
   }
 
