@@ -38,9 +38,31 @@ export interface LoginWindow {
   previousLiAt?: string | null;
 }
 
-export type LoginLauncher = (userDataDir: string, options: ContextOptions) => Promise<LoginWindow>;
+// Which OpenReach account the window signs in, shown in it before LinkedIn loads: the person at that screen
+// is not always the one who opened it, and the session signed in there sends for this account.
+export interface SignInLabel {
+  account: string;
+  workspace: string;
+}
 
-export const playwrightLoginWindow: LoginLauncher = async (userDataDir, options) => {
+export type LoginLauncher = (userDataDir: string, options: ContextOptions, label: SignInLabel) => Promise<LoginWindow>;
+
+const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// The window's first page: the account and workspace (also in the window title), and a link on to LinkedIn.
+export function signInPage(label: SignInLabel): string {
+  const account = escapeHtml(label.account);
+  const workspace = escapeHtml(label.workspace);
+  return `<!doctype html><html><head><meta charset="utf-8"><title>OpenReach sign-in: ${account} (${workspace})</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 560px; margin: 64px auto; padding: 0 16px; line-height: 1.5">
+<h1 style="font-size: 22px">Sign in to LinkedIn for OpenReach</h1>
+<p>This window signs in the OpenReach account <strong>${account}</strong> in the workspace <strong>${workspace}</strong>.</p>
+<p>The LinkedIn account you sign in with next sends that account's invitations and messages. Continue only if you expected this sign-in and it is the right LinkedIn account; otherwise close this window.</p>
+<p><a href="${LOGIN_URL}" style="font-size: 18px">Continue to LinkedIn</a></p>
+</body></html>`;
+}
+
+export const playwrightLoginWindow: LoginLauncher = async (userDataDir, options, label) => {
   const ctx = await launchContext(userDataDir, { ...options, headless: false });
   let closed = false;
   ctx.on('close', () => void (closed = true));
@@ -51,7 +73,8 @@ export const playwrightLoginWindow: LoginLauncher = async (userDataDir, options)
     previousLiAt = await profileLiAt(ctx).catch(() => null);
     await ctx.clearCookies({ name: 'li_at' });
     const page = ctx.pages()[0] ?? (await ctx.newPage());
-    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    // LinkedIn opens from the link on this page, once the person there has seen which account it is for.
+    await page.setContent(signInPage(label));
     await page.bringToFront().catch(() => {});
   } catch (e) {
     await ctx.close().catch(() => {});
@@ -200,7 +223,8 @@ async function signIn(ctx: Ctx, a: AccountRow, st: SignInState, windowClosed: ()
     if (cancelled) return;
     const fresh = ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [a.id]) ?? a;
     const options = contextOptions({ proxyUrl: fresh.proxy_url, timezone: fresh.timezone, executablePath: ctx.config.executablePath, headless: false });
-    win = await (pool.loginWindow ?? playwrightLoginWindow)(pool.userDataDir(a.id), options);
+    const workspace = ctx.db.get<{ name: string }>('SELECT name FROM workspaces WHERE id = ?', [a.workspace_id])?.name ?? '';
+    win = await (pool.loginWindow ?? playwrightLoginWindow)(pool.userDataDir(a.id), options, { account: fresh.name, workspace });
     // The window cleared the profile's li_at. For a browser-owned session that was the live copy, which can be
     // newer than the stored one (if the server stopped before storing a rotation), so it is stored now: giving
     // up then leaves the account as it was, since the driver puts the stored copy into an empty profile.
@@ -209,7 +233,7 @@ async function signIn(ctx: Ctx, a: AccountRow, st: SignInState, windowClosed: ()
       ctx.db.run("UPDATE accounts SET session_enc = ? WHERE id = ? AND session_origin = 'browser' AND session_enc = ?", [ctx.sealer.seal(previous), a.id, fresh.session_enc]);
     }
     if (cancelled) return;
-    st.message = 'A LinkedIn window is open on this computer. Sign in there; OpenReach notices when you are done.';
+    st.message = 'A window is open on this computer. Press Continue to LinkedIn there and sign in; OpenReach notices when you are done.';
     for (;;) {
       if (cancelled) return;
       const urls = win.urls();

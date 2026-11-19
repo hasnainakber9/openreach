@@ -306,7 +306,7 @@ function AccountModal({
               ))}
               {account?.browserLogin?.state === 'failed' && <SignInStatus account={account} onChanged={onChanged} />}
               <span className="field-hint">
-                A LinkedIn window opens on this computer; sign in there. This is more reliable than pasting a cookie, because LinkedIn keeps a session tied to the browser it was signed in with.
+                A window opens on this computer; press Continue to LinkedIn there and sign in. This is more reliable than pasting a cookie, because LinkedIn keeps a session tied to the browser it was signed in with.
                 {!account && ' Leave the cookie below empty and choose "Save and sign in".'}
               </span>
             </div>

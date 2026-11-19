@@ -68,12 +68,12 @@ async function setup(account: Record<string, unknown> = {}) {
   });
   const log: string[] = [];
   const win = fakeWindow();
-  const launches: { dir: string; headless: boolean | undefined; timezoneId?: string }[] = [];
+  const launches: { dir: string; headless: boolean | undefined; timezoneId?: string; label?: unknown }[] = [];
   w.ctx.drivers.factory = () => fakeDriver(log);
   w.ctx.drivers.loginTiming = { pollMs: 5, timeoutMs: 3000 };
-  w.ctx.drivers.loginWindow = async (dir, options) => {
+  w.ctx.drivers.loginWindow = async (dir, options, label) => {
     log.push('window opened');
-    launches.push({ dir, headless: options.headless, timezoneId: options.timezoneId });
+    launches.push({ dir, headless: options.headless, timezoneId: options.timezoneId, label });
     return win;
   };
   const row = () => w.ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [id])!;
@@ -92,6 +92,8 @@ describe('Sign in in a browser window', () => {
     await until(() => t.launches.length === 1);
     expect(t.log).toEqual(['driver closed', 'window opened']);
     expect(t.launches[0]).toMatchObject({ headless: false, timezoneId: 'UTC' });
+    // The window says which OpenReach account and workspace it signs in.
+    expect(t.launches[0].label).toEqual({ account: 'Real seat', workspace: 'Acme' });
     expect(t.launches[0].dir.replace(/\\/g, '/')).toMatch(new RegExp(`/browsers/${t.id}$`));
 
     // While the window is open: the engine's lease is held and no other browser starts on the profile.
