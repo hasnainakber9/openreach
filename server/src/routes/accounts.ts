@@ -228,9 +228,10 @@ export function accountRoutes(app: FastifyInstance, ctx: Ctx) {
   });
 
   // Opens LinkedIn's sign-in page in a window on this computer, on the account's own browser profile, and
-  // returns at once; the account's `browserLogin` shows the progress (drivers/browser-login.ts).
+  // returns at once; the account's `browserLogin` shows the progress (drivers/browser-login.ts). Admins only:
+  // the window opens on the screen of whoever runs OpenReach, and the session signed in there sends for the account.
   app.post('/api/accounts/:id/browser-login', async (req) => {
-    requireWriter(req);
+    requireAdmin(req);
     const a = load(req);
     startBrowserLogin(ctx, a);
     return serializeAccount(ctx, a);

@@ -68,12 +68,12 @@ async function setup(account: Record<string, unknown> = {}) {
   });
   const log: string[] = [];
   const win = fakeWindow();
-  const launches: { dir: string; headless: boolean | undefined; timezoneId?: string }[] = [];
+  const launches: { dir: string; headless: boolean | undefined; timezoneId?: string; label?: unknown }[] = [];
   w.ctx.drivers.factory = () => fakeDriver(log);
   w.ctx.drivers.loginTiming = { pollMs: 5, timeoutMs: 3000 };
-  w.ctx.drivers.loginWindow = async (dir, options) => {
+  w.ctx.drivers.loginWindow = async (dir, options, label) => {
     log.push('window opened');
-    launches.push({ dir, headless: options.headless, timezoneId: options.timezoneId });
+    launches.push({ dir, headless: options.headless, timezoneId: options.timezoneId, label });
     return win;
   };
   const row = () => w.ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE id = ?', [id])!;
@@ -92,6 +92,8 @@ describe('Sign in in a browser window', () => {
     await until(() => t.launches.length === 1);
     expect(t.log).toEqual(['driver closed', 'window opened']);
     expect(t.launches[0]).toMatchObject({ headless: false, timezoneId: 'UTC' });
+    // The window says which OpenReach account and workspace it signs in.
+    expect(t.launches[0].label).toEqual({ account: 'Real seat', workspace: 'Acme' });
     expect(t.launches[0].dir.replace(/\\/g, '/')).toMatch(new RegExp(`/browsers/${t.id}$`));
 
     // While the window is open: the engine's lease is held and no other browser starts on the profile.
@@ -193,6 +195,50 @@ describe('Sign in in a browser window', () => {
     await until(() => t.launches.length === 1);
     expect((await t.api.call('PATCH', `/api/accounts/${t.id}`, { liAt: 'another-pasted-cookie' })).status).toBe(409);
     await t.api.call('POST', `/api/accounts/${t.id}/browser-login/cancel`);
+  });
+
+  it('is only opened by admins, since it opens on the screen of the computer running OpenReach', async () => {
+    const t = await setup();
+    const member = await t.api.addUser('member');
+    const client = await t.api.addUser('client');
+    const admin = await t.api.addUser('admin');
+    const member403 = await t.api.call('POST', `/api/accounts/${t.id}/browser-login`, undefined, member);
+    expect(member403.status).toBe(403);
+    expect(member403.body.error).toMatch(/admins/);
+    expect((await t.api.call('POST', `/api/accounts/${t.id}/browser-login`, undefined, client)).status).toBe(403);
+    expect(t.launches).toHaveLength(0);
+    expect(t.w.ctx.drivers.signIns.has(t.id)).toBe(false);
+    expect((await t.api.call('POST', `/api/accounts/${t.id}/browser-login`, undefined, admin)).status).toBe(200);
+    await until(() => t.launches.length === 1);
+    await t.api.call('POST', `/api/accounts/${t.id}/browser-login/cancel`, undefined, admin);
+  });
+
+  it('opens one sign-in window at a time on the computer, across accounts and workspaces', async () => {
+    const t = await setup();
+    const second = t.w.ctx.db.insert('accounts', { workspace_id: t.row().workspace_id, name: 'Second seat', driver: 'playwright', timezone: 'UTC', status: 'needs_login', created_at: t.w.ctx.clock.now() });
+    await t.api.call('POST', `/api/accounts/${t.id}/browser-login`);
+    await until(() => t.launches.length === 1);
+    const busy = await t.api.call('POST', `/api/accounts/${second}/browser-login`);
+    expect(busy.status).toBe(409);
+    expect(busy.body.error).toMatch(/already open on this computer/);
+    // Another workspace on the same install is refused too, without naming the other account.
+    t.w.ctx.config.allowSignup = true;
+    await t.api.register('Other');
+    t.w.ctx.config.allowSignup = false;
+    const other = (await t.api.call('POST', '/api/accounts', { name: 'Elsewhere', driver: 'playwright' })).body.id;
+    const elsewhere = await t.api.call('POST', `/api/accounts/${other}/browser-login`);
+    expect(elsewhere.status).toBe(409);
+    expect(elsewhere.body.error).not.toMatch(/Real seat/);
+    expect(t.launches).toHaveLength(1);
+    expect(t.w.ctx.drivers.signIns.has(second)).toBe(false);
+
+    // Once that window is cancelled, the next one opens.
+    t.w.ctx.drivers.signIns.get(t.id)!.cancel();
+    await until(() => !t.w.ctx.drivers.isHeld(t.id));
+    t.win.closed = false;
+    expect((await t.api.call('POST', `/api/accounts/${other}/browser-login`)).status).toBe(200);
+    await until(() => t.launches.length === 2);
+    t.w.ctx.drivers.signIns.get(other)!.cancel();
   });
 
   it('creates a real account without a cookie as signed out, except where the window is not offered', async () => {
@@ -449,6 +495,26 @@ describe('Sign-in window edge cases', () => {
     await deleteWorkspace(t.w.ctx, t.row().workspace_id);
     expect(t.win.closed).toBe(true);
     expect(t.w.ctx.drivers.signIns.has(t.id)).toBe(false);
+    expect(t.w.ctx.drivers.isHeld(t.id)).toBe(false);
+  });
+
+  it('closing the sessions (shutdown, losing the lead) waits until each sign-in window has closed', async () => {
+    const t = await setup();
+    let exited!: () => void;
+    const exit = new Promise<void>((r) => (exited = r));
+    t.win.close = async () => {
+      await exit;
+      t.win.closed = true;
+    };
+    await t.api.call('POST', `/api/accounts/${t.id}/browser-login`);
+    await until(() => t.launches.length === 1);
+    let done = false;
+    const closing = t.w.ctx.drivers.closeSessions().then(() => void (done = true));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(done).toBe(false);
+    exited();
+    await closing;
+    expect(t.win.closed).toBe(true);
     expect(t.w.ctx.drivers.isHeld(t.id)).toBe(false);
   });
 });
