@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DAY, HOUR } from '../src/clock.js';
-import { DriverError, type LinkedInDriver } from '../src/drivers/types.js';
+import { DriverError, Offline, type LinkedInDriver } from '../src/drivers/types.js';
 import { localParts } from '../src/engine/limits.js';
 import { defaultSequence, type Sequence } from '../src/engine/sequence.js';
 import { handleInboundReply } from '../src/services/replies.js';
@@ -170,6 +170,67 @@ describe('campaign engine', () => {
     await runFor(w, 6 * HOUR);
     expect(states(w, id)).toEqual({ failed: 1 });
     expect(counts(w, id)['follow:failed']).toBe(3);
+  });
+
+  it('waits out a lost internet connection: the lead keeps its place in line and its tries', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const w = makeWorld();
+      const tried: string[] = [];
+      w.ctx.drivers.factory = () =>
+        ({
+          recentConnections: async () => [],
+          inbox: async () => [],
+          follow: async (url: string) => {
+            tried.push(url);
+            // Offline for five tries: three failures would have ended the lead.
+            if (tried.length <= 5) throw new Offline('net::ERR_NAME_NOT_RESOLVED');
+          },
+          close: async () => {},
+        }) as unknown as LinkedInDriver;
+      const { id } = makeCampaign(w, { start: 'f', nodes: { f: { id: 'f', type: 'follow', next: null } } }, {}, addLeads(w, 2));
+      await runFor(w, 6 * HOUR);
+      expect(states(w, id)).toEqual({ done: 2 });
+      expect(counts(w, id)).toEqual({ 'follow:ok': 2 });
+      // The first lead went again until the connection was back, before the second one had a turn.
+      expect(tried).toHaveLength(7);
+      expect(new Set(tried.slice(0, 6)).size).toBe(1);
+      expect(tried[6]).not.toBe(tried[0]);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/No internet connection.*ERR_NAME_NOT_RESOLVED/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("waits while a sign-in window has the account's browser, without using up the lead's tries", async () => {
+    const quiet = [vi.spyOn(console, 'warn').mockImplementation(() => {}), vi.spyOn(console, 'error').mockImplementation(() => {})];
+    try {
+      const w = makeWorld();
+      let calls = 0;
+      w.ctx.drivers.factory = () =>
+        ({
+          recentConnections: async () => [],
+          inbox: async () => [],
+          follow: async () => {
+            calls++;
+          },
+          close: async () => {},
+        }) as unknown as LinkedInDriver;
+      const { id } = makeCampaign(w, { start: 'f', nodes: { f: { id: 'f', type: 'follow', next: null } } }, {}, addLeads(w, 1));
+      const release = await w.ctx.drivers.hold(w.account().id);
+      await runFor(w, 3 * HOUR);
+      expect(calls).toBe(0);
+      expect(states(w, id)).toEqual({ active: 1 });
+      const cl = w.ctx.db.get<CampaignLeadRow>('SELECT * FROM campaign_leads WHERE campaign_id = ?', [id])!;
+      expect(cl.attempts).toBe(0);
+      expect(cl.last_error).toMatch(/sign-in window is open/);
+      release();
+      await runFor(w, HOUR);
+      expect(states(w, id)).toEqual({ done: 1 });
+      expect(counts(w, id)).toEqual({ 'follow:ok': 1 });
+    } finally {
+      for (const s of quiet) s.mockRestore();
+    }
   });
 
   it('branches on email availability and sends email without SMTP as a dry run', async () => {

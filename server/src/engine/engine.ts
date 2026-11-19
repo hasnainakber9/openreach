@@ -3,7 +3,7 @@ import { billingEnabled, overPlanIds } from '../billing/limits.js';
 import { DAY, HOUR, MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
-import { DriverError, type LinkedInDriver } from '../drivers/types.js';
+import { DriverError, Offline, SignInOpen, type LinkedInDriver } from '../drivers/types.js';
 import { CONTACT_ACTIVITY_TYPES, logActivity } from '../services/activity.js';
 import { MailRunner } from '../mail/runner.js';
 import { MessagingRunner } from '../messaging/runner.js';
@@ -510,6 +510,14 @@ export class Engine {
       advance(outcome.status, outcome.detail);
       return true;
     } catch (e) {
+      // No internet connection, or a sign-in window has the account's browser: nothing about this lead went
+      // wrong. It keeps its place in line and its tries (its last error says why it waits), and the account
+      // pauses as it does after an action before trying again.
+      if (e instanceof Offline || e instanceof SignInOpen) {
+        ctx.db.update('campaign_leads', job.id, { next_run_at: job.next_run_at, last_error: e.message });
+        console.warn(`[engine] account ${a.id}: ${e.message}`);
+        return true;
+      }
       if (!(e instanceof DriverError)) {
         return this.retry(campaign, job, base, (e as Error).message), true;
       }
