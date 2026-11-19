@@ -316,6 +316,26 @@ describe('foundation plumbing', () => {
     expect(limiter.reserve(1)).toBe(0);
   });
 
+  it('rate limiter forgets keys whose bucket has refilled, so many one-off keys (host names) do not pile up', () => {
+    let t = 0;
+    const limiter = new RateLimiter(1, 2, () => t);
+    const size = () => (limiter as unknown as { buckets: Map<unknown, unknown> }).buckets.size;
+    for (let i = 0; i < 5000; i++) limiter.reserve(`host${i}.example`);
+    t = 1500;
+    expect([limiter.reserve('busy.example'), limiter.reserve('busy.example'), limiter.reserve('busy.example')]).toEqual([0, 0, 1000]);
+    t = 2000; // the host buckets have refilled; busy.example's has half a token
+    for (let i = 0; i < 5000; i++) limiter.reserve(`other${i}.example`);
+    expect(size()).toBeLessThan(6000);
+    // A key still short of tokens keeps its state.
+    expect(limiter.reserve('busy.example')).toBe(500);
+    // A steady stream of new keys stays around the number seen in the last refill time.
+    for (let i = 0; i < 100_000; i++) {
+      t += 10;
+      limiter.reserve(`k${i}.example`);
+    }
+    expect(size()).toBeLessThan(5000);
+  });
+
   it('takes form bodies only outside /api and on provider callbacks, so cross-site forms cannot drive the API', async () => {
     const app = await buildApp(makeWorld().ctx);
     // (/u/:token itself is the real unsubscribe route since g3-mailboxes, and /api/public/twilio/:id/inbound the real

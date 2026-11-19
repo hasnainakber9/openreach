@@ -22,8 +22,11 @@ export class ProviderError extends Error {
 }
 
 // In-memory token bucket per key (integration id), so one workspace can't hammer a vendor.
+// Keys can be open-ended (the website enricher's host names), so a bucket that has refilled is dropped:
+// it is the same as no bucket. Swept whenever the map has doubled since the last sweep.
 export class RateLimiter {
   private buckets = new Map<string | number, { tokens: number; at: number }>();
+  private sweepAt = 1000;
   constructor(
     private perSecond: number,
     private burst = Math.max(1, perSecond),
@@ -33,6 +36,10 @@ export class RateLimiter {
   // Milliseconds until a token is free (0 = take it now). Exposed for tests.
   reserve(key: string | number): number {
     const t = this.now();
+    if (this.buckets.size >= this.sweepAt) {
+      for (const [k, v] of this.buckets) if (v.tokens + ((t - v.at) / 1000) * this.perSecond >= this.burst) this.buckets.delete(k);
+      this.sweepAt = Math.max(1000, this.buckets.size * 2);
+    }
     const b = this.buckets.get(key) ?? { tokens: this.burst, at: t };
     b.tokens = Math.min(this.burst, b.tokens + ((t - b.at) / 1000) * this.perSecond);
     b.at = t;
