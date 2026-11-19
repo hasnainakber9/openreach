@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Browser, Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PlaywrightLinkedInDriver } from '../src/drivers/playwright/linkedin.js';
-import { companyFromCard, connectionRows, parseTopCardLines, profileLinkRows, threadEvents, topCardSnapshot } from '../src/drivers/playwright/parse.js';
+import { companyFromCard, composerIsFor, composerOwners, connectionRows, parseTopCardLines, profileLinkRows, threadEvents, topCardSnapshot } from '../src/drivers/playwright/parse.js';
 import { LABELS, SEL } from '../src/drivers/playwright/selectors.js';
 import { mockLinkedIn, type MockState } from './fixtures/linkedin-mock.js';
 
@@ -21,6 +21,9 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       'jane-doe': { name: 'Jane Doe', degree: '1st', email: 'jane@northwind.example', staleBubble: true },
       'lucy-late': { name: 'Lucy Late', degree: '1st', staleBubble: true, lateCard: true },
       'sam-slow': { name: 'Sam Slow', degree: '1st', noComposer: true },
+      'paula-pop': { name: 'Paula Pop', degree: '1st', otherBubbleFirst: true, lateCard: true },
+      'sid-stuck': { name: 'Sid Stuck', degree: '1st', otherBubbleFirst: true, noComposer: true },
+      'ivy-inmail': { name: 'Ivy Inmail', degree: '2nd', inmail: 'compose', otherBubbleFirst: true, lateCard: true },
       'max-mueller': { name: 'Max Mueller', degree: '2nd', staleBubble: true },
       'lena-hidden': { name: 'Lena Hidden', degree: '2nd', connectInMoreMenu: true },
       'nina-navigate': { name: 'Nina Navigate', degree: '2nd', invitePage: true },
@@ -164,6 +167,21 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     expect(events('message').filter((e) => e.slug === 'sam-slow')).toEqual([]);
   }, 60_000);
 
+  it('never writes into a bubble with someone else that pops up while the person’s own is opening', async () => {
+    // Ollie's bubble opens first and names only Ollie; Paula's opens later, naming her in its header only.
+    await driver.sendMessage(url('paula-pop'), 'Hi Paula,\nprivate pricing for you');
+    await settle();
+    expect(events('message').at(-1)).toEqual({ type: 'message', slug: 'paula-pop', text: 'Hi Paula,\nprivate pricing for you' });
+    await driver.sendInMail(url('ivy-inmail'), { subject: 'For Ivy', body: 'Hi Ivy', via: 'profile' });
+    await settle();
+    expect(events('inmail').at(-1)).toEqual({ type: 'inmail', slug: 'ivy-inmail', subject: 'For Ivy', text: 'Hi Ivy' });
+    // Sid's own bubble never opens: try again later, and nothing is sent anywhere.
+    await expect(driver.sendMessage(url('sid-stuck'), 'Hi Sid')).rejects.toMatchObject({ code: 'TRANSIENT' });
+    await settle();
+    expect(events('message').filter((e) => e.slug === 'sid-stuck')).toEqual([]);
+    expect(events('wrong')).toEqual([]);
+  }, 90_000);
+
   it('follows, endorses and likes, leaving people already followed alone', async () => {
     await driver.follow(url('lena-hidden'));
     await driver.follow(url('jane-doe'));
@@ -190,6 +208,8 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       ['jane-doe', 'Jane', 'Head of Growth at Northwind'],
       ['lucy-late', 'Lucy', 'Head of Growth at Northwind'],
       ['sam-slow', 'Sam', 'Head of Growth at Northwind'],
+      ['paula-pop', 'Paula', 'Head of Growth at Northwind'],
+      ['sid-stuck', 'Sid', 'Head of Growth at Northwind'],
       ['carl-classic', 'Carl', 'Head of Growth at Northwind'],
     ]);
     const threads = await driver.inbox(0);
@@ -407,6 +427,15 @@ describe.skipIf(!haveBrowser)('LinkedIn 2026 snapshots (scrubbed live markup)', 
     // The bubble names its participant in its own profile card.
     expect(await page.locator(SEL.messageBubble).filter({ has: page.locator(SEL.bubbleOwnerLink('slug')) }).count()).toBe(1);
     expect(await page.locator(SEL.messageBubble).filter({ has: page.locator(SEL.bubbleOwnerLink('someone-else')) }).count()).toBe(0);
+    // ...and in the recipient pill of a new message; its header says "New message" (scrubbed).
+    const ownerSel = { container: SEL.composerContainer, ownerLinks: SEL.bubbleOwnerLinks, title: SEL.bubbleTitle, recipients: SEL.bubbleRecipients, tag: 't' };
+    const [owner] = await page.locator(SEL.messageBox).evaluateAll(composerOwners, ownerSel);
+    expect(owner).toMatchObject({ contained: true, title: 'TTTTTTTTTTT', recipients: ['NAME'] });
+    expect(owner.links.length).toBeGreaterThan(0);
+    expect(composerIsFor(owner, ['slug'], 'Name')).toBe(true);
+    expect(composerIsFor(owner, ['someone-else'], 'Name')).toBe(false);
+    expect(composerIsFor({ ...owner, links: [] }, [], 'Name')).toBe(true);
+    expect(composerIsFor({ ...owner, links: [] }, [], 'Someone Else')).toBe(false);
     // Expand comes first, close second; the close selector picks close.
     expect(await page.locator(SEL.messageOverlayClose).last().locator('svg').getAttribute('data-test-icon')).toBe('close-small');
   });

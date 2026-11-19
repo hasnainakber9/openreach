@@ -35,6 +35,10 @@ export interface MockPerson {
   lateCard?: boolean;
   // Clicking Message opens nothing (the page is too slow, say): no bubble, no dialog.
   noComposer?: boolean;
+  // 2026: right after clicking Message, a bubble with someone else pops up (an incoming chat, say), named
+  // only in its header, and this person's own bubble opens a while later (or never, with noComposer).
+  // Sending from the other bubble logs a 'wrong' event.
+  otherBubbleFirst?: boolean;
   // 2026: the invitation dialog appears empty and draws its buttons a moment later, as LinkedIn's does.
   slowInvite?: boolean;
   // Clicking Connect opens no invitation dialog in time (the page is too slow, say).
@@ -250,9 +254,14 @@ document.addEventListener('click', (ev) => {
     const d = dialog('<p>Withdraw invitation?</p><button>Withdraw</button>');
     d.querySelector('button').onclick = () => { log({ type: 'withdraw', slug }); d.remove(); };
   }
+  if (act === 'message' && person.otherBubbleFirst) {
+    setTimeout(() => bubble('ollie-other', 'Ollie Other', { card: false, onSend: () => log({ type: 'wrong', what: 'other bubble send' }) }), 100);
+  }
   if (act === 'message' && !person.noComposer) {
     const kind = person.degree === '1st' ? 'message' : 'inmail';
-    bubble(slug, name, { subject: kind === 'inmail', card: !person.lateCard, onSend: (m) => log(kind === 'inmail' ? { type: kind, slug, subject: m.subject, text: m.text } : { type: kind, slug, text: m.text }) });
+    const open = () => bubble(slug, name, { subject: kind === 'inmail', card: !person.lateCard, onSend: (m) => log(kind === 'inmail' ? { type: kind, slug, subject: m.subject, text: m.text } : { type: kind, slug, text: m.text }) });
+    if (person.otherBubbleFirst) setTimeout(open, 1500);
+    else open();
   }
 });`,
     'LinkedIn',

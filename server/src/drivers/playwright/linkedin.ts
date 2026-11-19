@@ -14,6 +14,8 @@ import {
 } from '../types.js';
 import {
   companyFromCard,
+  composerIsFor,
+  composerOwners,
   connectionRows,
   nameFromTitle,
   namesOtherPerson,
@@ -290,11 +292,13 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
   // Waits for the composer that clicking Message opened. LinkedIn keeps conversation bubbles open across
   // pages, so a bubble whose own profile card or header links to this person comes first (a link further
   // down, in a message or a shared profile, can be anyone), then a new dialog holding a composer (Sales
-  // Navigator), then a composer that was not there before. A new dialog without one (an InMail upsell,
-  // say) is LinkedIn's answer instead: 'declined'. Nothing at all before the deadline is null: on a busy
-  // computer the bubble can be slow, and that is worth another try, not a verdict on the person. The
-  // profile URL may have redirected (a URN to the vanity name), so both ids count.
-  private async waitForComposer(page: Page, url: string, boxSel: string, before: ComposerBaseline): Promise<{ box: Locator; scope: Locator } | 'declined' | null> {
+  // Navigator), then a composer that was not there before, once its bubble names this person (`person`):
+  // another bubble can open meanwhile (an incoming chat, one LinkedIn restores late) and is never written
+  // in. A new dialog without one (an InMail upsell, say) is LinkedIn's answer instead: 'declined'. Nothing
+  // usable before the deadline is null: on a busy computer the bubble can be slow, and that is worth
+  // another try, not a verdict on the person. The profile URL may have redirected (a URN to the vanity
+  // name), so both ids count.
+  private async waitForComposer(page: Page, url: string, person: string, boxSel: string, before: ComposerBaseline): Promise<{ box: Locator; scope: Locator } | 'declined' | null> {
     const ids = [...new Set([publicIdFromUrl(url), publicIdFromUrl(page.url())].filter((id): id is string => !!id))];
     const own = ids.map((id) => SEL.bubbleOwnerLink(encodeURIComponent(id))).join(', ');
     const bubble = own ? page.locator(SEL.messageBubble).filter({ has: page.locator(own) }) : null;
@@ -302,7 +306,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     const dialogs = page.locator(SEL.dialog);
     const deadline = Date.now() + (this.o.composerTimeoutMs ?? 20_000);
     let answeredAt = 0;
-    while (Date.now() < deadline) {
+    for (let poll = 0; Date.now() < deadline; poll++) {
       if (bubble && (await bubble.locator(boxSel).count())) return this.pinComposer(page, bubble.last().locator(boxSel).last());
       if ((await dialogs.count()) > before.dialogs) {
         const d = dialogs.last();
@@ -310,7 +314,12 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
         answeredAt ||= Date.now();
         if (Date.now() - answeredAt > 1500) return 'declined';
       }
-      if (await fresh.count()) return this.pinComposer(page, fresh.first());
+      const tag = `${poll}-${Math.round(Math.random() * 1e9)}`;
+      const owners = await fresh
+        .evaluateAll(composerOwners, { container: SEL.composerContainer, ownerLinks: SEL.bubbleOwnerLinks, title: SEL.bubbleTitle, recipients: SEL.bubbleRecipients, tag })
+        .catch(() => []);
+      const i = owners.findIndex((o) => composerIsFor(o, ids, person));
+      if (i >= 0) return this.pinComposer(page, page.locator(`[data-or-fresh="${tag}-${i}"]`));
       await new Promise((r) => setTimeout(r, 250));
     }
     return null;
@@ -520,7 +529,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     const before = await this.composerBaseline(page, SEL.messageBox);
     // 2026: Message is a link to /messaging/compose/...; LinkedIn opens it as a bubble on the same page.
     await btn.click();
-    const composer = await this.waitForComposer(page, url, SEL.messageBox, before);
+    const composer = await this.waitForComposer(page, url, name, SEL.messageBox, before);
     if (!composer || composer === 'declined') {
       await page.keyboard.press('Escape');
       if (!composer) throw new DriverError('TRANSIENT', 'The message box did not open in time');
@@ -745,7 +754,7 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     await this.pause();
 
     // Either the composer opens or LinkedIn answers with a dialog (Premium upsell, no credits left).
-    const composer = await this.waitForComposer(page, url, SEL.inmailBody, before);
+    const composer = await this.waitForComposer(page, url, name, SEL.inmailBody, before);
     await this.pause(0.5, 1.2);
     if (!composer) {
       await page.keyboard.press('Escape');

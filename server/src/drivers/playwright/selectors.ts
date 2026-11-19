@@ -45,6 +45,13 @@ export const SEL = {
   // Where a bubble names its own participant (the profile card at the top, or the header). Links further
   // down (a message body, a shared profile) can be anyone.
   bubbleOwnerLink: (id: string) => `.msg-s-profile-card a[href*="/in/${id}/" i], .msg-overlay-bubble-header a[href*="/in/${id}/" i]`,
+  // A composer's bubble or dialog, the conversation it belongs to.
+  composerContainer: '.msg-overlay-conversation-bubble, .msg-convo-wrapper, [role="dialog"]',
+  bubbleOwnerLinks: '.msg-s-profile-card a[href*="/in/"], .msg-overlay-bubble-header a[href*="/in/"]',
+  // The bubble's header names the other person; a new message's header says "New message" instead and
+  // its recipients are pills labelled "Remove NAME".
+  bubbleTitle: '.msg-overlay-bubble-header__title',
+  bubbleRecipients: '.msg-connections-typeahead__added-recipients [aria-label^="Remove "]',
   messageBox: 'div.msg-form__contenteditable[contenteditable="true"], div[role="textbox"][contenteditable="true"]',
   messageSend: 'button.msg-form__send-button, button[type="submit"].msg-form__send-btn',
   // The bubble's header has two unlabeled controls, expand then close.
