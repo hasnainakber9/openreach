@@ -572,8 +572,7 @@ describe('legacy SMTP settings', () => {
     ]);
     const withEmail = makeCampaign(w, oneEmail, {}, emailLeads(w, 1));
     const withoutEmail = makeCampaign(w, { start: 'f', nodes: { f: { id: 'f', type: 'follow', next: null } } });
-    // The account sent without PUBLIC_URL before mailboxes existed; its mailbox keeps doing so after the upgrade.
-    w.ctx.config.publicUrl = undefined;
+    w.ctx.config.publicUrl = PUBLIC;
     ensureLegacyMailboxes(w.ctx);
     ensureLegacyMailboxes(w.ctx);
     const rows = w.ctx.db.all<MailboxRow>('SELECT * FROM mailboxes');
@@ -596,8 +595,33 @@ describe('legacy SMTP settings', () => {
     expect(withoutEmail.id).toBeGreaterThan(0);
     await runFor(w, 3 * HOUR);
     expect(mailerOf(w).sent[0].transport).toMatchObject({ host: 'smtp.sender.dev', port: 587, user: 'sara@sender.dev', pass: 'pw-123456789' });
-    expect(mailerOf(w).sent[0].msg.headers!['List-Unsubscribe']).toBe('<mailto:sara@sender.dev?subject=unsubscribe>');
+    // No IMAP: the link is the only opt-out offered.
+    expect(mailerOf(w).sent[0].msg.headers!['List-Unsubscribe']).toMatch(/^<https:\/\/reach\.example\.net\/u\/[\w.-]+>$/);
+    expect(mailerOf(w).sent[0].msg.text).not.toMatch(/reply/);
     expect(mailbox(w, rows[0].id).status).toBe('active');
+  });
+
+  it('stops a migrated mailbox without IMAP when emails would carry no link, like any other mailbox', async () => {
+    for (const [publicUrl, billing, message] of [
+      [undefined, false, /^Add IMAP settings/],
+      ['http://reach.example.net', false, /^Add IMAP settings/],
+      ['http://reach.example.net', true, /^PUBLIC_URL \(http:\/\/reach\.example\.net\) is not a public https:\/\/ address.*on this hosted server/],
+    ] as const) {
+      const w = makeWorld({}, { smtp_enc: null });
+      w.ctx.db.run('UPDATE accounts SET smtp_enc = ? WHERE id = ?', [w.ctx.sealer.seal(JSON.stringify({ host: 'smtp.sender.dev', port: 587, secure: false, user: 'sara@sender.dev', pass: 'pw-123456789' })), w.accountId]);
+      makeCampaign(w, oneEmail, {}, emailLeads(w, 1));
+      w.ctx.config.publicUrl = publicUrl;
+      ensureLegacyMailboxes(w.ctx);
+      const mb = w.ctx.db.get<MailboxRow>('SELECT * FROM mailboxes')!;
+      // Billing on: the SMTP host is looked up before connecting, so give it a public address.
+      if (billing) {
+        hosted(w);
+        w.ctx.dns.lookup = (async () => [{ address: '93.184.216.34', family: 4 }]) as any;
+      }
+      await runFor(w, 3 * HOUR);
+      expect(mailbox(w, mb.id), String(publicUrl)).toMatchObject({ status: 'needs_attention', status_message: expect.stringMatching(message) });
+      expect(mailerOf(w).sent, String(publicUrl)).toHaveLength(0);
+    }
   });
 });
 
@@ -624,6 +648,18 @@ describe('legacy SMTP settings through the accounts API', () => {
     // Other edits leave the mailbox alone.
     expect((await api.call('PATCH', `/api/accounts/${acc}`, { name: 'Seat 2' })).status).toBe(200);
     expect(open().host).toBe('smtp.new.dev');
+  });
+
+  it('warns in the campaign that a migrated mailbox without IMAP can’t send in reply mode', async () => {
+    const api = await makeApi();
+    await api.register('Acme');
+    api.w.ctx.config.allowSignup = false;
+    const smtp = { host: 'smtp.old.dev', port: 587, user: 'sam@old.dev', pass: 'pw-1', from: 'Sam <sam@old.dev>' };
+    await api.call('POST', '/api/accounts', { name: 'Seat', driver: 'simulator', smtp });
+    const mb = api.w.ctx.db.get<MailboxRow>('SELECT * FROM mailboxes')!;
+    const campaign = await api.call('POST', '/api/campaigns', { name: 'C', sequence: oneEmail, mailboxIds: [mb.id] });
+    expect(campaign.body.warnings.join(' ')).toMatch(/Without IMAP settings those replies are never read, so Seat \(email\) can’t send campaign email/);
+    expect((await api.call('GET', `/api/mailboxes/${mb.id}`)).body).toMatchObject({ unsubscribe: 'reply', hasImap: false });
   });
 
   it('lets only admins change an account’s SMTP settings (they hold a password)', async () => {

@@ -74,11 +74,7 @@ export default function Mailboxes({ me }: { me: Me }) {
               {!m.simulated && !m.hasImap && (
                 <div className="note note-warning">
                   No IMAP settings: replies and bounces from this mailbox aren’t detected, so sequences won’t stop when people answer
-                  {m.unsubscribe !== 'reply'
-                    ? '.'
-                    : m.legacyAccountId
-                      ? ', and replies asking to unsubscribe must be added to the do-not-contact list by hand.'
-                      : '. With no unsubscribe link, campaign emails ask people to reply “unsubscribe”, so this mailbox can’t send them until it has IMAP settings.'}
+                  {m.unsubscribe !== 'reply' ? '.' : '. With no unsubscribe link, campaign emails ask people to reply “unsubscribe”, so this mailbox can’t send them until it has IMAP settings.'}
                 </div>
               )}
               {!m.simulated && m.hasImap && m.unsubscribe === 'reply' && m.status !== 'needs_attention' && (
