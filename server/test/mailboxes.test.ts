@@ -1339,6 +1339,27 @@ describe('opt-out replies', () => {
     expect(asked.join('\n')).not.toMatch(/hear from me again/);
   });
 
+  it('does not read a footer the mail server appended under the quote as part of a top-posted reply', async () => {
+    const { w, leads, otherId, sync, sent } = await sentWorld(3);
+    const now = w.ctx.clock.now();
+    const quote = `On Mon, Sara wrote:\n> Hi First0\n> Worth a chat next week?`;
+    sync([
+      inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, text: `Tuesday 3pm works for me.\n\n${quote}\n\nIf you are not the intended recipient, please notify the sender and remove this email from your system.`, date: now }),
+      inbound({ uid: 2, from: 'person1@acme.dev', inReplyTo: sent(leads[1]).message_id, text: `Tuesday 3pm works for me.\n\n${quote}\n\nTo unsubscribe from Acme updates, reply STOP.`, date: now }),
+      // Bottom-posted: what follows the quote is the reply itself.
+      inbound({ uid: 3, from: 'person2@acme.dev', inReplyTo: sent(leads[2]).message_id, text: `${quote}\n\nPlease remove me from your list.`, date: now }),
+    ]);
+    await w.ctx.jobs.drain();
+    const category = (l: number) => w.ctx.db.get<{ category: string }>('SELECT category FROM conversations WHERE lead_id = ?', [l])!.category;
+    for (const l of leads.slice(0, 2)) {
+      expect(category(l)).not.toBe('unsubscribe');
+      expect(suppressed(w, l)).toEqual([]);
+      expect(cl(w, otherId, l).state).not.toBe('skipped');
+    }
+    expect(category(leads[2])).toBe('unsubscribe');
+    expect(suppressed(w, leads[2]).map((s) => s.reason)).toEqual(['unsubscribe', 'unsubscribe']);
+  });
+
   it('suppresses every identity on an opt-out reply from someone already suppressed by one', async () => {
     const { w, leads, events, sync, sent } = await sentWorld();
     // An admin puts the address on the do-not-contact list by hand (POST /api/suppressions).
