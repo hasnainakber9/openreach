@@ -25,6 +25,7 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
       'lena-hidden': { name: 'Lena Hidden', degree: '2nd', connectInMoreMenu: true },
       'nina-navigate': { name: 'Nina Navigate', degree: '2nd', invitePage: true },
       'sara-slowinvite': { name: 'Sara Slowinvite', degree: '2nd', slowInvite: true },
+      'vic-video': { name: 'Vic Video', degree: '2nd', videoPlayer: true, slowInvite: true },
       'pat-pending': { name: 'Pat Pending', degree: '2nd', pending: true },
       'olga-open': { name: 'Olga Open', degree: '2nd', inmail: 'compose' },
       // The older layout, which LinkedIn still serves to some members.
@@ -111,6 +112,12 @@ describe.skipIf(!haveBrowser)('Playwright LinkedIn driver (against a local mock)
     await settle();
     expect(events('connect').at(-1)).toEqual({ type: 'connect', slug: 'sara-slowinvite', text: 'Hi Sara' });
   }, 90_000);
+
+  it('uses the invitation dialog, not the dialogs of a profile video player', async () => {
+    expect(await driver.connect(url('vic-video'), '')).toBe('sent');
+    await settle();
+    expect(events('connect').at(-1)).toEqual({ type: 'connect', slug: 'vic-video', text: '' });
+  }, 60_000);
 
   it('invites through the custom-invite page when the Connect link leads there', async () => {
     expect(await driver.connect(url('nina-navigate'), 'Hello Nina')).toBe('sent');

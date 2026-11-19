@@ -37,6 +37,10 @@ export interface MockPerson {
   noComposer?: boolean;
   // 2026: the invitation dialog appears empty and draws its buttons a moment later, as LinkedIn's does.
   slowInvite?: boolean;
+  // The profile has a video (an intro or featured one): its player (video.js) puts two role=dialog elements
+  // on the page, ahead of any dialog LinkedIn opens later. The first one, its error message, shows because
+  // the media fails to load in the automated browser; the caption settings stay hidden.
+  videoPlayer?: boolean;
 }
 
 export interface MockState {
@@ -57,7 +61,7 @@ const LOCATION = 'London, England, United Kingdom';
 const SCHOOL = 'London School of Economics';
 
 const shell = (body: string, script = '', title = 'LinkedIn') => `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
-<style>/* The hidden copies LinkedIn renders (second degree line, second action row). */ .gvyaz2, .gvya3t { display: none; }</style></head><body>
+<style>/* The hidden copies LinkedIn renders (second degree line, second action row). */ .gvyaz2, .gvya3t { display: none; } .vjs-hidden { display: none; }</style></head><body>
 <main>${body}</main>
 <script>
 const log = (e) => fetch('/__event', { method: 'POST', body: JSON.stringify(e) });
@@ -216,6 +220,13 @@ setTimeout(() => {
   menu.innerHTML = ${JSON.stringify(menuItems(p))};
   document.body.appendChild(menu);
   document.title = ${JSON.stringify(title)};
+  if (person.videoPlayer) {
+    const player = document.createElement('div');
+    player.className = 'video-js';
+    player.innerHTML = '<div class="vjs-error-display vjs-modal-dialog" role="dialog" aria-label="Modal Window" tabindex="-1"><p>This is a modal window. The media could not be loaded.</p></div>' +
+      '<div class="vjs-text-track-settings vjs-modal-dialog vjs-hidden" role="dialog" aria-label="Caption Settings Dialog" tabindex="-1"><select></select></div>';
+    document.querySelector('main').prepend(player);
+  }
   if (person.staleBubble) bubble('ollie-other', 'Ollie Other', { draft: 'Half-written draft for Ollie', shared: slug, onSend: () => log({ type: 'wrong', what: 'stale bubble send' }) });
 }, 400);
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') { const m = document.querySelector('[role=menu]'); if (m) m.hidden = true; } });

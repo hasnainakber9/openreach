@@ -438,18 +438,27 @@ export class PlaywrightLinkedInDriver implements LinkedInDriver {
     await btn.click();
     await this.pause();
 
-    const dialog = page.locator(SEL.dialog).first();
-    let opened = await dialog.waitFor({ timeout: 10_000 }).then(() => true, () => false);
+    // The invitation dialog is the one with the invitation's buttons (or the email field LinkedIn sometimes
+    // asks for): other role=dialog elements can come first on the page, such as the "Modal Window" a profile
+    // video's player shows when its media doesn't load. Waiting for the buttons also covers 2026's dialog,
+    // which appears first and draws them a moment later (read too early, it has no "Add a note" and no
+    // "Send without a note").
+    const inviteButton = new RegExp([LABELS.addNote, LABELS.sendWithoutNote, LABELS.sendInvite].map((r) => r.source).join('|'), 'i');
+    const dialog = page
+      .locator(SEL.dialog)
+      .filter({ has: page.getByRole('button', { name: inviteButton }).or(page.locator(SEL.inviteEmail)) })
+      .first();
+    let opened = await dialog.waitFor({ timeout: 15_000 }).then(() => true, () => false);
     if (!opened && href && /custom-invite/.test(href) && !/custom-invite/.test(page.url())) {
       // The click did nothing visible: open the invitation page the link points to.
       await this.go(new URL(href, page.url()).toString());
-      opened = await dialog.waitFor({ timeout: 10_000 }).then(() => true, () => false);
+      opened = await dialog.waitFor({ timeout: 15_000 }).then(() => true, () => false);
     }
-    if (!opened) throw new DriverError('NOT_AVAILABLE', 'The invitation dialog did not open');
-    // 2026: the dialog appears first and draws its buttons a moment later. Read it only once they are there,
-    // or a slow dialog looks empty: no "Add a note" (the note is dropped) and no "Send without a note".
-    const inviteButton = new RegExp([LABELS.addNote, LABELS.sendWithoutNote, LABELS.sendInvite].map((r) => r.source).join('|'), 'i');
-    await dialog.getByRole('button', { name: inviteButton }).first().waitFor({ timeout: 15_000 }).catch(() => {});
+    if (!opened) {
+      if (LABELS.weeklyLimit.test(await page.locator('body').innerText().catch(() => ''))) throw new DriverError('LIMIT_REACHED', 'LinkedIn weekly invitation limit reached');
+      await page.keyboard.press('Escape').catch(() => {});
+      throw new DriverError('NOT_AVAILABLE', 'The invitation dialog did not open');
+    }
     if (await dialog.locator(SEL.inviteEmail).count()) {
       await page.keyboard.press('Escape');
       throw new DriverError('NOT_AVAILABLE', 'LinkedIn requires their email address to connect');
