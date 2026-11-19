@@ -227,7 +227,11 @@ export function threadEvents(s: { threadEvent: string; eventSender: string; even
   const out: ThreadEvent[] = [];
   for (const li of items) {
     sender = ((li.querySelector(s.eventSender) as HTMLElement | null)?.innerText ?? '').replace(/\s+/g, ' ').trim() || sender;
-    const body = (li.querySelector(s.eventBody) as HTMLElement | null)?.innerText.trim() ?? '';
+    // 2026 shows each line of a message as its own <p> (a blank line as <p><br></p>), and innerText puts
+    // blank lines around every one of them, so such a body is read line by line to come back as typed.
+    const el = li.querySelector(s.eventBody) as HTMLElement | null;
+    const lines = el ? Array.from(el.children) : [];
+    const body = lines.length && lines.every((c) => c.localName === 'p') ? lines.map((p) => (p as HTMLElement).innerText.trim()).join('\n').trim() : (el?.innerText.trim() ?? '');
     const urn = li.querySelector(s.eventUrn)?.getAttribute('data-event-urn') ?? '';
     if (body) out.push({ sender, body, urn });
   }

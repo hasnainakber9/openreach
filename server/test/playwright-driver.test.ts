@@ -373,6 +373,20 @@ describe.skipIf(!haveBrowser)('LinkedIn 2026 snapshots (scrubbed live markup)', 
     expect(events[0].sender).toBe('TTTTTTTTTTTT');
     expect(events[0].urn).toMatch(/^urn:li:X:ID,/);
     expect(events[0].body).toContain('TTTTTTTTTTTT');
+    // Each line is its own <p> (a blank line is <p><br/></p>): the body reads back line by line, as typed.
+    expect(events[0].body).not.toMatch(/\n\n\n/);
+    await page.evaluate(() => {
+      const body = document.querySelector('.msg-s-event-listitem__body')!;
+      body.replaceChildren(
+        ...['Hi First0,', '', 'Saw your post on growth.', 'Worth a chat?'].map((line) => {
+          const p = document.createElement('p');
+          if (line) p.textContent = line;
+          else p.appendChild(document.createElement('br'));
+          return p;
+        }),
+      );
+    });
+    expect((await page.evaluate(threadEvents, eventSelectors))[0].body).toBe('Hi First0,\n\nSaw your post on growth.\nWorth a chat?');
     // The live thread has no profile link at all: the participant is behind the name's hovercard button.
     expect(await page.locator('.msg-thread a[href*="/in/"]').count()).toBe(0);
     expect(await page.locator(SEL.threadHeaderLink).count()).toBe(0);
