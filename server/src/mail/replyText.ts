@@ -4,19 +4,22 @@ import { decodeEntities, stripTags } from '../providers/data/website.js';
 // What a person wrote in a reply, apart from the history, signature and boilerplate their mail client
 // added. Used by inbound mail (the stored body, opt-out detection) and by the classifier's fallback rules.
 
-// Drops quoted history ("> ..." lines and everything after "On ... wrote:") so the inbox and the
-// classifier see what the person actually wrote.
+// Drops quoted history ("> ..." lines, an "On ... wrote:" line above them, and everything after an
+// "On ... wrote:" or "Original Message" line with unquoted history under it) so the inbox and the
+// classifier see what the person actually wrote. Text after a quoted block (a bottom-posted or inline
+// reply) is kept. Empty when the person wrote nothing of their own: the quote is never the reply.
 export function stripQuoted(text: string): string {
-  return withoutQuotes(text) || text.trim();
-}
-
-function withoutQuotes(text: string): string {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const out: string[] = [];
-  for (const line of lines) {
-    if (/^On .{4,200}wrote:\s*$/.test(line.trim()) || /^-{2,}\s*Original Message\s*-{2,}/i.test(line.trim())) break;
-    if (/^\s*>/.test(line)) continue;
-    out.push(line);
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (/^-{2,}\s*Original Message\s*-{2,}/i.test(t)) break;
+    if (/^On .{4,200}wrote:\s*$/.test(t)) {
+      if (/^\s*>/.test(lines.slice(i + 1).find((l) => l.trim()) ?? '')) continue;
+      break;
+    }
+    if (/^\s*>/.test(lines[i])) continue;
+    out.push(lines[i]);
   }
   return out.join('\n').trim();
 }
@@ -31,11 +34,10 @@ const OUR_FOOTER = /^don['’]t want to hear from me again\?/i;
 // Signatures and legal notices that tend to mention unsubscribing ("To unsubscribe from our newsletter...").
 const BOILERPLATE = /^(this (e-?mail|message)\b.{0,80}\b(confidential|intended)|confidentiality notice|disclaimer\b|to unsubscribe from\b)/i;
 
-// Only what the person typed: no quoted history (empty when there is nothing else, unlike stripQuoted, so
-// our own footer quoted back never counts), and nothing from the signature, a quoted header block, our
-// footer or a legal notice on.
+// Only what the person typed: no quoted history (empty when there is nothing else, so our own footer quoted
+// back never counts), and nothing from the signature, a quoted header block, our footer or a legal notice on.
 export function ownText(text: string): string {
-  const lines = withoutQuotes(text).split('\n');
+  const lines = stripQuoted(text).split('\n');
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();

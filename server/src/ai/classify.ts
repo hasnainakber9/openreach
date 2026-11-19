@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import type { JobHelpers, JobInfo } from '../jobs/queue.js';
-import { ruleOptOut } from '../mail/replyText.js';
+import { ownText, ruleOptOut } from '../mail/replyText.js';
 import { AI_MAX_TIMEOUT_SECONDS } from '../providers/ai/types.js';
 import { ProviderError } from '../providers/http.js';
 import { logActivity } from '../services/activity.js';
@@ -65,9 +65,15 @@ export async function classifyJob(job: JobInfo<{ messageId: number }>, h: JobHel
   if (msg.direction !== 'in') return { note: 'Not a reply' };
   if (msg.category) return { category: msg.category, note: 'Already classified' };
   const ws = job.workspaceId!;
+  // The label is about what the person wrote, not our email they quoted (its footer asks for "unsubscribe").
+  const own = ownText(msg.body);
+  if (!own) {
+    applyCategory(ctx, { workspaceId: ws, conversationId: msg.conversation_id, messageId: msg.id, category: 'other', confidence: 0, source: 'rules', note: 'no text of their own' });
+    return { category: 'other', confidence: 0, note: 'No text of their own' };
+  }
   let text: string;
   try {
-    text = (await completeAi(ctx, ws, classifyRequest(threadUpTo(ctx, msg.conversation_id, msg), msg.body))).text;
+    text = (await completeAi(ctx, ws, classifyRequest(threadUpTo(ctx, msg.conversation_id, msg), own))).text;
   } catch (e) {
     // The hold on the lead runs out by itself (REPLY_HOLD_MIN); the failure shows in the activity feed.
     if (isFinalAiError(e, job.attempts, CLASSIFY_JOB_OPTIONS.maxAttempts)) {
