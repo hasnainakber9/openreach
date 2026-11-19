@@ -3,7 +3,7 @@ import { DAY, HOUR, MINUTE } from '../src/clock.js';
 import type { Sequence } from '../src/engine/sequence.js';
 import { twilioSignature, verifyTwilioSignature } from '../src/providers/sms/twilio.js';
 import { handleInboundReply } from '../src/services/replies.js';
-import { normalizePhone, suppressionReason } from '../src/services/suppression.js';
+import { normalizePhone, suppressIdentity, suppressionReason } from '../src/services/suppression.js';
 import { completeTask } from '../src/services/tasks.js';
 import type { CampaignLeadRow, LeadRow, TaskRow } from '../src/types.js';
 import { addLeads, fakeFetch, makeApi, makeCampaign, makeWorld, runFor, type World } from './helpers.js';
@@ -339,6 +339,25 @@ describe('inbound SMS webhook', () => {
     await runFor(w, 1.5 * HOUR);
     expect(cl(w, again.id, a).state).toBe('done');
     expect(fetch.calls).toHaveLength(1);
+  });
+
+  it('tells webhooks about a STOP from someone already suppressed by every other identity', async () => {
+    const w = makeWorld();
+    const { api, row } = await withTwilio(w);
+    const [a] = phoneLeads(w, 1);
+    const events: string[] = [];
+    w.ctx.webhooks.subscribe((_ws, e) => events.push(e));
+    // An admin listed their LinkedIn profile by hand; they are in no running campaign.
+    suppressIdentity(w.ctx, w.workspaceId, 'linkedin', lead(w, a).public_id, 'manual', 'added by Admin', a);
+    await inbound(api, row.id, { MessageSid: 'SM' + 'a'.repeat(32), From: '+14155551000', To: '+15550001111', Body: 'STOP' });
+    expect(w.ctx.db.all('SELECT kind, reason FROM suppressions ORDER BY kind')).toEqual([
+      { kind: 'linkedin', reason: 'manual' },
+      { kind: 'phone', reason: 'sms_stop' },
+    ]);
+    expect(events.filter((e) => e === 'lead.suppressed')).toHaveLength(1);
+    // A second STOP changes nothing and tells nobody.
+    await inbound(api, row.id, { MessageSid: 'SM' + 'b'.repeat(32), From: '+14155551000', To: '+15550001111', Body: 'STOP' });
+    expect(events.filter((e) => e === 'lead.suppressed')).toHaveLength(1);
   });
 
   it('shows a reply in the inbox and stops the sequence', async () => {
