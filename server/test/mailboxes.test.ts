@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { classifyRequest } from '../src/ai/prompts.js';
 import { parsePlans } from '../src/billing/plans.js';
 import { DAY, HOUR, MINUTE } from '../src/clock.js';
 import type { Sequence } from '../src/engine/sequence.js';
@@ -9,9 +10,12 @@ import { optOutReason, processInbound, syncJobKey } from '../src/mail/inbound.js
 import { clearOldPublicUrlHolds, effectiveDailyLimit, ensureLegacyMailboxes, isReservedAddress, retireMailbox, setCampaignMailboxes } from '../src/mail/mailboxes.js';
 import { htmlToText } from '../src/mail/replyText.js';
 import { isPublicUrl, signToken } from '../src/mail/tracking.js';
+import { simulatedAi } from '../src/providers/ai/simulated.js';
 import { createIntegration } from '../src/providers/store.js';
 import { EnrichmentSettingsSchema } from '../src/services/enrichment.js';
+import { stopLeadEverywhere } from '../src/services/replies.js';
 import { setSetting } from '../src/services/settings.js';
+import { suppressIdentity, suppressionReason } from '../src/services/suppression.js';
 import { MailError } from '../src/services/email.js';
 import type { CampaignLeadRow, EmailMessageRow, LeadRow, MailboxRow } from '../src/types.js';
 import { addLeads, fakeFetch, fakeImap, mailerOf, makeApi, makeCampaign, makeWorld as baseWorld, runFor, type World } from './helpers.js';
@@ -1215,6 +1219,47 @@ describe('opt-out replies', () => {
       expect(suppressed(w, l)).toEqual([]);
       expect(cl(w, otherId, l).state).toBe('active');
     }
+  });
+
+  it('classifies what the person wrote, never our quoted footer (no AI configured)', async () => {
+    const { w, leads, otherId, sync, sent } = await sentWorld(3);
+    const now = w.ctx.clock.now();
+    const quote = `On Mon, Sara wrote:\n> Hi First0\n> Don't want to hear from me again? Just reply "unsubscribe" and I won't contact you again.`;
+    sync([
+      // Bottom-posted under the quoted email.
+      inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, text: `${quote}\n\nSounds good - Tuesday 3pm works for me.\n\nAnn`, date: now }),
+      // Nothing of their own (an attachment only).
+      inbound({ uid: 2, from: 'person1@acme.dev', inReplyTo: sent(leads[1]).message_id, text: `\n\n${quote}`, date: now }),
+      // Outlook quotes the original, footer included, with no "> ".
+      inbound({ uid: 3, from: 'person2@acme.dev', inReplyTo: sent(leads[2]).message_id, text: `Ok, Tuesday works.\n\nFrom: Sara Seller\nSent: Monday\nTo: Ann\nSubject: Hi\n\nOpen to a chat?\n\nDon't want to hear from me again? Just reply "unsubscribe" and I won't contact you again.`, date: now }),
+    ]);
+    await w.ctx.jobs.drain();
+    expect(w.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM suppressions')!.n).toBe(0);
+    for (const l of leads) expect(cl(w, otherId, l).state).toBe('active');
+    const reply = (l: number) => w.ctx.db.get<{ body: string; category: string }>("SELECT m.body, m.category FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.lead_id = ? AND m.direction = 'in'", [l]);
+    expect(reply(leads[0])).toEqual({ body: 'Sounds good - Tuesday 3pm works for me.\n\nAnn', category: 'interested' });
+    expect(reply(leads[1])).toEqual({ body: '(no text)', category: 'other' });
+    expect(reply(leads[2])?.category).toBe('other');
+    // The simulator reads only the latest reply, never the rest of the prompt.
+    const ai = simulatedAi.create(w.ctx, { integrationId: null, workspaceId: w.workspaceId, credentials: {}, settings: {} });
+    const answer = await ai.complete(classifyRequest([{ direction: 'out', body: 'Hi. Don\'t want to hear from me again? Just reply "unsubscribe".' }], ''));
+    expect(JSON.parse(answer.text).category).not.toBe('unsubscribe');
+  });
+
+  it('suppresses every identity on an opt-out reply from someone already suppressed by one', async () => {
+    const { w, leads, events, sync, sent } = await sentWorld();
+    // An admin puts the address on the do-not-contact list by hand (POST /api/suppressions).
+    suppressIdentity(w.ctx, w.workspaceId, 'email', 'person0@acme.dev', 'manual', 'added by Admin');
+    stopLeadEverywhere(w.ctx, leads[0], 'skipped', 'Suppressed: manual');
+    sync([inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, text: 'Please stop emailing me', date: w.ctx.clock.now() })]);
+    expect(w.ctx.db.all('SELECT kind, reason, source FROM suppressions ORDER BY kind')).toEqual([
+      { kind: 'email', reason: 'manual', source: 'added by Admin' },
+      { kind: 'linkedin', reason: 'unsubscribe', source: 'email reply' },
+    ]);
+    expect(events.filter((e) => e === 'lead.suppressed')).toHaveLength(1);
+    // Removing the hand-added row does not make them contactable again.
+    w.ctx.db.run("DELETE FROM suppressions WHERE kind = 'email'");
+    expect(suppressionReason(w.ctx, lead(w, leads[0]))).toBe('Suppressed: unsubscribe');
   });
 });
 

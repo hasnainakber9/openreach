@@ -6,7 +6,7 @@ import { logActivity } from '../services/activity.js';
 import { MailError } from '../services/email.js';
 import { publicLead } from '../services/leads.js';
 import { handleInboundReply } from '../services/replies.js';
-import { alreadySuppressed, suppressLead } from '../services/suppression.js';
+import { suppressLead } from '../services/suppression.js';
 import type { EmailMessageRow, LeadRow, MailboxRow } from '../types.js';
 import { imapFor, normalizeMessageId, type InboundEmail } from './imap.js';
 import { mailboxNeedsAttention, WENT_OUT } from './mailboxes.js';
@@ -146,7 +146,7 @@ export function processInbound(ctx: Ctx, mb: MailboxRow, emails: InboundEmail[])
 function honourOptOut(ctx: Ctx, mb: MailboxRow, leadId: number, o: { conversationId: number; messageId: number; reason: string }) {
   const lead = ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [leadId]);
   if (!lead) return;
-  if (!alreadySuppressed(ctx, lead)) suppressLead(ctx, lead, 'unsubscribe', 'email reply');
+  suppressLead(ctx, lead, 'unsubscribe', 'email reply');
   applyCategory(ctx, { workspaceId: mb.workspace_id, conversationId: o.conversationId, messageId: o.messageId, category: 'unsubscribe', confidence: 1, source: 'rules', note: `unsubscribed by reply: ${o.reason}` });
 }
 

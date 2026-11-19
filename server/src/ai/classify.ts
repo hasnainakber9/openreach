@@ -2,14 +2,14 @@ import { z } from 'zod';
 import { MINUTE } from '../clock.js';
 import type { Ctx } from '../context.js';
 import type { JobHelpers, JobInfo } from '../jobs/queue.js';
-import { ruleOptOut } from '../mail/replyText.js';
+import { ownText, ruleOptOut } from '../mail/replyText.js';
 import { AI_MAX_TIMEOUT_SECONDS } from '../providers/ai/types.js';
 import { ProviderError } from '../providers/http.js';
 import { logActivity } from '../services/activity.js';
 import { publicLead } from '../services/leads.js';
 import { autoAdvance, stageForCategory } from '../services/pipeline.js';
 import { resolveReplyHolds } from '../services/replies.js';
-import { alreadySuppressed, suppressLead } from '../services/suppression.js';
+import { suppressLead } from '../services/suppression.js';
 import type { LeadRow } from '../types.js';
 import { CATEGORY_LABELS, isReplyCategory, isSuppressCategory, SUPPRESS_MIN_CONFIDENCE, type ReplyCategory } from './categories.js';
 import { completeAi, extractJson } from './complete.js';
@@ -65,9 +65,15 @@ export async function classifyJob(job: JobInfo<{ messageId: number }>, h: JobHel
   if (msg.direction !== 'in') return { note: 'Not a reply' };
   if (msg.category) return { category: msg.category, note: 'Already classified' };
   const ws = job.workspaceId!;
+  // The label is about what the person wrote, not our email they quoted (its footer asks for "unsubscribe").
+  const own = ownText(msg.body);
+  if (!own) {
+    applyCategory(ctx, { workspaceId: ws, conversationId: msg.conversation_id, messageId: msg.id, category: 'other', confidence: 0, source: 'rules', note: 'no text of their own' });
+    return { category: 'other', confidence: 0, note: 'No text of their own' };
+  }
   let text: string;
   try {
-    text = (await completeAi(ctx, ws, classifyRequest(threadUpTo(ctx, msg.conversation_id, msg), msg.body))).text;
+    text = (await completeAi(ctx, ws, classifyRequest(threadUpTo(ctx, msg.conversation_id, msg), own))).text;
   } catch (e) {
     // The hold on the lead runs out by itself (REPLY_HOLD_MIN); the failure shows in the activity feed.
     if (isFinalAiError(e, job.attempts, CLASSIFY_JOB_OPTIONS.maxAttempts)) {
@@ -177,8 +183,8 @@ export function applyCategory(ctx: Ctx, o: CategoryInput) {
   if (slug) autoAdvance(ctx, lead.id, slug, `Reply ${o.source === 'manual' ? 'marked' : 'classified'} as ${CATEGORY_LABELS[o.category].toLowerCase()}`);
   // Only a sure opt-out suppresses, and only about the lead's latest reply: a late answer about an older
   // "not interested" must not drop someone whose newer reply says "let's talk". A category set by hand counts.
-  // Someone already suppressed (an opt-out reply caught as it arrived) is left as they are.
-  if (isSuppressCategory(o.category) && o.confidence >= SUPPRESS_MIN_CONFIDENCE[o.category] && (o.source === 'manual' || latestForLead) && !alreadySuppressed(ctx, lead)) {
+  // Someone already on the list (an opt-out reply caught as it arrived) only gets the identities still missing.
+  if (isSuppressCategory(o.category) && o.confidence >= SUPPRESS_MIN_CONFIDENCE[o.category] && (o.source === 'manual' || latestForLead)) {
     suppressLead(ctx, lead, o.category, o.source === 'manual' ? 'inbox' : o.source === 'rules' ? 'keyword rules' : 'reply classification');
   }
 }
