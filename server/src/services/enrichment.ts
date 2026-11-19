@@ -5,7 +5,7 @@ import type { Ctx } from '../context.js';
 import { json } from '../db/db.js';
 import { isReservedAddress } from '../mail/mailboxes.js';
 import type { SeqNode } from '../engine/sequence.js';
-import type { JobHelpers, JobInfo } from '../jobs/queue.js';
+import { RetryLater, type JobHelpers, type JobInfo } from '../jobs/queue.js';
 import type { EmailFinder, EmailStatus, EmailVerifier, LeadFields } from '../providers/data/types.js';
 import { ProviderError } from '../providers/http.js';
 import { providerDef, type ProviderKind } from '../providers/registry.js';
@@ -49,6 +49,17 @@ export interface EnrichJobPayload extends EnrichOptions {
   leadId: number;
   runId?: number;
   campaignLeadId?: number;
+  // Set when the company step was rate limited after the email lookups ran: their results are already on the
+  // lead, so the retry does the company step alone (paid finders and verifiers aren't asked twice).
+  emailPart?: EmailPart;
+}
+
+// What the email lookups (find and verify) said, carried over to a retry of the company step.
+export interface EmailPart {
+  notes: string[];
+  useful: boolean;
+  errored: boolean;
+  source: string | null;
 }
 
 // Addresses people gave us (typed in, CSV, LinkedIn contact info). Finders never replace them unless asked.
@@ -206,6 +217,10 @@ interface Outcome {
   status: 'done' | 'not_found' | 'failed';
   transient: Error | null;
   source: string | null;
+  // The company step's rate limit: the email part stands (`emailPart`, its changes in `patch`) and the company
+  // step is retried alone later.
+  deferred?: ProviderError;
+  emailPart?: EmailPart;
 }
 
 const FIELD_COLUMNS: Partial<Record<keyof LeadFields, keyof LeadRow>> = {
@@ -218,20 +233,44 @@ const FIELD_COLUMNS: Partial<Record<keyof LeadFields, keyof LeadRow>> = {
   phone: 'phone',
 };
 
+const isRateLimit = (e: unknown): e is ProviderError => e instanceof ProviderError && e.code === 'RATE_LIMIT';
+
 // Works out what to change on the lead without writing anything, so a retry starts from a clean slate.
-async function computeEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions): Promise<Outcome> {
+// With `earlier`, the email lookups already ran (their results are on the lead) and only the company step runs.
+async function computeEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions, earlier?: EmailPart): Promise<Outcome> {
   const ws = lead.workspace_id;
   const settings = enrichmentSettings(ctx, ws);
   const now = ctx.clock.now();
   const patch: Outcome['patch'] = {};
-  const notes: string[] = [];
+  const notes: string[] = [...(earlier?.notes ?? [])];
   let transient: Error | null = null;
-  let useful = false;
-  let errored = false;
-  let source: string | null = null;
+  let useful = earlier?.useful ?? false;
+  let errored = earlier?.errored ?? false;
+  let source: string | null = earlier?.source ?? null;
+
+  // A company lookup over its limit (the company website's hosted daily cap) is known before any paid email
+  // lookup: the email part still runs once, and the company step waits.
+  const enricher = o.company ? ctx.providers.get(ws, 'enrichment')! : null;
+  let deferred: ProviderError | undefined;
+  const enrichInput = () => ({
+    firstName: lead.first_name,
+    lastName: lead.last_name,
+    company: lead.company,
+    title: lead.title,
+    email: (patch.email as string | undefined) ?? lead.email,
+    profileUrl: lead.profile_url,
+    domain: lead.company_domain ?? undefined,
+  });
+  try {
+    enricher?.checkLimits?.(enrichInput());
+  } catch (e) {
+    if (!isRateLimit(e)) throw e;
+    deferred = e;
+  }
 
   // Finder addresses that later bounced may be looked up again; people's own addresses only with overwrite.
-  const needsFind = o.find && (!lead.email || o.overwrite || (!isUserEmail(lead) && lead.email_status === 'invalid'));
+  // Never twice for one job: an earlier run's results are on the lead.
+  const needsFind = !earlier && o.find && (!lead.email || o.overwrite || (!isUserEmail(lead) && lead.email_status === 'invalid'));
   if (needsFind) {
     const r = await findEmailWaterfall(ctx, ws, lead, { verify: o.verify, settings });
     transient = r.transient;
@@ -263,7 +302,7 @@ async function computeEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions): Pro
 
   // Re-checks only unchecked addresses (or every one with overwrite). A bounce ("invalid") stands until the
   // address changes: a later verification can't make it deliverable again.
-  if (o.verify && !needsFind && lead.email && lead.email_status !== 'invalid' && (o.overwrite || lead.email_status == null || lead.email_status === 'unknown')) {
+  if (!earlier && o.verify && !needsFind && lead.email && lead.email_status !== 'invalid' && (o.overwrite || lead.email_status == null || lead.email_status === 'unknown')) {
     const verifier = verifierFor(ctx, ws, ctx.providers.get(ws, 'email_verifier')!, lead.email, lead.email_source === 'simulated');
     const v = await verifyWith(ctx, ws, verifier, lead.email);
     if (v.error) {
@@ -277,13 +316,12 @@ async function computeEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions): Pro
     }
   } else if (o.verify && !needsFind && lead.email) useful = true;
 
-  if (o.company) {
-    const enricher = ctx.providers.get(ws, 'enrichment')!;
+  const emailPart: EmailPart = { notes: [...notes], useful, errored, source };
+  if (enricher && !deferred) {
     const label = providerLabel('enrichment', enricher.providerId);
     try {
       chargeable(ctx, ws, enricher);
-      const email = (patch.email as string | undefined) ?? lead.email;
-      const r = await enricher.enrich({ firstName: lead.first_name, lastName: lead.last_name, company: lead.company, title: lead.title, email, profileUrl: lead.profile_url, domain: lead.company_domain ?? undefined });
+      const r = await enricher.enrich(enrichInput());
       usage(ctx, ws, 'enrichment', enricher, 'enrich.person', r?.credits ?? (r ? 1 : 0));
       if (r) {
         useful = true;
@@ -305,19 +343,31 @@ async function computeEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions): Pro
       } else notes.push(`${label} has no company data for this lead`);
     } catch (e) {
       usage(ctx, ws, 'enrichment', enricher, 'enrich.person', 0, false);
-      rethrowIfRateLimited(e);
-      flagIntegration(ctx, e);
-      errored = true;
-      if (isTransient(e)) transient ??= e as Error;
-      notes.push(`${label}: ${errorText(e)}`);
+      if (isRateLimit(e)) deferred = e;
+      else {
+        flagIntegration(ctx, e);
+        errored = true;
+        if (isTransient(e)) transient ??= e as Error;
+        notes.push(`${label}: ${errorText(e)}`);
+      }
     }
   }
 
-  return { patch, notes, status: useful ? 'done' : errored ? 'failed' : 'not_found', transient: useful ? null : transient, source };
+  return { patch, notes, status: useful ? 'done' : errored ? 'failed' : 'not_found', transient: useful ? null : transient, source, deferred, emailPart };
 }
 
 const EMAIL_COLUMNS = ['email', 'email_source', 'email_found_at', 'email_status', 'email_status_reason', 'email_status_at'];
 const FILL_COLUMNS: (keyof LeadRow)[] = [...Object.values(FIELD_COLUMNS), 'company_domain'];
+
+// An address typed in or a bounce while the lookup ran keeps the email as it is now (`lead` is the row as the
+// lookup started, `fresh` as it is now).
+function keepNewerEmail(fresh: LeadRow, lead: LeadRow, patch: Outcome['patch'], notes: string[]) {
+  const emailChanged = fresh.email !== lead.email || fresh.email_source !== lead.email_source || fresh.email_status !== lead.email_status;
+  if (emailChanged && EMAIL_COLUMNS.some((k) => k in patch)) {
+    for (const k of EMAIL_COLUMNS) delete patch[k];
+    notes.push('Email changed during the lookup; kept the new one');
+  }
+}
 
 // The patch was worked out from the lead as it was when the lookup started, which can be minutes ago.
 // Whatever changed meanwhile wins: an address typed in or a bounce keeps the email as it is now, and fields
@@ -328,11 +378,7 @@ function applyEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions, out: Outcome
     const fresh = ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id]);
     if (!fresh) return null;
     const patch = { ...out.patch };
-    const emailChanged = fresh.email !== lead.email || fresh.email_source !== lead.email_source || fresh.email_status !== lead.email_status;
-    if (emailChanged && EMAIL_COLUMNS.some((k) => k in patch)) {
-      for (const k of EMAIL_COLUMNS) delete patch[k];
-      out.notes.push('Email changed during the lookup; kept the new one');
-    }
+    keepNewerEmail(fresh, lead, patch, out.notes);
     for (const col of FILL_COLUMNS) if (col in patch && fresh[col]) delete patch[col];
     ctx.db.update('leads', lead.id, { ...patch, enrichment_status: out.status, enriched_at: now, enrichment_options: optionsKey(o) });
     return ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id])!;
@@ -348,6 +394,20 @@ function applyEnrichment(ctx: Ctx, lead: LeadRow, o: EnrichOptions, out: Outcome
   });
   ctx.webhooks.emit(lead.workspace_id, 'lead.enriched', { lead: publicLead(updated, ctx), emailStatus: updated.email_status, source: updated.email_source });
   return updated;
+}
+
+// The company step was rate limited: what the email lookups found goes on the lead now (the lead stays
+// queued), so the retry needn't ask the finders and verifiers again. False when the lead was deleted.
+function saveEmailPart(ctx: Ctx, lead: LeadRow, out: Outcome): boolean {
+  return ctx.db.tx(() => {
+    const fresh = ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [lead.id]);
+    if (!fresh) return false;
+    const patch = { ...out.patch };
+    keepNewerEmail(fresh, lead, patch, out.emailPart!.notes);
+    const email = Object.fromEntries(EMAIL_COLUMNS.filter((k) => k in patch).map((k) => [k, patch[k]]));
+    if (Object.keys(email).length) ctx.db.update('leads', lead.id, email);
+    return true;
+  });
 }
 
 // Leads waiting at a find_email step go on as soon as their lookup is over (whatever it found).
@@ -385,13 +445,21 @@ export async function enrichLeadJob(job: JobInfo<EnrichJobPayload>, h: JobHelper
   if (!recent) {
     let out: Outcome;
     try {
-      out = await computeEnrichment(ctx, lead, o);
+      out = await computeEnrichment(ctx, lead, o, p.emailPart);
     } catch (e) {
       // Rate limits come back later without using an attempt; anything else is retried, then recorded as failed.
-      if ((e instanceof ProviderError && e.code === 'RATE_LIMIT') || job.attempts < MAX_ATTEMPTS) throw e;
-      out = { patch: {}, notes: [`Failed: ${errorText(e)}`], status: 'failed', transient: null, source: null };
+      if (isRateLimit(e) || job.attempts < MAX_ATTEMPTS) throw e;
+      out = { patch: {}, notes: [...(p.emailPart?.notes ?? []), `Failed: ${errorText(e)}`], status: 'failed', transient: null, source: null };
     }
     if (out.transient && job.attempts < MAX_ATTEMPTS) throw out.transient;
+    if (out.deferred) {
+      // The company step comes back later on its own, without using an attempt.
+      if (!saveEmailPart(ctx, lead, out)) {
+        if (p.runId) bumpRun(ctx, p.runId, ws, null);
+        return { status: 'gone' };
+      }
+      throw new RetryLater(out.deferred.retryAfterMs ?? MINUTE, out.deferred.message, { ...p, emailPart: out.emailPart });
+    }
     const applied = applyEnrichment(ctx, lead, o, out, campaignId);
     if (!applied) {
       if (p.runId) bumpRun(ctx, p.runId, ws, null);

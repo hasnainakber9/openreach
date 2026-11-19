@@ -33,7 +33,7 @@ import { createIntegration } from '../src/providers/store.js';
 import { startEnrichmentRun } from '../src/services/enrichment.js';
 import { pinnableFetch, pinnedFetch } from '../src/services/pinned-fetch.js';
 import { monthlyUsage, recordUsage } from '../src/services/usage.js';
-import type { LeadRow } from '../src/types.js';
+import type { EnrichmentRunRow, LeadRow } from '../src/types.js';
 import { addLeads, drainJobs, fakeFetch, makeApi, makeWorld, type FakeRoute, type World } from './helpers.js';
 
 // The free "Company website" enricher: homepage meta tags and JSON-LD, robots.txt, the SSRF guard and the
@@ -962,5 +962,48 @@ describe('Company website: review fixes', () => {
     for (let i = 0; i < 3; i++) used(w2.ctx, w2.workspaceId);
     expect(await website(w2)().enrich(input())).not.toBeNull();
     expect(taken).toEqual([]);
+  });
+
+  it('on a hosted server, counts only lookups that ran against the daily limit, and never repeats paid email lookups for leads over it', async () => {
+    const w = makeWorld();
+    w.ctx.stripe = {} as any;
+    w.ctx.config.plans = parsePlans(JSON.stringify([{ id: 'p', name: 'P', default: true, limits: { enrichmentCreditsMonthly: 1000 } }]), 'test');
+    limits.dailyLookups = 2;
+    dns(w);
+    const enricher = website(w, { noWikidata: true });
+    createIntegration(w.ctx, w.workspaceId, { kind: 'email_finder', provider: 'hunter', credentials: { apiKey: 'hunter-test-key-1234567' } });
+    createIntegration(w.ctx, w.workspaceId, { kind: 'email_verifier', provider: 'zerobounce', credentials: { apiKey: 'zb-test-key-1234567' } });
+    const fetch = (w.ctx.fetch = fakeFetch([
+      { url: /robots\.txt$/, reply: robots('') },
+      { url: /^https:\/\/acme\.com\/$/, reply: page(ACME_HOME) },
+      { url: /^https:\/\/api\.hunter\.io\/v2\/email-finder\?/, reply: (req) => ({ json: { data: { email: `${new URL(req.url).searchParams.get('first_name')!.toLowerCase()}@acme.com`, score: 91 } } }) },
+      { url: /^https:\/\/api\.zerobounce\.net\/v2\/validate\?/, reply: () => ({ json: { status: 'valid', sub_status: '' } }) },
+    ]));
+    const paid = () => fetch.calls.filter((c) => /hunter|zerobounce/.test(c.url)).length;
+    const ids = addLeads(w, 4);
+    w.ctx.db.run(`UPDATE leads SET email = NULL, company_domain = 'acme.com' WHERE id IN (${ids.join(',')})`);
+    const lead = (id: number) => w.ctx.db.get<LeadRow>('SELECT * FROM leads WHERE id = ?', [id])!;
+    const { runId } = startEnrichmentRun(w.ctx, w.workspaceId, null, ids, { find: true, verify: true, company: true, overwrite: false });
+    await drainJobs(w);
+    // Each lead's address was found and checked once; the two over the limit keep it and wait for their company data.
+    expect(paid()).toBe(8);
+    expect(ids.map((id) => [lead(id).email, lead(id).email_status])).toEqual(ids.map((_, i) => [`first${i}@acme.com`, 'valid']));
+    expect(ids.map((id) => lead(id).enrichment_status)).toEqual(['done', 'done', 'queued', 'queued']);
+    // Hourly retries while the limit lasts spend nothing and don't count against it.
+    for (let h = 0; h < 30; h++) {
+      w.ctx.clock.advance(3_600_000);
+      await drainJobs(w);
+    }
+    expect(paid()).toBe(8);
+    expect(ids.map((id) => lead(id).enrichment_status)).toEqual(['done', 'done', 'done', 'done']);
+    expect(JSON.parse(lead(ids[3]).enrichment)).toMatchObject({ source: 'website', foundedYear: 2011 });
+    expect(w.ctx.db.get<EnrichmentRunRow>('SELECT * FROM enrichment_runs WHERE id = ?', [runId])).toMatchObject({ status: 'done', done: 4, found: 4, verified: 4 });
+    const log = w.ctx.db.get<{ detail: string }>("SELECT detail FROM activity WHERE lead_id = ? AND type = 'enrich' ORDER BY id DESC LIMIT 1", [ids[3]])!;
+    expect(log.detail).toMatch(/^Found first3@acme\.com via Hunter.* \(valid\) · Company data from Company website/);
+
+    // Refused attempts (failed lookups in the usage log) never count: only lookups that ran do.
+    w.ctx.clock.advance(25 * 3_600_000);
+    for (let i = 0; i < 5; i++) recordUsage(w.ctx, { workspaceId: w.workspaceId, kind: 'enrichment', provider: 'website', operation: 'enrich.person', credits: 0, ok: false });
+    expect(await enricher().enrich(input())).not.toBeNull();
   });
 });

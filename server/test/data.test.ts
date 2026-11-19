@@ -224,6 +224,39 @@ describe('enrich jobs', () => {
     expect(lead(w, bounced)).toMatchObject({ email: 'x@acme.dev', email_status: 'invalid' });
   });
 
+  it('keeps the email found when only the company step is rate limited, and retries that step alone', async () => {
+    const w = makeWorld();
+    const [id] = addLeads(w, 1);
+    addFinder(w, 'hunter');
+    addVerifier(w, 'zerobounce', ZB_KEY);
+    createIntegration(w.ctx, w.workspaceId, { kind: 'enrichment', provider: 'apollo', credentials: { apiKey: APOLLO_KEY } });
+    const inner = vendors({ hunterEmail: 'f.last@acme.dev', zb: 'valid' });
+    let apollo = 0;
+    const fetch = Object.assign(
+      (async (u: any, i: any) => {
+        if (String(u).includes('apollo') && apollo++ === 0) return new Response('{}', { status: 429, headers: { 'retry-after': '60' } });
+        return inner(u, i);
+      }) as typeof globalThis.fetch,
+      { calls: inner.calls },
+    );
+    w.ctx.fetch = fetch;
+    const paid = () => inner.calls.filter((c) => /hunter|zerobounce/.test(c.url)).length;
+    const { runId } = startEnrichmentRun(w.ctx, w.workspaceId, null, [id], { find: true, verify: true, company: true, overwrite: false });
+    await drainJobs(w);
+    expect(paid()).toBe(2);
+    expect(lead(w, id)).toMatchObject({ email: 'f.last@acme.dev', email_source: 'hunter', email_status: 'valid', enrichment_status: 'queued' });
+    expect(run(w, runId)).toMatchObject({ status: 'running', done: 0 });
+    w.ctx.clock.advance(61_000);
+    await drainJobs(w);
+    // Apollo answered the second time; Hunter and ZeroBounce were not asked again.
+    expect(apollo).toBe(2);
+    expect(paid()).toBe(2);
+    expect(lead(w, id)).toMatchObject({ email: 'f.last@acme.dev', email_status: 'valid', location: 'Austin, United States', enrichment_status: 'done' });
+    expect(run(w, runId)).toMatchObject({ status: 'done', done: 1, found: 1, verified: 1 });
+    const log = w.ctx.db.get<{ detail: string }>("SELECT detail FROM activity WHERE lead_id = ? AND type = 'enrich'", [id])!;
+    expect(log.detail).toMatch(/^Found f\.last@acme\.dev via Hunter.* \(valid\) · Company data from Apollo/);
+  });
+
   it('never spends paid verifier credits on made-up addresses', async () => {
     const w = makeWorld();
     const ids = addLeads(w, 6);

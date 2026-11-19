@@ -5,10 +5,12 @@ import { ProviderError } from '../providers/http.js';
 import type { JobPayloads, JobStatus, JobType } from './types.js';
 
 // Throw from a handler to reschedule without using up an attempt (rate limits, waiting on something).
+// `payload` replaces the job's payload for the next run (what is already done needn't be done again).
 export class RetryLater extends Error {
   constructor(
     public readonly delayMs: number,
     reason = 'Waiting to retry',
+    public readonly payload?: unknown,
   ) {
     super(reason);
   }
@@ -309,10 +311,12 @@ export class JobQueue {
     const now = ctx.clock.now();
     const message = (err.message || err.name || 'Job failed').slice(0, 500);
     if (err instanceof RetryLater) {
-      ctx.db.run(`UPDATE jobs SET status = 'queued', attempts = attempts - 1, run_at = ?, last_error = ?, locked_until = NULL, updated_at = ? WHERE ${THIS_RUN}`, [
+      const payload = err.payload === undefined ? [] : [JSON.stringify(err.payload)];
+      ctx.db.run(`UPDATE jobs SET status = 'queued', attempts = attempts - 1, run_at = ?, last_error = ?, locked_until = NULL, updated_at = ?${payload.length ? ', payload = ?' : ''} WHERE ${THIS_RUN}`, [
         now + Math.max(0, err.delayMs),
         message,
         now,
+        ...payload,
         row.id,
         row.attempts,
       ]);

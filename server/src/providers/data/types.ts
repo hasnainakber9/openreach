@@ -69,4 +69,7 @@ export interface EnrichResult {
 
 export interface Enricher extends BaseProvider {
   enrich(lead: EnrichInput): Promise<EnrichResult | null>;
+  // Throws the RATE_LIMIT error enrich() would throw for this lead right now (a hosted daily limit), so the
+  // caller knows before it spends anything on the lead's other lookups.
+  checkLimits?(lead: EnrichInput): void;
 }
