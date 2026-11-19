@@ -13,7 +13,9 @@ import { isPublicUrl, signToken } from '../src/mail/tracking.js';
 import { simulatedAi } from '../src/providers/ai/simulated.js';
 import { createIntegration } from '../src/providers/store.js';
 import { EnrichmentSettingsSchema } from '../src/services/enrichment.js';
+import { stopLeadEverywhere } from '../src/services/replies.js';
 import { setSetting } from '../src/services/settings.js';
+import { suppressIdentity, suppressionReason } from '../src/services/suppression.js';
 import { MailError } from '../src/services/email.js';
 import type { CampaignLeadRow, EmailMessageRow, LeadRow, MailboxRow } from '../src/types.js';
 import { addLeads, fakeFetch, fakeImap, mailerOf, makeApi, makeCampaign, makeWorld as baseWorld, runFor, type World } from './helpers.js';
@@ -1242,6 +1244,22 @@ describe('opt-out replies', () => {
     const ai = simulatedAi.create(w.ctx, { integrationId: null, workspaceId: w.workspaceId, credentials: {}, settings: {} });
     const answer = await ai.complete(classifyRequest([{ direction: 'out', body: 'Hi. Don\'t want to hear from me again? Just reply "unsubscribe".' }], ''));
     expect(JSON.parse(answer.text).category).not.toBe('unsubscribe');
+  });
+
+  it('suppresses every identity on an opt-out reply from someone already suppressed by one', async () => {
+    const { w, leads, events, sync, sent } = await sentWorld();
+    // An admin puts the address on the do-not-contact list by hand (POST /api/suppressions).
+    suppressIdentity(w.ctx, w.workspaceId, 'email', 'person0@acme.dev', 'manual', 'added by Admin');
+    stopLeadEverywhere(w.ctx, leads[0], 'skipped', 'Suppressed: manual');
+    sync([inbound({ uid: 1, from: 'person0@acme.dev', inReplyTo: sent(leads[0]).message_id, text: 'Please stop emailing me', date: w.ctx.clock.now() })]);
+    expect(w.ctx.db.all('SELECT kind, reason, source FROM suppressions ORDER BY kind')).toEqual([
+      { kind: 'email', reason: 'manual', source: 'added by Admin' },
+      { kind: 'linkedin', reason: 'unsubscribe', source: 'email reply' },
+    ]);
+    expect(events.filter((e) => e === 'lead.suppressed')).toHaveLength(1);
+    // Removing the hand-added row does not make them contactable again.
+    w.ctx.db.run("DELETE FROM suppressions WHERE kind = 'email'");
+    expect(suppressionReason(w.ctx, lead(w, leads[0]))).toBe('Suppressed: unsubscribe');
   });
 });
 

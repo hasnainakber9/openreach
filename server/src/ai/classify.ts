@@ -9,7 +9,7 @@ import { logActivity } from '../services/activity.js';
 import { publicLead } from '../services/leads.js';
 import { autoAdvance, stageForCategory } from '../services/pipeline.js';
 import { resolveReplyHolds } from '../services/replies.js';
-import { alreadySuppressed, suppressLead } from '../services/suppression.js';
+import { suppressLead } from '../services/suppression.js';
 import type { LeadRow } from '../types.js';
 import { CATEGORY_LABELS, isReplyCategory, isSuppressCategory, SUPPRESS_MIN_CONFIDENCE, type ReplyCategory } from './categories.js';
 import { completeAi, extractJson } from './complete.js';
@@ -183,8 +183,8 @@ export function applyCategory(ctx: Ctx, o: CategoryInput) {
   if (slug) autoAdvance(ctx, lead.id, slug, `Reply ${o.source === 'manual' ? 'marked' : 'classified'} as ${CATEGORY_LABELS[o.category].toLowerCase()}`);
   // Only a sure opt-out suppresses, and only about the lead's latest reply: a late answer about an older
   // "not interested" must not drop someone whose newer reply says "let's talk". A category set by hand counts.
-  // Someone already suppressed (an opt-out reply caught as it arrived) is left as they are.
-  if (isSuppressCategory(o.category) && o.confidence >= SUPPRESS_MIN_CONFIDENCE[o.category] && (o.source === 'manual' || latestForLead) && !alreadySuppressed(ctx, lead)) {
+  // Someone already on the list (an opt-out reply caught as it arrived) only gets the identities still missing.
+  if (isSuppressCategory(o.category) && o.confidence >= SUPPRESS_MIN_CONFIDENCE[o.category] && (o.source === 'manual' || latestForLead)) {
     suppressLead(ctx, lead, o.category, o.source === 'manual' ? 'inbox' : o.source === 'rules' ? 'keyword rules' : 'reply classification');
   }
 }
